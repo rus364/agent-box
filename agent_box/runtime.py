@@ -2025,6 +2025,9 @@ def container_lifetime_args(
         f"--env=HOME={home}",
         f"--env=PATH={CONTAINER_RUNTIME_PATH}",
         f"--env=CODEX_HOME={CODEX_HOME}",
+        # A whole-home mount may expose host ~/.gitconfig. Pin the private
+        # standard XDG snapshot for both Git reads and atomic global writes.
+        f"--env=GIT_CONFIG_GLOBAL={home}/.config/git/config",
         f"--env=XDG_CACHE_HOME={XDG_CACHE_HOME}",
         f"--env=UV_CACHE_DIR={XDG_CACHE_HOME}/uv",
         f"--env=MISE_DATA_DIR={home}/.local/share/mise",

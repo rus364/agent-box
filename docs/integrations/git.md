@@ -28,9 +28,10 @@ configuration; your repository's `origin` and host configuration stay
 unchanged.
 
 The box uses standard config locations: `~/.config/git/config`,
-`~/.config/gh` and `~/.config/glab-cli`. Git, gh and glab discover these
-without agent-box setting `GIT_CONFIG_GLOBAL`, `GH_CONFIG_DIR` or
-`GLAB_CONFIG_DIR`.
+`~/.config/gh` and `~/.config/glab-cli`. Git's `GIT_CONFIG_GLOBAL` pins the
+standard XDG snapshot so a whole-home mount cannot make Git read or modify the
+host's `~/.gitconfig`. gh and glab use default lookup without `GH_CONFIG_DIR`
+or `GLAB_CONFIG_DIR` overrides.
 
 Only HTTPS GitHub authentication is forwarded. SSH keys and the host SSH agent
 are never mounted, so `Host key verification failed` inside the box means a
@@ -65,8 +66,8 @@ Copy glab config**, set `credentials.gitlab.config` to `true`, or launch with
 Home paths use the account home, not the shell’s `HOME`. System-wide config
 is not copied.
 
-The container gets a private writable copy at `~/.config/glab-cli`, selected
-by its own `GLAB_CONFIG_DIR`. Host files stay unchanged. For hosts configured
+The container gets a private writable copy at `~/.config/glab-cli`, found
+through glab's default lookup. Host files stay unchanged. For hosts configured
 with `use_keyring: true`, agent-box runs the host's `glab config get` against
 an isolated temporary configuration and writes that host's access/job token
 into the copy. The container receives no D-Bus or host-keyring access. Install

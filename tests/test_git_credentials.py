@@ -16,6 +16,7 @@ from unittest import mock
 
 from agent_box import runtime
 from agent_box.config import Config
+from agent_box.workspace import Workspace
 
 
 def _unprompted_env() -> dict[str, str]:
@@ -38,6 +39,45 @@ def _git_config_get_all(config_file: Path, key: str) -> list[str]:
 
 
 class SeedGitConfigCredentialHelperTests(unittest.TestCase):
+    def test_whole_home_mount_cannot_redirect_git_reads_or_writes_into_host_configs(self):
+        """Standard file locations must preserve the box snapshot even with a host dotfile visible."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            host = root / "host"
+            host_xdg = host / ".config/git/config"
+            host_xdg.parent.mkdir(parents=True)
+            host_xdg.write_text("[user]\n\tname = host-xdg\n")
+            host_dotfile = host / ".gitconfig"
+            host_dotfile.write_text("[user]\n\tname = host-dotfile\n")
+            box = root / "box"
+            (box / ".config").mkdir(parents=True)
+            snapshot = root / "snapshot"
+            settings = Config()
+            settings.credentials.git.identity = False
+            settings.credentials.github.token = True
+            settings.box.persistent_cache = True
+            runtime.seed_git_config(snapshot, settings)
+            runtime._set_git_config(snapshot / "config", "user.name", "snapshot-user")
+            # Model the visible home bind and its private XDG-directory overlay.
+            (box / ".gitconfig").symlink_to(host_dotfile)
+            (box / ".config/git").symlink_to(snapshot, target_is_directory=True)
+            workspace = Workspace(box, box)
+            with mock.patch.object(runtime, "HOST_HOME", box):
+                flags = runtime.container_lifetime_args(workspace, [], runtime.PACKAGE_ROOT, settings)
+            env = {key: value for key, value in os.environ.items()
+                   if not key.startswith("GIT_CONFIG") and key != "XDG_CONFIG_HOME"}
+            env.update(HOME=str(box), GIT_CONFIG_NOSYSTEM="1")
+            for flag in flags:
+                if flag.startswith("--env=GIT_CONFIG_GLOBAL="):
+                    env["GIT_CONFIG_GLOBAL"] = flag.split("=", 2)[2]
+            name = subprocess.check_output(["git", "config", "--global", "--get", "user.name"],
+                                           env=env, text=True).strip()
+            self.assertEqual(name, "snapshot-user")
+            subprocess.run(["git", "config", "--global", "user.name", "edited-snapshot"], env=env, check=True)
+            self.assertEqual(_git_config_get_all(snapshot / "config", "user.name"), ["edited-snapshot"])
+            self.assertEqual(_git_config_get_all(host_dotfile, "user.name"), ["host-dotfile"])
+            self.assertEqual(_git_config_get_all(host_xdg, "user.name"), ["host-xdg"])
+
     def test_enabled_github_transport_uses_https_without_changing_repository_urls(self):
         """The token can authenticate HTTPS; copied SSH URLs cannot use it."""
         with tempfile.TemporaryDirectory() as tmp:

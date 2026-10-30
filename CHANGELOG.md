@@ -4,8 +4,9 @@
 
 - Put forwarded registry and Helm credentials at their standard tool paths,
   preserving selected-only copies, read-only directory mounts and atomic refresh.
-  Use Git/gh/glab default config lookup, standard kubectl and Bun caches, and
-  mise's standard state directory. Built-in k3s uses `~/.kube/k3s.yaml` through
+  Use standard Git/gh/glab config locations, kubectl and Bun caches, and
+  mise's state directory. Git pins its standard XDG snapshot to protect host
+  config files even with a whole-home mount. Built-in k3s uses `~/.kube/k3s.yaml` through
   `KUBECONFIG`; a selected host file with that name is refused rather than hidden.
   Rebuild the workspace image and explicitly stop/relaunch to adopt the new paths;
   existing runtimes and prior persistent caches are left untouched. Existing mise
