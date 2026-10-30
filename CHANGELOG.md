@@ -8,7 +8,8 @@
   mise's standard state directory. Built-in k3s uses `~/.kube/k3s.yaml` through
   `KUBECONFIG`; a selected host file with that name is refused rather than hidden.
   Rebuild the workspace image and explicitly stop/relaunch to adopt the new paths;
-  existing runtimes and prior persistent caches/trust records are left untouched.
+  existing runtimes and prior persistent caches are left untouched. Existing mise
+  trust records remain shared through the same private host state.
 
 - Include host keyring access/job tokens in opted-in glab configuration copies.
   Host glab and an unlocked keyring are required for keyring-backed hosts; no

@@ -12,6 +12,34 @@ from test_runtime import IsolatedRuntimeTest
 
 
 class ToolCacheMountTests(IsolatedRuntimeTest):
+    def test_explicit_kube_cache_mount_cannot_duplicate_the_managed_overlay(self):
+        """Podman must not receive both a bind and tmpfs for the same cache path."""
+        from agent_box.errors import AgentBoxError
+        from agent_box.mounts import MountSpec
+        settings = config.Config()
+        settings.credentials.kubernetes.enabled = True
+        settings.credentials.kubernetes.files = ["config"]
+        workspace = Workspace(Path("/project"), Path("/project"))
+        mount = MountSpec(runtime.HOST_HOME / ".kube/cache", False)
+        for persistent in (False, True):
+            settings.box.persistent_cache = persistent
+            with self.assertRaisesRegex(AgentBoxError, "conflicts with the managed kubectl cache"):
+                runtime.build_mounts(workspace, [mount], runtime.PACKAGE_ROOT, settings)
+
+    def test_host_bun_mount_cannot_capture_the_standard_disposable_cache(self):
+        """Removing Bun's path override must not make default downloads write to the host."""
+        from agent_box.errors import AgentBoxError
+        from agent_box.mounts import MountSpec
+        settings = config.Config()
+        workspace = Workspace(Path("/project"), Path("/project"))
+        mount = MountSpec(runtime.HOST_HOME / ".bun", False)
+        with self.assertRaisesRegex(AgentBoxError, "includes the disposable tool cache.*bun/install/cache"):
+            runtime.build_mounts(workspace, [mount], runtime.PACKAGE_ROOT, settings)
+        settings.box.persistent_cache = True
+        self.assertIn(f"type=bind,src={runtime.STATE_ROOT / 'cache/bun'},"
+                      f"dst={runtime.HOST_HOME / '.bun/install/cache'}",
+                      runtime.build_mounts(workspace, [mount], runtime.PACKAGE_ROOT, settings))
+
     def test_installed_tool_mount_cannot_capture_a_relocated_disposable_cache(self):
         """Relocation beneath durable tool data must not silently persist downloads."""
         from agent_box.errors import AgentBoxError

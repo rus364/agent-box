@@ -144,7 +144,7 @@ class MiseStateAcrossBoxesTests(IsolatedRuntimeTest):
             argv = runtime.container_argv(Workspace(Path(tmp), Path(tmp)), [], Path(tmp), ["codex"])
         data = f"type=bind,src={runtime.STATE_ROOT}/mise,dst={runtime.HOST_HOME}/.local/share/mise"
         self.assertIn(data, argv)
-        self.assertIn(f"type=bind,src={runtime.STATE_ROOT}/mise-state,dst={runtime.HOST_HOME}/.local/state/mise", argv)
+        self.assertIn(f"type=bind,src={runtime.STATE_ROOT}/mise/state,dst={runtime.HOST_HOME}/.local/state/mise", argv)
         self.assertFalse(any(arg.startswith("--env=MISE_STATE_DIR=") for arg in argv))
 
 class ImageExistenceTests(unittest.TestCase):

@@ -255,9 +255,11 @@ class NestedLauncherBundleTests(IsolatedRuntimeTest):
             host_entry.parent.mkdir(parents=True)
             host_link.symlink_to(host_entry)
             workspace = Workspace(runtime.HOST_HOME, runtime.HOST_HOME)
+            settings = Config()
+            settings.box.persistent_cache = True
             with mock.patch.object(runtime, "agent_tree_mounts", return_value=[]), \
                  mock.patch.object(runtime, "tracker_mounts", return_value=[]):
-                mounts = runtime.build_mounts(workspace, [], runtime.PACKAGE_ROOT, Config())
+                mounts = runtime.build_mounts(workspace, [], runtime.PACKAGE_ROOT, settings)
             for flag in mounts[1::2]:
                 fields = dict(part.split("=", 1) for part in flag.split(","))
                 target = Path(fields["dst"])
@@ -296,7 +298,7 @@ class NestedLauncherBundleTests(IsolatedRuntimeTest):
             home.mkdir()
             library = Path(tmp) / "usr/local/lib/agent-box"
             launcher = Path(tmp) / "usr/local/bin/agent-box"
-            workspace = Workspace(Path(tmp), Path(tmp))
+            workspace = Workspace(Path(tmp) / "project", Path(tmp) / "project")
             with mock.patch.object(runtime, "HOST_HOME", home), \
                  mock.patch.object(runtime, "CONTAINER_LAUNCHER_ROOT", library), \
                  mock.patch.object(runtime, "CONTAINER_LAUNCHER", launcher), \

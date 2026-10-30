@@ -234,16 +234,18 @@ class FilteringTests(IsolatedSources):
         directory = registries.runtime_dir("ws")
         self.assertEqual(directory.stat().st_mode & 0o777, 0o700)
         self.assertEqual({path.stat().st_mode & 0o777 for path in directory.rglob("*") if path.is_file()}, {0o600})
+        self.assertEqual({path.stat().st_mode & 0o777 for path in directory.rglob("*") if path.is_dir()}, {0o700})
 
     def test_a_renewed_host_login_replaces_the_copy_inside_the_mounted_directory(self):
         """The box mounts the directory, so only a replace within it reaches a running box."""
         self.write(self.runtime_auth, {"auths": {"cr.yandex": {"auth": "old"}}})
-        registries.sync(registry_config(["cr.yandex"]), "ws")
-        directory = registries.runtime_dir("ws").stat().st_ino
+        config = registry_config(["cr.yandex"])
+        registries.sync(config, "ws")
+        mounted = {path: path.stat().st_ino for path, _, _ in registries.mounts(config, "ws")}
         self.write(self.runtime_auth, {"auths": {"cr.yandex": {"auth": "renewed"}}})
         registries.sync(registry_config(["cr.yandex"]), "ws")
         self.assertEqual(self.rendered("containers/auth.json"), {"auths": {"cr.yandex": {"auth": "renewed"}}})
-        self.assertEqual(registries.runtime_dir("ws").stat().st_ino, directory)
+        self.assertEqual({path: path.stat().st_ino for path in mounted}, mounted)
 
     def test_turning_forwarding_off_removes_the_copies(self):
         self.write(self.runtime_auth, {"auths": {"cr.yandex": {"auth": "runtime"}}})

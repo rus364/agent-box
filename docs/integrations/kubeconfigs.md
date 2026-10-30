@@ -59,7 +59,8 @@ use-context` and other kubeconfig edits fail, so pass `--context` instead.
 kubectl uses its standard `~/.kube/cache`, overlaid writable without
 `KUBECACHEDIR`. It is a private tmpfs by default, or a shared host-backed cache
 when **Keep tool cache between boxes** is enabled. With forwarding and k3s off,
-the box's `~/.kube` is an ordinary directory.
+the box's `~/.kube` is an ordinary directory. An explicit mount at
+`~/.kube/cache` conflicts with the managed overlay and is refused.
 
 ## What does not work inside the box
 

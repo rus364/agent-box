@@ -273,7 +273,7 @@ def codex_command(
 
 def ensure_state_dirs() -> None:
     for path in (
-        BUILD_STATE, STATE_ROOT / "uv", STATE_ROOT / "mise", STATE_ROOT / "mise-state",
+        BUILD_STATE, STATE_ROOT / "uv", STATE_ROOT / "mise", STATE_ROOT / "mise/state",
         STATE_ROOT / "mise-config", STATE_ROOT / "cargo", STATE_ROOT / "rustup", NOTIFY_STATE_ROOT,
         STATE_ROOT / "runtime/workspaces", CODEX_HOME, CLAUDE_HOME,
     ):
@@ -1499,6 +1499,10 @@ def build_mounts(
     # that deterministically instead of issuing two overlapping podman
     # --mount flags for the same tree.
     project_mounts = plan_mounts([MountSpec(workspace.host_root, False, "project root"), *extra_mounts])
+    if kubeconfigs.mounts(config, runtime_state.root.name) and any(
+            mount.path == kubeconfigs.KUBECONFIG_DIR / "cache" for mount in project_mounts):
+        raise AgentBoxError("An explicit mount at ~/.kube/cache conflicts with the managed kubectl cache; "
+                            "remove that mount or disable kubeconfig forwarding and k3s")
     pairs: list[tuple[Path, Path, bool]] = [
         # Agent homes intentionally remain host-backed and shared: they hold
         # the user's provider authentication and durable agent settings. Git
@@ -1511,7 +1515,7 @@ def build_mounts(
         # persistent storage rather than the host's real ~/.cargo/~/.rustup.
         (STATE_ROOT / "uv", HOST_HOME / ".local/share/uv", False),
         (STATE_ROOT / "mise", HOST_HOME / ".local/share/mise", False),
-        (STATE_ROOT / "mise-state", HOST_HOME / ".local/state/mise", False),
+        (STATE_ROOT / "mise/state", HOST_HOME / ".local/state/mise", False),
         # `mise use -g` records its choice in the global config, not the data
         # directory; an installed tool without that choice is a dead shim. It
         # is the box's own, never the host's: the host's mise may name tools
@@ -1573,12 +1577,13 @@ def build_mounts(
 
     if not config.box.persistent_cache:
         destinations = [mount.path for mount in project_mounts] + [dst for _, dst, _ in pairs]
-        covering = next((dst for dst in destinations if XDG_CACHE_HOME.is_relative_to(dst)), None)
-        if covering is not None:
-            raise AgentBoxError(
-                f"Host mount {covering} includes the disposable tool cache {XDG_CACHE_HOME}. "
-                "Choose a different cache path or a more specific workspace/mount, "
-                "or enable Workspace box > Keep tool cache between boxes")
+        for cache in (XDG_CACHE_HOME, HOST_HOME / ".bun/install/cache"):
+            covering = next((dst for dst in destinations if cache.is_relative_to(dst)), None)
+            if covering is not None:
+                raise AgentBoxError(
+                    f"Host mount {covering} includes the disposable tool cache {cache}. "
+                    "Choose a different cache path or a more specific workspace/mount, "
+                    "or enable Workspace box > Keep tool cache between boxes")
 
     out = []
     seen_paths: set[Path] = set()
