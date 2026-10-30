@@ -333,11 +333,12 @@ class ConfigurationSnapshotTests(unittest.TestCase):
 
 class GitLabEnvironmentTests(unittest.TestCase):
     def test_shell_config_path_and_tokens_do_not_escape_into_container_argv(self):
-        """A copied config is selected by its container path, with no implicit token passthrough."""
+        """The standard config directory must not inherit host path overrides or shell tokens."""
         argv = _argv(Config(), env={"GLAB_CONFIG_DIR": "/host/glab",
                                     "GITLAB_TOKEN": "glpat_secret",
                                     "GITLAB_ACCESS_TOKEN": "access_secret", "OAUTH_TOKEN": "oauth_secret"})
-        self.assertIn(f"--env=GLAB_CONFIG_DIR={runtime.HOST_HOME}/.config/glab-cli", argv)
+        self.assertFalse(any(arg.startswith("--env=GLAB_CONFIG_DIR=") for arg in argv))
+        self.assertTrue(any(f"dst={runtime.HOST_HOME}/.config/glab-cli" in arg for arg in argv))
         for secret in ("/host/glab", "glpat_secret", "access_secret", "oauth_secret"):
             self.assertNotIn(secret, " ".join(argv))
         for name in ("GITLAB_TOKEN", "GITLAB_ACCESS_TOKEN", "OAUTH_TOKEN"):
@@ -444,10 +445,9 @@ class NotificationCredentialMountTests(unittest.TestCase):
 
 
 class BunCacheTests(unittest.TestCase):
-    def test_bun_cache_points_into_the_isolated_cache(self):
-        bun = [a for a in _argv(Config()) if a.startswith("--env=BUN_INSTALL_CACHE_DIR=")]
-        self.assertEqual(len(bun), 1)
-        self.assertTrue(bun[0].endswith("/bun"))
+    def test_bun_uses_its_standard_cache_without_a_path_override(self):
+        """Bun should discover its cache through its ordinary configuration lookup."""
+        self.assertFalse(any(arg.startswith("--env=BUN_INSTALL_CACHE_DIR=") for arg in _argv(Config())))
 
 
 if __name__ == "__main__":

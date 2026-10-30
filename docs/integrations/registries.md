@@ -22,15 +22,16 @@ shown.
 
 ## Where logins come from
 
-| Host file | Read by | In the box |
+| Host file | Read by | Standard path in the box |
 | --- | --- | --- |
-| `$XDG_RUNTIME_DIR/containers/auth.json`, then `~/.config/containers/auth.json` | podman, skopeo, buildah | `REGISTRY_AUTH_FILE` |
-| `~/.config/helm/registry/config.json` | helm (OCI) | `HELM_REGISTRY_CONFIG` |
-| `~/.config/helm/repositories.yaml` | helm repositories | `HELM_REPOSITORY_CONFIG` |
+| `$XDG_RUNTIME_DIR/containers/auth.json`, then `~/.config/containers/auth.json` | podman, skopeo, buildah | `~/.config/containers/auth.json` |
+| `~/.config/helm/registry/config.json` | helm (OCI) | `~/.config/helm/registry/config.json` |
+| `~/.config/helm/repositories.yaml` | helm repositories | `~/.config/helm/repositories.yaml` |
 
 When `REGISTRY_AUTH_FILE`, `HELM_REGISTRY_CONFIG` or `HELM_REPOSITORY_CONFIG` is
-set, that file is read instead, as the tools themselves do. This is also how a
-launch nested inside a box forwards the copies that box was given.
+set on the host, that file is read instead. Inside the box the tools use their
+standard paths without these overrides; nested launches discover those copies
+through the same standard lookup.
 
 Each file is filtered into its own copy containing only the chosen hosts and
 repositories. agent-box copies logins already written; it never runs a login
@@ -41,7 +42,10 @@ at launch, and the launch continues without them.
 
 ## How it reaches the container
 
-The copies are mounted read-only, and the variables carry only their paths.
+The copies are mounted read-only at the standard container and Helm config
+directories. Directory mounts preserve atomic updates; no registry or Helm path
+environment override is needed. Scripts opening the standard files see the same
+filtered credentials as the tools. Helm index caches remain outside these mounts.
 The copies are rendered again at every launch. A login renewed on the host,
 such as a Yandex IAM token after 12 hours, reaches an already running box at
 the next `agent-box` launch for that project, without recreating it. The box
@@ -49,7 +53,7 @@ keeps its own Helm index cache; refresh it with `helm repo update`. Logging in
 inside the box fails, because the copies are read-only.
 
 The running box retains the forwarding switch, chosen hosts and repositories,
-mounts and variables from creation. Later launches refresh only those choices,
+mounts from creation. Later launches refresh only those choices,
 even if the saved selection changed. New choices take effect after
 `agent-box stop` and the next launch; an explicit conflicting switch requires
 that restart.

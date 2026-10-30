@@ -67,6 +67,29 @@ class SeedGitConfigCredentialHelperTests(unittest.TestCase):
                                                          cwd=repo, text=True).strip()
                         self.assertEqual(stored, original)
 
+    def test_standard_global_lookup_finds_identity_and_github_transport_without_overrides(self):
+        """Git must consume the snapshot through its own standard XDG lookup."""
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            target = home / ".config/git"
+            settings = Config()
+            settings.credentials.git.identity = False
+            settings.credentials.github.token = True
+            runtime.seed_git_config(target, settings)
+            runtime._set_git_config(target / "config", "user.name", "standard-user")
+            env = {key: value for key, value in os.environ.items()
+                   if not key.startswith("GIT_CONFIG") and key != "XDG_CONFIG_HOME"}
+            env.update(HOME=str(home), GIT_CONFIG_NOSYSTEM="1")
+            name = subprocess.check_output(["git", "config", "--global", "--get", "user.name"],
+                                           env=env, text=True).strip()
+            self.assertEqual(name, "standard-user")
+            helper = subprocess.check_output(
+                ["git", "config", "--global", "--get-all", "credential.https://github.com.helper"],
+                env=env, text=True).splitlines()
+            self.assertEqual(helper, [runtime.GH_CREDENTIAL_HELPER])
+            subprocess.run(["git", "config", "--global", "user.name", "changed"], env=env, check=True)
+            self.assertEqual(_git_config_get_all(target / "config", "user.name"), ["changed"])
+
     def test_gh_token_enabled_configures_credential_helper(self):
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "git"

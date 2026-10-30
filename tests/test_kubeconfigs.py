@@ -294,7 +294,7 @@ class SyncTests(IsolatedKube):
             kubeconfigs.sync(kube_config(["a"]), "ws")
             self.assertEqual(kubeconfigs.sync(config, "ws"), [])
             self.assertFalse(kubeconfigs.runtime_dir("ws").exists())
-            self.assertEqual((kubeconfigs.mounts(config, "ws"), kubeconfigs.container_env(config)), ([], []))
+            self.assertEqual(kubeconfigs.mounts(config, "ws"), [])
 
 
 class BoxTargetTests(unittest.TestCase):
@@ -302,7 +302,7 @@ class BoxTargetTests(unittest.TestCase):
         """Paths match the host's; KUBECONFIG stays k3s's, since a merged list resolves shared names wrongly.
 
         The box's ~/.kube is the directory discovery reads, so a nested launch offers the
-        copies its box was given; it is read-only, so kubectl's cache moves to the box's cache.
+        copies its box was given; its standard cache has a separate writable overlay.
         """
         workspace = Workspace(Path("/project"), Path("/project"))
         state = runtime.workspace_runtime_state(workspace)
@@ -311,10 +311,67 @@ class BoxTargetTests(unittest.TestCase):
         target = runtime.HOST_HOME / ".kube"
         self.assertEqual(kubeconfigs.KUBECONFIG_DIR, target)
         self.assertIn(f"type=bind,src={kubeconfigs.runtime_dir(state.root.name)},dst={target},ro=true", args)
-        self.assertIn(f"--env=KUBECACHEDIR={runtime.XDG_CACHE_HOME / 'kube'}", args)
+        self.assertTrue(any(arg.startswith(f"--tmpfs={target / 'cache'}:rw,") for arg in args))
+        self.assertFalse(any(arg.startswith("--env=KUBECACHEDIR=") for arg in args))
         self.assertFalse(any("SECRET" in arg or arg.startswith("--env=KUBECONFIG=") for arg in args))
         plain = runtime.container_lifetime_args(workspace, [], Path("/checkout"), Config(), runtime_state=state)
         self.assertFalse(any(f"dst={target}," in arg or "KUBECACHEDIR" in arg for arg in plain))
+
+
+class K3sStandardPathTests(IsolatedKube):
+    def test_k3s_refresh_preserves_host_config_and_standard_cache(self):
+        """Selecting k3s must never replace the user's separately forwarded default config."""
+        self.write("config", STATIC)
+        settings = kube_config(["config"])
+        settings.box.k3s.enabled = True
+        source = self.root / "k3s-source"
+        source.write_text(STATIC.replace("static", "k3s"))
+        root = kubeconfigs.runtime_dir("ws")
+        (root / "cache").mkdir(parents=True)
+        cached = root / "cache/kept"
+        cached.write_text("discovery")
+        kubeconfigs.sync(settings, "ws", k3s_config=source)
+        self.assertEqual((root / "config").read_text(), STATIC)
+        self.assertEqual((root / "k3s.yaml").read_bytes(), source.read_bytes())
+        source.write_text(STATIC + "# renewed\n")
+        inode = root.stat().st_ino
+        kubeconfigs.sync(settings, "ws", k3s_config=source)
+        self.assertEqual(root.stat().st_ino, inode)
+        self.assertEqual((root / "k3s.yaml").read_bytes(), source.read_bytes())
+        self.assertEqual(cached.read_text(), "discovery")
+        settings.box.k3s.enabled = False
+        kubeconfigs.sync(settings, "ws")
+        self.assertFalse((root / "k3s.yaml").exists())
+        self.assertEqual((root / "config").read_text(), STATIC)
+
+    def test_k3s_without_host_forwarding_still_gets_a_standard_kubeconfig(self):
+        """The sidecar's own credential must not depend on host kubeconfig opt-in."""
+        settings = Config()
+        settings.box.k3s.enabled = True
+        source = self.root / "k3s-source"
+        source.write_text(STATIC)
+        kubeconfigs.sync(settings, "ws", k3s_config=source)
+        self.assertEqual((kubeconfigs.runtime_dir("ws") / "k3s.yaml").read_text(), STATIC)
+        workspace = Workspace(Path("/project"), Path("/project"))
+        with mock.patch.object(runtime.k3s, "api_port", return_value=24443):
+            args = runtime.container_lifetime_args(workspace, [], Path("/checkout"), settings)
+        self.assertIn(f"--env=KUBECONFIG={runtime.HOST_HOME / '.kube/k3s.yaml'}", args)
+
+    def test_reserved_names_fail_before_overwriting_host_copies(self):
+        """Cache and sidecar names cannot silently hide a selected credential."""
+        from agent_box.errors import AgentBoxError
+        for name in ("cache", "k3s.yaml"):
+            self.write(name, STATIC)
+            settings = kube_config([name])
+            settings.box.k3s.enabled = True
+            with self.assertRaisesRegex(AgentBoxError, "rename the host kubeconfig"):
+                kubeconfigs.sync(settings, "ws", k3s_config=self.root / "not-read")
+            self.assertEqual((self.kube / name).read_text(), STATIC)
+            workspace = Workspace(self.root, self.root)
+            with mock.patch.object(runtime, "workspace_transition_lock") as lock:
+                with self.assertRaisesRegex(AgentBoxError, "rename the host kubeconfig"):
+                    runtime.prepare_k3s(settings, workspace, runtime.workspace_runtime_state(workspace))
+            lock.assert_not_called()
 
 
 class BoxTests(IsolatedKube):

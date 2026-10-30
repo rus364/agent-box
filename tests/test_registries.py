@@ -97,11 +97,11 @@ class FilteringTests(IsolatedSources):
                                               "other.example": {"auth": "unchosen"}}})
         problems = registries.sync(registry_config(["cr.yandex", "registry.b"]), "ws")
         self.assertEqual(problems, [])
-        self.assertEqual(self.rendered("auth.json"), {"auths": {
+        self.assertEqual(self.rendered("containers/auth.json"), {"auths": {
             "cr.yandex": {"auth": "runtime"}, "cr.yandex/folder/app": {"auth": "scoped"},
             "registry.b": {"auth": "saved"}}})
-        self.assertEqual(self.rendered("helm-registry.json"), {"auths": {"https://registry.b/v2/": {"auth": "helm"}}})
-        self.assertFalse((registries.runtime_dir("ws") / "helm-repositories.yaml").exists())
+        self.assertEqual(self.rendered("helm/registry/config.json"), {"auths": {"https://registry.b/v2/": {"auth": "helm"}}})
+        self.assertFalse((registries.runtime_dir("ws") / "helm/repositories.yaml").exists())
 
     def test_scoped_logins_follow_podmans_order_across_both_files(self):
         """Podman tries the files in order per image: a later scope counts unless an earlier key covers it."""
@@ -109,7 +109,7 @@ class FilteringTests(IsolatedSources):
         self.write(self.config_auth, {"auths": {"reg.a/team-b": {"auth": "b"}, "reg.a/team-a": {"auth": "stale"},
                                                 "https://reg.b/v2/": {"auth": "legacy"}, "reg.b/team": {"auth": "covered"}}})
         registries.sync(registry_config(["reg.a", "reg.b"]), "ws")
-        self.assertEqual(self.rendered("auth.json"), {"auths": {
+        self.assertEqual(self.rendered("containers/auth.json"), {"auths": {
             "reg.a/team-a": {"auth": "a"}, "reg.a/team-b": {"auth": "b"}, "reg.b": {"auth": "host"}}})
 
     def test_a_path_ending_like_a_legacy_key_covers_only_its_own_path(self):
@@ -117,26 +117,26 @@ class FilteringTests(IsolatedSources):
         self.write(self.runtime_auth, {"auths": {"reg.a/team/v2": {"auth": "team"}}})
         self.write(self.config_auth, {"auths": {"reg.a/other": {"auth": "other"}}})
         registries.sync(registry_config(["reg.a"]), "ws")
-        self.assertEqual(sorted(self.rendered("auth.json")["auths"]), ["reg.a/other", "reg.a/team/v2"])
+        self.assertEqual(sorted(self.rendered("containers/auth.json")["auths"]), ["reg.a/other", "reg.a/team/v2"])
 
     def test_a_nested_launch_reads_the_copy_its_box_was_given(self):
         """Inside a box HELM_REPOSITORY_CONFIG names agent-box's JSON copy, which must forward again."""
         self.write(self.repositories, REPOSITORIES)
         registries.sync(registry_config(repositories=["private"]), "outer")
-        copy = registries.runtime_dir("outer") / "helm-repositories.yaml"
+        copy = registries.runtime_dir("outer") / "helm/repositories.yaml"
         with mock.patch.object(registries, "HELM_REPOSITORY_CONFIG", copy):
             self.assertEqual(registries.sync(registry_config(repositories=["private"]), "nested"), [])
-        self.assertEqual(self.rendered("helm-repositories.yaml", "nested"), self.rendered("helm-repositories.yaml", "outer"))
+        self.assertEqual(self.rendered("helm/repositories.yaml", "nested"), self.rendered("helm/repositories.yaml", "outer"))
 
     def test_chosen_helm_repositories_keep_their_credentials_and_types(self):
         self.write(self.repositories, REPOSITORIES)
         self.assertEqual(registries.sync(registry_config(repositories=["private"]), "ws"), [])
-        rendered = self.rendered("helm-repositories.yaml")
+        rendered = self.rendered("helm/repositories.yaml")
         self.assertEqual([entry["name"] for entry in rendered["repositories"]], ["private"])
         entry = rendered["repositories"][0]
         self.assertEqual((entry["password"], entry["username"], entry["insecure_skip_tls_verify"],
                           entry["pass_credentials_all"]), ('p"a#ssA', "robot", False, True))
-        self.assertFalse((registries.runtime_dir("ws") / "auth.json").exists())
+        self.assertFalse((registries.runtime_dir("ws") / "containers/auth.json").exists())
 
     def test_quoted_and_commented_values_read_as_helm_wrote_them(self):
         public = {entry["name"]: entry for entry in registries.parse_repositories(REPOSITORIES)[0]}["public"]
@@ -151,19 +151,19 @@ class FilteringTests(IsolatedSources):
                            + "- name: private\n  password: mine\n")
                 self.assertEqual(registries.sync(registry_config(repositories=["private"]), "ws"), [])
                 self.assertEqual([(entry["name"], entry["password"]) for entry in
-                                  self.rendered("helm-repositories.yaml")["repositories"]], [("private", "mine")])
+                                  self.rendered("helm/repositories.yaml")["repositories"]], [("private", "mine")])
                 problems = registries.sync(registry_config(repositories=["other"]), "ws")
                 self.assertEqual(len(problems), 1)
                 self.assertIn("line 5", problems[0])
                 self.assertIn("the entry for other cannot be read", problems[0])
-                self.assertEqual(self.rendered("helm-repositories.yaml")["repositories"], [])
+                self.assertEqual(self.rendered("helm/repositories.yaml")["repositories"], [])
 
     def test_an_unreadable_entry_costs_only_itself(self):
         """One odd entry must not withhold every other repository; a nameless one is always reported."""
         self.write(self.repositories, "repositories:\n- url: https://x\n  password: &a x\n"
                                       "- name: kept\n  password: k\n")
         problems = registries.sync(registry_config(repositories=["kept"]), "ws")
-        self.assertEqual([entry["name"] for entry in self.rendered("helm-repositories.yaml")["repositories"]], ["kept"])
+        self.assertEqual([entry["name"] for entry in self.rendered("helm/repositories.yaml")["repositories"]], ["kept"])
         self.assertEqual(len(problems), 1)
         self.assertIn("line 3", problems[0])
         self.assertIn("an entry cannot be read", problems[0])
@@ -172,14 +172,14 @@ class FilteringTests(IsolatedSources):
         """Helm takes the first entry of a name, and an unreadable first one must not let the second stand in."""
         self.write(self.repositories, "repositories:\n- name: dup\n  password: first\n- name: dup\n  password: second\n")
         registries.sync(registry_config(repositories=["dup"]), "ws")
-        self.assertEqual([entry["password"] for entry in self.rendered("helm-repositories.yaml")["repositories"]], ["first"])
+        self.assertEqual([entry["password"] for entry in self.rendered("helm/repositories.yaml")["repositories"]], ["first"])
         self.write(self.repositories, "repositories:\n- name: dup\n  password: >\n    x\n- name: dup\n  password: second\n")
         problems = registries.sync(registry_config(repositories=["dup"]), "ws")
-        self.assertEqual(self.rendered("helm-repositories.yaml")["repositories"], [])
+        self.assertEqual(self.rendered("helm/repositories.yaml")["repositories"], [])
         self.assertEqual(len(problems), 1)
         self.write(self.repositories, "repositories:\n- name: dup\n  password: first\n- name: dup\n  password: >\n    x\n")
         self.assertEqual(registries.sync(registry_config(repositories=["dup"]), "ws"), [])
-        self.assertEqual([entry["password"] for entry in self.rendered("helm-repositories.yaml")["repositories"]], ["first"])
+        self.assertEqual([entry["password"] for entry in self.rendered("helm/repositories.yaml")["repositories"]], ["first"])
 
     def test_values_folded_onto_more_lines_read_as_one(self):
         """go-yaml wraps a long value containing spaces; refusing it lost the repository."""
@@ -226,14 +226,14 @@ class FilteringTests(IsolatedSources):
         self.write(self.repositories, "repositories:\n  key: value\n")
         problems = registries.sync(registry_config(repositories=["private"]), "ws")
         self.assertIn("no Helm repository is forwarded", problems[0])
-        self.assertEqual(self.rendered("helm-repositories.yaml")["repositories"], [])
+        self.assertEqual(self.rendered("helm/repositories.yaml")["repositories"], [])
 
     def test_rendered_copies_are_private_to_the_user(self):
         self.write(self.runtime_auth, {"auths": {"cr.yandex": {"auth": "runtime"}}})
         registries.sync(registry_config(["cr.yandex"]), "ws")
         directory = registries.runtime_dir("ws")
         self.assertEqual(directory.stat().st_mode & 0o777, 0o700)
-        self.assertEqual({path.stat().st_mode & 0o777 for path in directory.iterdir()}, {0o600})
+        self.assertEqual({path.stat().st_mode & 0o777 for path in directory.rglob("*") if path.is_file()}, {0o600})
 
     def test_a_renewed_host_login_replaces_the_copy_inside_the_mounted_directory(self):
         """The box mounts the directory, so only a replace within it reaches a running box."""
@@ -242,7 +242,7 @@ class FilteringTests(IsolatedSources):
         directory = registries.runtime_dir("ws").stat().st_ino
         self.write(self.runtime_auth, {"auths": {"cr.yandex": {"auth": "renewed"}}})
         registries.sync(registry_config(["cr.yandex"]), "ws")
-        self.assertEqual(self.rendered("auth.json"), {"auths": {"cr.yandex": {"auth": "renewed"}}})
+        self.assertEqual(self.rendered("containers/auth.json"), {"auths": {"cr.yandex": {"auth": "renewed"}}})
         self.assertEqual(registries.runtime_dir("ws").stat().st_ino, directory)
 
     def test_turning_forwarding_off_removes_the_copies(self):
@@ -252,7 +252,7 @@ class FilteringTests(IsolatedSources):
             registries.sync(registry_config(["cr.yandex"]), "ws")
             self.assertEqual(registries.sync(config, "ws"), [])
             self.assertFalse(registries.runtime_dir("ws").exists())
-            self.assertEqual((registries.mounts(config, "ws"), registries.container_env(config)), ([], []))
+            self.assertEqual(registries.mounts(config, "ws"), [])
 
 
 class SourceLocationTests(unittest.TestCase):
@@ -285,15 +285,15 @@ class DiagnosticTests(IsolatedSources):
         self.assertIn(f"Registry docker.io: the login in {self.runtime_auth} is kept by a credential helper", text)
         self.assertIn("Registry gone.example has no stored login", text)
         self.assertIn("Helm repository missing is not in", text)
-        self.assertEqual(self.rendered("auth.json"), {"auths": {}})
+        self.assertEqual(self.rendered("containers/auth.json"), {"auths": {}})
 
     def test_a_login_stored_for_one_tool_does_not_hide_the_others_helper(self):
         """Helm working says nothing about podman, whose auth file would stay silently empty."""
         self.write(self.runtime_auth, {"auths": {}, "credHelpers": {"cr.yandex": "yc"}})
         self.write(self.helm_auth, {"auths": {"cr.yandex": {"auth": "helm"}}})
         problems = registries.sync(registry_config(["cr.yandex"]), "ws")
-        self.assertEqual(self.rendered("helm-registry.json"), {"auths": {"cr.yandex": {"auth": "helm"}}})
-        self.assertEqual(self.rendered("auth.json"), {"auths": {}})
+        self.assertEqual(self.rendered("helm/registry/config.json"), {"auths": {"cr.yandex": {"auth": "helm"}}})
+        self.assertEqual(self.rendered("containers/auth.json"), {"auths": {}})
         self.assertEqual(len(problems), 1)
         self.assertIn(str(self.runtime_auth), problems[0])
 
@@ -348,14 +348,15 @@ class BoxTests(IsolatedSources):
         workspace = Workspace(Path("/project"), Path("/project"))
         state = runtime.workspace_runtime_state(workspace)
         args = runtime.container_lifetime_args(workspace, [], Path("/checkout"), config, runtime_state=state)
-        target = registries.CONTAINER_REGISTRY_RUNTIME_DIR
-        self.assertIn(f"type=bind,src={registries.runtime_dir(state.root.name)},dst={target},ro=true", args)
-        for name, file in (("REGISTRY_AUTH_FILE", "auth.json"), ("HELM_REGISTRY_CONFIG", "helm-registry.json"),
-                           ("HELM_REPOSITORY_CONFIG", "helm-repositories.yaml")):
-            self.assertIn(f"--env={name}={target / file}", args)
-        self.assertFalse(any("SECRET" in arg for arg in args))
+        root = registries.runtime_dir(state.root.name)
+        for source, target in ((root / "containers", runtime.HOST_HOME / ".config/containers"),
+                               (root / "helm", runtime.HOST_HOME / ".config/helm")):
+            self.assertIn(f"type=bind,src={source},dst={target},ro=true", args)
+        overrides = ("REGISTRY_AUTH_FILE", "HELM_REGISTRY_CONFIG", "HELM_REPOSITORY_CONFIG")
+        self.assertFalse(any("SECRET" in arg or any(arg.startswith(f"--env={key}=") for key in overrides)
+                             for arg in args))
         plain = runtime.container_lifetime_args(workspace, [], Path("/checkout"), Config(), runtime_state=state)
-        self.assertFalse(any(str(target) in arg for arg in plain))
+        self.assertFalse(any(str(root) in arg for arg in plain))
 
     def test_a_launch_refused_by_a_running_box_leaves_its_logins_alone(self):
         """--no-registries against a running box with logins must not delete them under it."""
@@ -368,7 +369,7 @@ class BoxTests(IsolatedSources):
                                side_effect=runtime.AgentBoxError("incompatible")):
             with self.assertRaises(runtime.AgentBoxError):
                 runtime.launch_in_workspace_container(spec, mock.Mock(), ["bash"], [])
-        self.assertEqual(self.rendered("auth.json"), {"auths": {"cr.yandex": {"auth": "runtime"}}})
+        self.assertEqual(self.rendered("containers/auth.json"), {"auths": {"cr.yandex": {"auth": "runtime"}}})
 
 
 class SessionSwitchTests(unittest.TestCase):

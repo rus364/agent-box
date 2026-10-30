@@ -139,12 +139,13 @@ class MiseStateAcrossBoxesTests(IsolatedRuntimeTest):
     def test_trusted_project_configs_outlive_the_box(self):
         """`mise trust` writes to mise's state directory; in the box's own home it died with
         the box and every project tool shim then failed as untrusted. It must sit inside the
-        persistent, shared mise data mount."""
+        persistent, shared mount at mise's standard state location."""
         with tempfile.TemporaryDirectory() as tmp:
             argv = runtime.container_argv(Workspace(Path(tmp), Path(tmp)), [], Path(tmp), ["codex"])
         data = f"type=bind,src={runtime.STATE_ROOT}/mise,dst={runtime.HOST_HOME}/.local/share/mise"
         self.assertIn(data, argv)
-        self.assertIn(f"--env=MISE_STATE_DIR={runtime.HOST_HOME}/.local/share/mise/state", argv)
+        self.assertIn(f"type=bind,src={runtime.STATE_ROOT}/mise-state,dst={runtime.HOST_HOME}/.local/state/mise", argv)
+        self.assertFalse(any(arg.startswith("--env=MISE_STATE_DIR=") for arg in argv))
 
 class ImageExistenceTests(unittest.TestCase):
     def test_missing_image_is_distinct_from_podman_storage_failure(self):

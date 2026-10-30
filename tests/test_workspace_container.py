@@ -18,8 +18,7 @@ class WorkspaceContainerIdentityTests(unittest.TestCase):
         """Even old settings must leave /tmp private; explicit file access remains available."""
         config = runtime.Config.from_dict({'box': {'host_tmp': True}})
         workspace = Workspace(Path('/project'), Path('/project'))
-        with mock.patch.object(runtime, 'XDG_CACHE_HOME', runtime.HOST_HOME / '.cache'), \
-             mock.patch.object(runtime.kubeconfigs, 'XDG_CACHE_HOME', runtime.HOST_HOME / '.cache'):
+        with mock.patch.object(runtime, 'XDG_CACHE_HOME', runtime.HOST_HOME / '.cache'):
             normal = runtime.build_mounts(workspace, [], runtime.PACKAGE_ROOT, config)
             self.assertNotIn('type=bind,src=/tmp,dst=/tmp', normal)
             for read_only in (False, True):

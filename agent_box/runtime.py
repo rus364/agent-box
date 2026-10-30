@@ -273,7 +273,7 @@ def codex_command(
 
 def ensure_state_dirs() -> None:
     for path in (
-        BUILD_STATE, STATE_ROOT / "uv", STATE_ROOT / "mise",
+        BUILD_STATE, STATE_ROOT / "uv", STATE_ROOT / "mise", STATE_ROOT / "mise-state",
         STATE_ROOT / "mise-config", STATE_ROOT / "cargo", STATE_ROOT / "rustup", NOTIFY_STATE_ROOT,
         STATE_ROOT / "runtime/workspaces", CODEX_HOME, CLAUDE_HOME,
     ):
@@ -923,7 +923,8 @@ def prepare_container_lifetime_state(
     runtime_state = runtime_state or legacy_runtime_state()
     ensure_state_dirs()
     if config.box.persistent_cache:
-        for path in (STATE_ROOT / "cache", XDG_CACHE_HOME / "claude-code", XDG_CACHE_HOME / "claude-cli-nodejs"):
+        for path in (STATE_ROOT / "cache", STATE_ROOT / "cache/bun",
+                     XDG_CACHE_HOME / "claude-code", XDG_CACHE_HOME / "claude-cli-nodejs"):
             path.mkdir(parents=True, exist_ok=True)
     seed_git_config(runtime_state.git, config)
     seed_state_dir(
@@ -947,6 +948,10 @@ def prepare_container_lifetime_state(
                          *kubeconfigs.mounts(config, runtime_state.root.name),
                          *cloud.mounts(config, runtime_state.root.name)]:
         source.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if kubeconfigs.mounts(config, runtime_state.root.name):
+        (kubeconfigs.runtime_dir(runtime_state.root.name) / "cache").mkdir(mode=0o700, exist_ok=True)
+        if config.box.persistent_cache:
+            (STATE_ROOT / "cache/kube").mkdir(mode=0o700, parents=True, exist_ok=True)
     if config.box.links.enabled:
         links.prepare(runtime_state.root.name)
     else:
@@ -1506,6 +1511,7 @@ def build_mounts(
         # persistent storage rather than the host's real ~/.cargo/~/.rustup.
         (STATE_ROOT / "uv", HOST_HOME / ".local/share/uv", False),
         (STATE_ROOT / "mise", HOST_HOME / ".local/share/mise", False),
+        (STATE_ROOT / "mise-state", HOST_HOME / ".local/state/mise", False),
         # `mise use -g` records its choice in the global config, not the data
         # directory; an installed tool without that choice is a dead shim. It
         # is the box's own, never the host's: the host's mise may name tools
@@ -1521,6 +1527,7 @@ def build_mounts(
     ]
     if config is not None and config.box.persistent_cache:
         pairs += [(STATE_ROOT / "cache", XDG_CACHE_HOME, False),
+                  (STATE_ROOT / "cache/bun", HOST_HOME / ".bun/install/cache", False),
                   (XDG_CACHE_HOME / "claude-code", XDG_CACHE_HOME / "claude-code", False),
                   (XDG_CACHE_HOME / "claude-cli-nodejs", XDG_CACHE_HOME / "claude-cli-nodejs", False)]
     if mount_workspace_runtime_state:
@@ -1557,6 +1564,8 @@ def build_mounts(
     pairs += tracker_mounts(config, runtime_state)
     pairs += registries.mounts(config, runtime_state.root.name)
     pairs += kubeconfigs.mounts(config, runtime_state.root.name)
+    if config.box.persistent_cache and kubeconfigs.mounts(config, runtime_state.root.name):
+        pairs.append((STATE_ROOT / "cache/kube", kubeconfigs.KUBECONFIG_DIR / "cache", False))
     pairs += cloud.mounts(config, runtime_state.root.name)
     if config.box.links.enabled:
         root = links.directory(runtime_state.root.name)
@@ -1774,7 +1783,7 @@ def k3s_box_args(
     runtime_state = runtime_state or workspace_runtime_state(workspace)
     port = k3s.api_port(workspace_identity(workspace))
     return [*network_arguments(config, int(port)),
-            f"--env=KUBECONFIG={k3s.kubeconfig_path(k3s_state_dir(runtime_state))}"]
+            f"--env=KUBECONFIG={kubeconfigs.CONTAINER_K3S_KUBECONFIG}"]
 
 
 def prepare_k3s(config: Config, workspace: Workspace, runtime_state: WorkspaceRuntimeState) -> None:
@@ -1784,6 +1793,7 @@ def prepare_k3s(config: Config, workspace: Workspace, runtime_state: WorkspaceRu
     part of the box's identity; under the transition lock, so two launches
     do not create the sidecar twice.
     """
+    kubeconfigs.validate(config)
     with workspace_transition_lock(workspace):
         host_k3s.verify(config, runtime_state.root)
         if config.box.k3s.enabled:
@@ -2004,6 +2014,7 @@ def container_lifetime_args(
     PATH, or any bind mount.
     """
     config = effective_config(runtime_config_base()) if config is None else config
+    runtime_state = runtime_state or legacy_runtime_state(workspace)
     home = HOST_HOME
     args = [
         "--userns=keep-id", *kvm_args(config, kvm), *audio_args(config),
@@ -2012,24 +2023,9 @@ def container_lifetime_args(
         f"--env=HOME={home}",
         f"--env=PATH={CONTAINER_RUNTIME_PATH}",
         f"--env=CODEX_HOME={CODEX_HOME}",
-        f"--env=GIT_CONFIG_GLOBAL={home}/.config/git/config",
-        f"--env=GH_CONFIG_DIR={home}/.config/gh",
-        f"--env=GLAB_CONFIG_DIR={home}/.config/glab-cli",
-        *registries.container_env(config),
-        *kubeconfigs.container_env(config),
         f"--env=XDG_CACHE_HOME={XDG_CACHE_HOME}",
         f"--env=UV_CACHE_DIR={XDG_CACHE_HOME}/uv",
-        # The official Telegram channel plugin runs its MCP server under Bun
-        # and installs its dependencies on first start; keep that download in
-        # the container-only cache so it survives across disposable runs.
-        f"--env=BUN_INSTALL_CACHE_DIR={XDG_CACHE_HOME}/bun",
         f"--env=MISE_DATA_DIR={home}/.local/share/mise",
-        # `mise trust` records live in the state directory; in the box's own
-        # home they died with it and every project tool shim failed as
-        # untrusted. Inside the persistent data mount, because a mount at
-        # ~/.local/state/mise would have Podman create ~/.local/state
-        # root-owned on any image without it, locking every other tool out.
-        f"--env=MISE_STATE_DIR={home}/.local/share/mise/state",
         "--env=DISABLE_AUTOUPDATER=1",
         # Notification credentials are deliberately *not* a container mount.
         # A workspace box is shared by shell/Claude/Codex, while notification
@@ -2044,6 +2040,10 @@ def container_lifetime_args(
         *tracker_host_args(config),
         *k3s_box_args(config, workspace, runtime_state),
     ]
+    if not config.box.persistent_cache and kubeconfigs.mounts(config, runtime_state.root.name):
+        # A writable child keeps kubectl's default cache usable without allowing
+        # edits to forwarded credentials or retaining disposable downloads.
+        args.append(f"--tmpfs={kubeconfigs.KUBECONFIG_DIR / 'cache'}:rw,mode=0700,uid={os.getuid()},gid={os.getgid()}")
     if config.box.links.enabled:
         link_state = runtime_state or legacy_runtime_state(workspace)
         policy = hashlib.sha256(json.dumps(config.box.links.to_dict(), sort_keys=True).encode()).hexdigest()[:16]
@@ -2852,7 +2852,9 @@ def launch_in_workspace_container(
         # Only now does the box match this launch: a launch refused for
         # mounting differently must not rewrite a running box's logins.
         for problem in [*registries.sync(spec.creation_config, spec.runtime_state.root.name),
-                        *kubeconfigs.sync(spec.creation_config, spec.runtime_state.root.name),
+                        *kubeconfigs.sync(spec.creation_config, spec.runtime_state.root.name,
+                                          k3s_config=k3s.kubeconfig_path(k3s_state_dir(spec.runtime_state))
+                                          if spec.creation_config.box.k3s.enabled else None),
                         *cloud.sync(spec.creation_config, spec.runtime_state.root.name)]:
             warn(problem)
         process = subprocess.Popen(exec_argv(spec.name, workspace, command, extra_env), env=process_env)

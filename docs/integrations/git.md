@@ -27,6 +27,11 @@ remotes on `github.com` are rewritten to HTTPS in the box's own Git
 configuration; your repository's `origin` and host configuration stay
 unchanged.
 
+The box uses standard config locations: `~/.config/git/config`,
+`~/.config/gh` and `~/.config/glab-cli`. Git, gh and glab discover these
+without agent-box setting `GIT_CONFIG_GLOBAL`, `GH_CONFIG_DIR` or
+`GLAB_CONFIG_DIR`.
+
 Only HTTPS GitHub authentication is forwarded. SSH keys and the host SSH agent
 are never mounted, so `Host key verification failed` inside the box means a
 remote still uses SSH — on `github.com` too while the token is off; use HTTPS

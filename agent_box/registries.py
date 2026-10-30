@@ -20,15 +20,18 @@ from pathlib import Path
 
 from .atomicio import atomic_write_json
 from .paths import (
-    CONTAINER_REGISTRY_RUNTIME_DIR,
+    CONTAINER_CONTAINERS_CONFIG_DIR,
+    CONTAINER_HELM_CONFIG_DIR,
     CONTAINERS_AUTH_FILES,
     HELM_REGISTRY_CONFIG,
     HELM_REPOSITORY_CONFIG,
     REGISTRY_RUNTIME_DIR,
 )
 
-#: Rendered file -> the variable that points its tools at it inside the box.
-AUTH_FILE, HELM_REGISTRY_FILE, HELM_REPOSITORIES_FILE = "auth.json", "helm-registry.json", "helm-repositories.yaml"
+#: Match the tools' standard layout so plain tools and scripts find the same copies.
+AUTH_FILE = "containers/auth.json"
+HELM_REGISTRY_FILE = "helm/registry/config.json"
+HELM_REPOSITORIES_FILE = "helm/repositories.yaml"
 
 
 def registry_host(key: str) -> str:
@@ -388,20 +391,11 @@ def mounts(config, workspace_id: str) -> list[tuple[Path, Path, bool]]:
     """The directory, never single files: an atomic replace must reach a running box."""
     if not config.credentials.registries.active:
         return []
-    return [(runtime_dir(workspace_id), CONTAINER_REGISTRY_RUNTIME_DIR, True)]
-
-
-def container_env(config) -> list[str]:
-    """Paths only; the credentials stay in the mounted files, out of Podman's argv."""
-    registries = config.credentials.registries
-    if not registries.active:
-        return []
-    files = []
-    if registries.hosts:
-        files += [("REGISTRY_AUTH_FILE", AUTH_FILE), ("HELM_REGISTRY_CONFIG", HELM_REGISTRY_FILE)]
-    if registries.helm_repositories:
-        files.append(("HELM_REPOSITORY_CONFIG", HELM_REPOSITORIES_FILE))
-    return [f"--env={name}={CONTAINER_REGISTRY_RUNTIME_DIR / file}" for name, file in files]
+    root = runtime_dir(workspace_id)
+    pairs = [(root / "helm", CONTAINER_HELM_CONFIG_DIR, True)]
+    if config.credentials.registries.hosts:
+        pairs.insert(0, (root / "containers", CONTAINER_CONTAINERS_CONFIG_DIR, True))
+    return pairs
 
 
 def sync(config, workspace_id: str) -> list[str]:
@@ -412,6 +406,10 @@ def sync(config, workspace_id: str) -> list[str]:
         return []
     directory.mkdir(parents=True, exist_ok=True)
     directory.chmod(0o700)
+    for name in (AUTH_FILE, HELM_REGISTRY_FILE, HELM_REPOSITORIES_FILE):
+        parent = (directory / name).parent
+        parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        parent.chmod(0o700)
     problems: list[str] = []
     sources = _auth_sources(problems)
     rendered = {"containers": {}, "helm": {}}

@@ -236,12 +236,14 @@ CONTAINERS_AUTH_FILES = ((expand_user(_REGISTRY_AUTH_FILE),) if _REGISTRY_AUTH_F
 HELM_REGISTRY_CONFIG = env_path("HELM_REGISTRY_CONFIG", XDG_CONFIG_HOME / "helm/registry/config.json")
 HELM_REPOSITORY_CONFIG = env_path("HELM_REPOSITORY_CONFIG", XDG_CONFIG_HOME / "helm/repositories.yaml")
 REGISTRY_RUNTIME_DIR = STATE_ROOT / "runtime/registries"
-CONTAINER_REGISTRY_RUNTIME_DIR = HOST_HOME / ".local/share/agent-box/runtime/registries"
+CONTAINER_CONTAINERS_CONFIG_DIR = HOST_HOME / ".config/containers"
+CONTAINER_HELM_CONFIG_DIR = HOST_HOME / ".config/helm"
 
 # Kubeconfigs offered for forwarding, and where the box gets the chosen ones:
 # the same ~/.kube, so a nested launch finds the copies its box was given.
 KUBECONFIG_DIR = HOST_HOME / ".kube"
 KUBECONFIG_RUNTIME_DIR = STATE_ROOT / "runtime/kubeconfigs"
+CONTAINER_K3S_KUBECONFIG = KUBECONFIG_DIR / "k3s.yaml"
 
 # Cloud CLI profiles offered for forwarding: yc reads ~/.config/yandex-cloud
 # whatever XDG_CONFIG_HOME says, and the box gets the chosen ones there too.

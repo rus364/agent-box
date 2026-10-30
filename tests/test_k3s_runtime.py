@@ -56,7 +56,7 @@ class BoxIdentityTests(K3sRuntimeTest):
     def test_the_box_reaches_the_cluster_through_loopback_and_a_read_only_kubeconfig(self):
         argv = self.spec(k3s_config()).create_argv
         self.assertIn("--network=pasta:-T,41234", argv)
-        self.assertIn(f"--env=KUBECONFIG={self.state / 'kubeconfig'}", argv)
+        self.assertIn(f"--env=KUBECONFIG={runtime.HOST_HOME / '.kube/k3s.yaml'}", argv)
         self.assertIn(f"type=bind,src={self.state},dst={self.state},ro=true", argv)
 
     def test_a_switched_off_cluster_leaves_the_box_untouched_and_asks_podman_nothing(self):

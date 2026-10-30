@@ -12,8 +12,8 @@ host stays the source of truth; changes made in the box disappear with it.
 
 - Copies are rendered into private per-workspace directories (mode 0700, files
   0600) and mounted read-only where the tool allows it (registries,
-  kubeconfigs) or writable where it must refresh tokens (`yc`, `aws`). Variables
-  carry paths only, so no credential appears in Podman's argv. Turning a
+  kubeconfigs) or writable where it must refresh tokens (`yc`, `aws`). Standard tool paths
+  expose the filtered copies without credential values in Podman's argv. Turning a
   forwarding off or emptying its list removes the copies and the mount.
 - A box keeps its creation-time switches and selections. Registry logins,
   kubeconfigs and cloud profiles are re-rendered from those choices at every
@@ -47,8 +47,10 @@ host stays the source of truth; changes made in the box disappear with it.
   without a YAML library, for the forms Helm writes (plain, quoted, wrapped and
   literal-block values); other forms are skipped with their line, and of two
   entries with one name the first counts, as in Helm. `REGISTRY_AUTH_FILE`,
-  `HELM_REGISTRY_CONFIG` and `HELM_REPOSITORY_CONFIG` are honoured, which is
-  also how a nested launch forwards what its box was given.
+  `HELM_REGISTRY_CONFIG` and `HELM_REPOSITORY_CONFIG` are honoured for host
+  source discovery, including nested launches. In-container copies
+  use `~/.config/containers/auth.json`, `~/.config/helm/registry/config.json`
+  and `~/.config/helm/repositories.yaml` without path overrides.
 - **Kubeconfigs.** Files are never merged into one `KUBECONFIG`, because
   kubeconfigs often reuse names such as `default` and kubectl silently takes
   the first match.

@@ -36,7 +36,10 @@ k9s --kubeconfig ~/.kube/prod.kubeconfig
 A symlink arrives as a plain file holding its target's content, wherever the
 target lives on the host.
 
-The files are never merged, and `KUBECONFIG` is not changed. Kubeconfigs from
+The files are never merged. With built-in k3s off, `KUBECONFIG` is not set.
+With it on, `KUBECONFIG` selects `~/.kube/k3s.yaml`; a selected host `config`
+keeps its name. Selecting a host `k3s.yaml` with k3s enabled is refused: rename
+that host file or disable k3s. The name `cache` is reserved for kubectl's cache directory. Kubeconfigs from
 different sources often reuse context and user names such as `default`, and
 with a merged `KUBECONFIG` kubectl takes the first match without saying so,
 so it could reach the wrong cluster.
@@ -53,8 +56,10 @@ default, as it is on the host.
 
 While forwarding is on, the box's `~/.kube` is read-only: `kubectl config
 use-context` and other kubeconfig edits fail, so pass `--context` instead.
-kubectl's cache follows the box's selected `XDG_CACHE_HOME/kube` through `KUBECACHEDIR`. With
-forwarding off, the box's `~/.kube` is an ordinary directory.
+kubectl uses its standard `~/.kube/cache`, overlaid writable without
+`KUBECACHEDIR`. It is a private tmpfs by default, or a shared host-backed cache
+when **Keep tool cache between boxes** is enabled. With forwarding and k3s off,
+the box's `~/.kube` is an ordinary directory.
 
 ## What does not work inside the box
 
@@ -102,8 +107,8 @@ reaches an already running box at the next `agent-box` launch for that
 project, without recreating the box. A launch nested inside a box finds the
 copies that box was given in its `~/.kube`.
 
-The running box retains the forwarding switch, selected files, mount and
-`KUBECACHEDIR` from creation. Later launches refresh only those files, even if
+The running box retains the forwarding switch, selected files and cache mounts
+from creation. Later launches refresh only those files, even if
 the saved selection changed. New choices take effect after `agent-box stop`
 and the next launch; an explicit conflicting switch requires that restart.
 

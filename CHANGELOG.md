@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Put forwarded registry and Helm credentials at their standard tool paths,
+  preserving selected-only copies, read-only directory mounts and atomic refresh.
+  Use Git/gh/glab default config lookup, standard kubectl and Bun caches, and
+  mise's standard state directory. Built-in k3s uses `~/.kube/k3s.yaml` through
+  `KUBECONFIG`; a selected host file with that name is refused rather than hidden.
+  Rebuild the workspace image and explicitly stop/relaunch to adopt the new paths;
+  existing runtimes and prior persistent caches/trust records are left untouched.
+
 - Include host keyring access/job tokens in opted-in glab configuration copies.
   Host glab and an unlocked keyring are required for keyring-backed hosts; no
   D-Bus or host keyring is mounted. OAuth refresh tokens are omitted to preserve

@@ -44,8 +44,11 @@ agent-box claude
 ```
 
 The first launch starts the cluster and waits for a Ready node, about ten
-seconds once the image is present. Inside the box `KUBECONFIG` points at the
-cluster, and the context is named `agent-box`:
+seconds once the image is present. Inside the box the generated kubeconfig is
+read-only at `~/.kube/k3s.yaml`, selected through `KUBECONFIG`, and the context
+is named `agent-box`. Forwarded host files keep their names, including
+`~/.kube/config`. A selected host `k3s.yaml` conflicts with the generated file;
+rename it or disable k3s before launching:
 
 ```bash
 kubectl get nodes

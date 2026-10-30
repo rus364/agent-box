@@ -300,7 +300,9 @@ RUN set -eux; \
         "${USER_HOME}" \
         "${USER_HOME}/.cache" \
         "${USER_HOME}/.local/share/uv" \
-        "${USER_HOME}/.local/share/mise"; \
+        "${USER_HOME}/.local/share/mise" \
+        "${USER_HOME}/.local/state" \
+        "${USER_HOME}/.bun/install"; \
     chown -R "${USER_UID}:${USER_GID}" "${USER_HOME}"; \
     install -d -o "${USER_UID}" -g "${USER_GID}" -m 0700 "${USER_CACHE_HOME:-${USER_HOME}/.cache}"
 
@@ -734,7 +736,6 @@ USER ${USER_NAME}
 
 ENV HOME=${USER_HOME} \
     MISE_DATA_DIR=${USER_HOME}/.local/share/mise \
-    MISE_STATE_DIR=${USER_HOME}/.local/share/mise/state \
     UV_CACHE_DIR=${USER_HOME}/.cache/uv
 
 # No fixed WORKDIR: agent_box.runtime always passes an explicit --workdir

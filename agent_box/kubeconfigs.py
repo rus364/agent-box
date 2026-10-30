@@ -4,9 +4,9 @@ Whole files are copied byte for byte and never merged: the same context,
 cluster and user names recur across a user's kubeconfigs, and a merged
 ``KUBECONFIG`` would silently send kubectl to whichever file came first.
 Each copy keeps its file name in a directory the box mounts read-only as
-its own ``~/.kube``, so paths and commands match the host's. ``KUBECONFIG``
-is left to k3s: with it on, its cluster stays the default and a forwarded
-``~/.kube/config`` is used only when named. The copies are re-rendered at every launch, so a file changed on the host
+its own ``~/.kube``, so paths and commands match the host's. Built-in k3s
+uses ``~/.kube/k3s.yaml`` through ``KUBECONFIG``; the standard cache directory
+is overlaid writable. The copies are re-rendered at every launch, so a file changed on the host
 reaches a running box through the atomic replace inside the mounted
 directory; a mounted file would keep the old inode.
 
@@ -23,7 +23,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .atomicio import atomic_write_bytes
-from .paths import KUBECONFIG_DIR, KUBECONFIG_RUNTIME_DIR, XDG_CACHE_HOME, YC_INSTALLER_BIN
+from .paths import CONTAINER_K3S_KUBECONFIG, KUBECONFIG_DIR, KUBECONFIG_RUNTIME_DIR, YC_INSTALLER_BIN
+from .errors import AgentBoxError
 
 #: Larger files in ~/.kube are not offered: no kubeconfig is this big, a stray archive may be.
 MAX_SCANNED = 1 << 20
@@ -270,30 +271,36 @@ def runtime_dir(workspace_id: str) -> Path:
     return KUBECONFIG_RUNTIME_DIR / "workspaces" / workspace_id
 
 
+def validate(config) -> None:
+    """Reserved standard paths must not hide a selected host credential."""
+    if config.credentials.kubernetes.active and "cache" in config.credentials.kubernetes.files:
+        raise AgentBoxError("Selected kubeconfig cache conflicts with kubectl's ~/.kube/cache directory; "
+                            "rename the host kubeconfig")
+    if (config.box.k3s.enabled and config.credentials.kubernetes.active
+            and CONTAINER_K3S_KUBECONFIG.name in config.credentials.kubernetes.files):
+        raise AgentBoxError("Built-in k3s and the selected host k3s.yaml share ~/.kube/k3s.yaml; "
+                            "rename the host kubeconfig or disable k3s with --no-k3s")
+
+
 def mounts(config, workspace_id: str) -> list[tuple[Path, Path, bool]]:
     """The directory, never single files: an atomic replace must reach a running box."""
-    if not config.credentials.kubernetes.active:
+    validate(config)
+    if not (config.credentials.kubernetes.active or config.box.k3s.enabled):
         return []
     return [(runtime_dir(workspace_id), KUBECONFIG_DIR, True)]
 
 
-def container_env(config) -> list[str]:
-    """kubectl's cache belongs in the box's selected cache, outside read-only ``~/.kube``."""
-    if not config.credentials.kubernetes.active:
-        return []
-    return [f"--env=KUBECACHEDIR={XDG_CACHE_HOME / 'kube'}"]
-
-
-def sync(config, workspace_id: str) -> list[str]:
+def sync(config, workspace_id: str, *, k3s_config: Path | None = None) -> list[str]:
     """Copy the chosen kubeconfigs for one workspace, or remove them; return what may not work."""
     chosen, directory = config.credentials.kubernetes, runtime_dir(workspace_id)
-    if not chosen.active:
+    if not mounts(config, workspace_id):
         shutil.rmtree(directory, ignore_errors=True)
         return []
     directory.mkdir(parents=True, exist_ok=True)
     directory.chmod(0o700)
     problems: list[str] = []
-    for name in chosen.files:
+    names = chosen.files if chosen.active else []
+    for name in names:
         source = KUBECONFIG_DIR / name
         try:
             # A symlink is followed: the box gets its target's content as a plain file.
@@ -312,7 +319,13 @@ def sync(config, workspace_id: str) -> list[str]:
         summary = describe(data.decode("utf-8", "replace"))
         problems += [f"Kubeconfig {name}: {warning}" for warning in
                      [*summary.warnings, *_yc_warnings(config, summary), *_aws_warnings(config, summary)]]
+    kept = {*names, "cache"}
+    if config.box.k3s.enabled:
+        if k3s_config is None:
+            raise AgentBoxError("Built-in k3s kubeconfig source is missing")
+        atomic_write_bytes(directory / CONTAINER_K3S_KUBECONFIG.name, k3s_config.read_bytes(), 0o600)
+        kept.add(CONTAINER_K3S_KUBECONFIG.name)
     for path in directory.iterdir():
-        if path.name not in chosen.files:
+        if path.name not in kept:
             path.unlink(missing_ok=True)
     return problems

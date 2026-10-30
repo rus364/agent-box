@@ -31,7 +31,8 @@ Project-specific toolchains belong in the project, declared through `mise`,
 not in an image everyone shares. Tools you add with `mise use -g` and project
 configurations you `mise trust` survive box recreation: mise's installs,
 global configuration and trust records live in agent-box state shared by
-every box, separate from the host's own mise.
+every box, separate from the host's own mise. Inside the box they use
+`~/.local/share/mise`, `~/.config/mise` and `~/.local/state/mise`.
 
 General tool caches (`~/.cache`, or the configured `XDG_CACHE_HOME`, including uv
 downloads and temporary `uvx` environments) stay in the workspace container's
@@ -48,7 +49,11 @@ explicitly enable persistence. Agent-box does not relocate the cache or add a
 separate storage object to hide that conflict.
 Enable **Workspace box → Keep tool cache
 between boxes** (`box.persistent_cache`) to reuse a shared host-backed cache.
-With persistence off, later boxes may need network access to download it again.
+Bun uses its standard `~/.bun/install/cache`; the persistence switch covers
+that cache too. Forwarded kubeconfigs keep `~/.kube` read-only while its
+standard `cache` child is overlaid writable (private tmpfs by default, shared
+host-backed directory with persistence enabled). With persistence off, later
+boxes may need network access to download caches again.
 Installed Python versions/uv tools, mise tools/configuration/trust and Cargo/Rust
 installations remain persistent independently of that switch. Host sessions use
 their normal host cache paths.

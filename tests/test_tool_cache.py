@@ -48,12 +48,14 @@ class ToolCacheMountTests(IsolatedRuntimeTest):
             for persistent in (False, True):
                 settings.box.persistent_cache = persistent
                 cache = runtime.XDG_CACHE_HOME
-                with mock.patch.object(runtime.kubeconfigs, "XDG_CACHE_HOME", cache):
-                    argv = runtime.container_lifetime_args(workspace, [], Path(tmp), config=settings)
+                argv = runtime.container_lifetime_args(workspace, [], Path(tmp), config=settings)
                 self.assertIn(f"--env=XDG_CACHE_HOME={cache}", argv)
                 self.assertIn(f"--env=UV_CACHE_DIR={cache}/uv", argv)
-                self.assertIn(f"--env=BUN_INSTALL_CACHE_DIR={cache}/bun", argv)
-                self.assertIn(f"--env=KUBECACHEDIR={cache}/kube", argv)
+                self.assertFalse(any(arg.startswith(("--env=BUN_INSTALL_CACHE_DIR=", "--env=KUBECACHEDIR="))
+                                     for arg in argv))
+                self.assertEqual(any(arg.startswith("--tmpfs=") for arg in argv), not persistent)
+                self.assertEqual(f"type=bind,src={runtime.STATE_ROOT / 'cache/kube'},"
+                                 f"dst={runtime.HOST_HOME / '.kube/cache'}" in argv, persistent)
                 self.assertFalse(any(arg.startswith("type=volume,") for arg in argv))
 
     def test_session_snapshot_retains_both_explicit_cache_choices(self):
@@ -79,6 +81,7 @@ class ToolCacheMountTests(IsolatedRuntimeTest):
                     argv = runtime.build_mounts(workspace, [], root, settings)
                     for source, destination in (
                         (runtime.STATE_ROOT / "cache", runtime.XDG_CACHE_HOME),
+                        (runtime.STATE_ROOT / "cache/bun", runtime.HOST_HOME / ".bun/install/cache"),
                         (runtime.XDG_CACHE_HOME / "claude-code", runtime.XDG_CACHE_HOME / "claude-code"),
                         (runtime.XDG_CACHE_HOME / "claude-cli-nodejs", runtime.XDG_CACHE_HOME / "claude-cli-nodejs"),
                     ):
