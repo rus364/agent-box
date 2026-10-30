@@ -1498,10 +1498,21 @@ def build_mounts(
     # that deterministically instead of issuing two overlapping podman
     # --mount flags for the same tree.
     project_mounts = plan_mounts([MountSpec(workspace.host_root, False, "project root"), *extra_mounts])
-    if kubeconfigs.mounts(config, runtime_state.root.name) and any(
-            mount.path == kubeconfigs.KUBECONFIG_DIR / "cache" for mount in project_mounts):
-        raise AgentBoxError("An explicit mount at ~/.kube/cache conflicts with the managed kubectl cache; "
-                            "remove that mount or disable kubeconfig forwarding and k3s")
+    kube_pairs = kubeconfigs.mounts(config, runtime_state.root.name)
+    registry_pairs = registries.mounts(config, runtime_state.root.name)
+    # Managed credential copies sit at standard tool paths. An explicit mount
+    # at one of them would win the destination below, and one beneath them
+    # would overlay it, replacing the filtered read-only copy (or the kubectl
+    # cache overlay) with host data; refuse both. Parent mounts stay allowed:
+    # the managed directory is layered over them.
+    managed = [(dst, "forwarded kubeconfigs, k3s and kubectl cache", "kubeconfig forwarding and k3s")
+               for _, dst, _ in kube_pairs]
+    managed += [(dst, "forwarded registry logins", "registry forwarding") for _, dst, _ in registry_pairs]
+    for mount in project_mounts:
+        for dst, what, switch in managed:
+            if mount.path.is_relative_to(dst):
+                raise AgentBoxError(f"An explicit mount at {mount.path} conflicts with the managed {what} "
+                                    f"in {dst}; remove that mount or disable {switch}")
     pairs: list[tuple[Path, Path, bool]] = [
         # Agent homes intentionally remain host-backed and shared: they hold
         # the user's provider authentication and durable agent settings. Git
@@ -1564,9 +1575,9 @@ def build_mounts(
 
     pairs += agent_tree_mounts()
     pairs += tracker_mounts(config, runtime_state)
-    pairs += registries.mounts(config, runtime_state.root.name)
-    pairs += kubeconfigs.mounts(config, runtime_state.root.name)
-    if config.box.persistent_cache and kubeconfigs.mounts(config, runtime_state.root.name):
+    pairs += registry_pairs
+    pairs += kube_pairs
+    if config.box.persistent_cache and kube_pairs:
         pairs.append((STATE_ROOT / "cache/kube", kubeconfigs.KUBECONFIG_DIR / "cache", False))
     pairs += cloud.mounts(config, runtime_state.root.name)
     if config.box.links.enabled:

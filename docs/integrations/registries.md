@@ -51,6 +51,9 @@ such as a Yandex IAM token after 12 hours, reaches an already running box at
 the next `agent-box` launch for that project, without recreating it. The box
 keeps its own Helm index cache; refresh it with `helm repo update`. The forwarded
 files are read-only: renew those logins on the host, then launch agent-box again.
+An explicit mount at or below a managed `~/.config/containers` or
+`~/.config/helm` would replace the filtered copy with host data and is refused;
+a parent mount such as `~/.config` stays allowed.
 
 The running box retains the forwarding switch, chosen hosts and repositories,
 mounts from creation. Later launches refresh only those choices,

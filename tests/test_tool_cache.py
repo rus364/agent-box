@@ -23,8 +23,34 @@ class ToolCacheMountTests(IsolatedRuntimeTest):
         mount = MountSpec(runtime.HOST_HOME / ".kube/cache", False)
         for persistent in (False, True):
             settings.box.persistent_cache = persistent
-            with self.assertRaisesRegex(AgentBoxError, "conflicts with the managed kubectl cache"):
+            with self.assertRaisesRegex(AgentBoxError, "conflicts with the managed .*kubectl cache"):
                 runtime.build_mounts(workspace, [mount], runtime.PACKAGE_ROOT, settings)
+
+    def test_explicit_mount_cannot_replace_managed_credential_copies(self):
+        """build_mounts keeps the first mount per destination, so an explicit
+        mount at or beneath a standard credential directory would silently hand
+        the box host data instead of the filtered copy: the host's whole
+        auth.json, or a missing or host k3s.yaml instead of k3s's kubeconfig."""
+        from agent_box.errors import AgentBoxError
+        from agent_box.mounts import MountSpec
+        settings = config.Config()
+        settings.box.k3s.enabled = True
+        settings.credentials.registries.enabled = True
+        settings.credentials.registries.hosts = ["registry.example"]
+        workspace = Workspace(Path("/project"), Path("/project"))
+        home = runtime.HOST_HOME
+        for path in (home / ".kube", home / ".kube/k3s.yaml", home / ".config/containers",
+                     home / ".config/containers/auth.json", home / ".config/helm"):
+            with self.subTest(path=path), self.assertRaisesRegex(AgentBoxError, f"explicit mount at {path} conflicts"):
+                runtime.build_mounts(workspace, [MountSpec(path, False)], runtime.PACKAGE_ROOT, settings)
+        # A parent mount stays allowed: the managed directories are layered over it.
+        argv = runtime.build_mounts(workspace, [MountSpec(home / ".config", False)], runtime.PACKAGE_ROOT, settings)
+        self.assertIn(f"type=bind,src={runtime.registries.runtime_dir(runtime.legacy_runtime_state(workspace).root.name)}"
+                      f"/containers,dst={home / '.config/containers'},ro=true", argv)
+        # Without forwarding these are ordinary paths the user may mount.
+        argv = runtime.build_mounts(workspace, [MountSpec(home / ".kube", False), MountSpec(home / ".config/helm", False)],
+                                    runtime.PACKAGE_ROOT, config.Config())
+        self.assertIn(f"type=bind,src={home / '.kube'},dst={home / '.kube'}", argv)
 
     def test_installed_tool_mount_cannot_capture_a_relocated_disposable_cache(self):
         """Relocation beneath durable tool data must not silently persist downloads."""
