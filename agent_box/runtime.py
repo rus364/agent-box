@@ -923,8 +923,7 @@ def prepare_container_lifetime_state(
     runtime_state = runtime_state or legacy_runtime_state()
     ensure_state_dirs()
     if config.box.persistent_cache:
-        for path in (STATE_ROOT / "cache", STATE_ROOT / "cache/bun",
-                     XDG_CACHE_HOME / "claude-code", XDG_CACHE_HOME / "claude-cli-nodejs"):
+        for path in (STATE_ROOT / "cache", XDG_CACHE_HOME / "claude-code", XDG_CACHE_HOME / "claude-cli-nodejs"):
             path.mkdir(parents=True, exist_ok=True)
     seed_git_config(runtime_state.git, config)
     seed_state_dir(
@@ -1531,7 +1530,6 @@ def build_mounts(
     ]
     if config is not None and config.box.persistent_cache:
         pairs += [(STATE_ROOT / "cache", XDG_CACHE_HOME, False),
-                  (STATE_ROOT / "cache/bun", HOST_HOME / ".bun/install/cache", False),
                   (XDG_CACHE_HOME / "claude-code", XDG_CACHE_HOME / "claude-code", False),
                   (XDG_CACHE_HOME / "claude-cli-nodejs", XDG_CACHE_HOME / "claude-cli-nodejs", False)]
     if mount_workspace_runtime_state:
@@ -1577,13 +1575,12 @@ def build_mounts(
 
     if not config.box.persistent_cache:
         destinations = [mount.path for mount in project_mounts] + [dst for _, dst, _ in pairs]
-        for cache in (XDG_CACHE_HOME, HOST_HOME / ".bun/install/cache"):
-            covering = next((dst for dst in destinations if cache.is_relative_to(dst)), None)
-            if covering is not None:
-                raise AgentBoxError(
-                    f"Host mount {covering} includes the disposable tool cache {cache}. "
-                    "Choose a different cache path or a more specific workspace/mount, "
-                    "or enable Workspace box > Keep tool cache between boxes")
+        covering = next((dst for dst in destinations if XDG_CACHE_HOME.is_relative_to(dst)), None)
+        if covering is not None:
+            raise AgentBoxError(
+                f"Host mount {covering} includes the disposable tool cache {XDG_CACHE_HOME}. "
+                "Choose a different cache path or a more specific workspace/mount, "
+                "or enable Workspace box > Keep tool cache between boxes")
 
     out = []
     seen_paths: set[Path] = set()

@@ -41,8 +41,7 @@ cache mount, volume or host directory is created. Removing the container removes
 its cache. Concurrent sessions in the same box share that cache until the box is removed.
 The image prepares the configured cache directory with the workspace user's
 ownership, including paths outside the home; changing that path rebuilds the image.
-If a workspace or another host mount includes an active disposable cache path
-(`XDG_CACHE_HOME` or `~/.bun/install/cache`, for example,
+If a workspace or another host mount includes the cache path itself (for example,
 the entire home directory or a persistent tool directory), a disposable cache
 would actually write to the host. That conflicting selection is refused:
 choose a different cache path, a more specific project/mount or
@@ -50,8 +49,8 @@ explicitly enable persistence. Agent-box does not relocate the cache or add a
 separate storage object to hide that conflict.
 Enable **Workspace box → Keep tool cache
 between boxes** (`box.persistent_cache`) to reuse a shared host-backed cache.
-Bun uses its standard `~/.bun/install/cache`; the persistence switch covers
-that cache too. Forwarded kubeconfigs keep `~/.kube` read-only while its
+Bun uses its own default cache lookup under `XDG_CACHE_HOME`, without
+`BUN_INSTALL_CACHE_DIR`; the persistence switch covers that cache too. Forwarded kubeconfigs keep `~/.kube` read-only while its
 standard `cache` child is overlaid writable (private tmpfs by default, shared
 host-backed directory with persistence enabled). With persistence off, later
 boxes may need network access to download caches again.

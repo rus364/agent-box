@@ -26,20 +26,6 @@ class ToolCacheMountTests(IsolatedRuntimeTest):
             with self.assertRaisesRegex(AgentBoxError, "conflicts with the managed kubectl cache"):
                 runtime.build_mounts(workspace, [mount], runtime.PACKAGE_ROOT, settings)
 
-    def test_host_bun_mount_cannot_capture_the_standard_disposable_cache(self):
-        """Removing Bun's path override must not make default downloads write to the host."""
-        from agent_box.errors import AgentBoxError
-        from agent_box.mounts import MountSpec
-        settings = config.Config()
-        workspace = Workspace(Path("/project"), Path("/project"))
-        mount = MountSpec(runtime.HOST_HOME / ".bun", False)
-        with self.assertRaisesRegex(AgentBoxError, "includes the disposable tool cache.*bun/install/cache"):
-            runtime.build_mounts(workspace, [mount], runtime.PACKAGE_ROOT, settings)
-        settings.box.persistent_cache = True
-        self.assertIn(f"type=bind,src={runtime.STATE_ROOT / 'cache/bun'},"
-                      f"dst={runtime.HOST_HOME / '.bun/install/cache'}",
-                      runtime.build_mounts(workspace, [mount], runtime.PACKAGE_ROOT, settings))
-
     def test_installed_tool_mount_cannot_capture_a_relocated_disposable_cache(self):
         """Relocation beneath durable tool data must not silently persist downloads."""
         from agent_box.errors import AgentBoxError
@@ -109,7 +95,6 @@ class ToolCacheMountTests(IsolatedRuntimeTest):
                     argv = runtime.build_mounts(workspace, [], root, settings)
                     for source, destination in (
                         (runtime.STATE_ROOT / "cache", runtime.XDG_CACHE_HOME),
-                        (runtime.STATE_ROOT / "cache/bun", runtime.HOST_HOME / ".bun/install/cache"),
                         (runtime.XDG_CACHE_HOME / "claude-code", runtime.XDG_CACHE_HOME / "claude-code"),
                         (runtime.XDG_CACHE_HOME / "claude-cli-nodejs", runtime.XDG_CACHE_HOME / "claude-cli-nodejs"),
                     ):
