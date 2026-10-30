@@ -2059,7 +2059,8 @@ def container_lifetime_args(
     if not config.box.persistent_cache and kubeconfigs.mounts(config, runtime_state.root.name):
         # A writable child keeps kubectl's default cache usable without allowing
         # edits to forwarded credentials or retaining disposable downloads.
-        args.append(f"--tmpfs={kubeconfigs.KUBECONFIG_DIR / 'cache'}:rw,mode=0700,uid={os.getuid()},gid={os.getgid()}")
+        # Podman refuses tmpfs uid=/gid= options; U chowns it to the box user.
+        args.append(f"--tmpfs={kubeconfigs.KUBECONFIG_DIR / 'cache'}:rw,mode=0700,U")
     if config.box.links.enabled:
         link_state = runtime_state or legacy_runtime_state(workspace)
         policy = hashlib.sha256(json.dumps(config.box.links.to_dict(), sort_keys=True).encode()).hexdigest()[:16]

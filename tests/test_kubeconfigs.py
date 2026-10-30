@@ -317,6 +317,15 @@ class BoxTargetTests(unittest.TestCase):
         plain = runtime.container_lifetime_args(workspace, [], Path("/checkout"), Config(), runtime_state=state)
         self.assertFalse(any(f"dst={target}," in arg or "KUBECACHEDIR" in arg for arg in plain))
 
+    def test_disposable_kube_cache_uses_only_tmpfs_options_podman_accepts(self):
+        """Podman 6 refuses tmpfs uid=/gid= ("unknown mount option") before creating
+        the box, so every kubeconfig or k3s launch failed; its U option instead gives
+        the box user the private writable cache under the read-only ~/.kube."""
+        workspace = Workspace(Path("/project"), Path("/project"))
+        args = runtime.container_lifetime_args(workspace, [], Path("/checkout"), kube_config(["prod.kubeconfig"]),
+                                               runtime_state=runtime.workspace_runtime_state(workspace))
+        self.assertIn(f"--tmpfs={runtime.HOST_HOME / '.kube/cache'}:rw,mode=0700,U", args)
+
 
 class K3sStandardPathTests(IsolatedKube):
     def test_k3s_refresh_preserves_host_config_and_standard_cache(self):
