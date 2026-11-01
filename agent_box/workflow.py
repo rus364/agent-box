@@ -124,12 +124,17 @@ def instruction_imports(text):
             re.findall(r'''(?<![\w\\'"`])@((?:\\ |[^\s`'"<>()[\]{}\\])+)''', prose)]
 
 
-def repository_instruction_evidence(root, settings=None):
-    """Snapshot mandatory imports once, bounded before they reach any role's context."""
+def repository_instruction_evidence(root, settings=None, *, reading=False):
+    """Snapshot mandatory imports once, bounded before they reach any role's context.
+
+    Inline roles share workflow.text_max_bytes; a reviewer pages them as required
+    reading, so its instructions are bounded by that reading instead.
+    """
     from .config import WorkflowConfig
     from .paths import HOST_HOME
     from .text_delivery import check_size
     settings = settings or WorkflowConfig()
+    bound = REVIEW_READING_MAX_BYTES if reading else settings.text_max_bytes
     root = Path(root).absolute()
     pending = [(root / name, 0) for name in repository_instruction_paths(root)]
     result, seen, size = [], set(), 0
@@ -145,9 +150,12 @@ def repository_instruction_evidence(root, settings=None):
             if depth > 4:
                 raise AgentBoxError(f"Repository instruction import {name} exceeds four hops; shorten the import chain")
             with path.open("rb") as stream:
-                raw = stream.read(settings.text_max_bytes - size + 1)
+                raw = stream.read(bound - size + 1)
             size += len(raw)
-            check_size(size, settings, "repository instructions including imports", lower_bound=True)
+            if not reading:
+                check_size(size, settings, "repository instructions including imports", lower_bound=True)
+            elif size > bound:
+                raise reading_refusal(size, lower_bound=True)
             text = raw.decode("utf-8")
         except (OSError, UnicodeError) as exc:
             raise AgentBoxError(f"Cannot read repository instruction {name}: {exc}") from exc
@@ -156,6 +164,15 @@ def repository_instruction_evidence(root, settings=None):
             source = HOST_HOME / imported[2:] if imported.startswith("~/") else Path(imported)
             pending.append((source if source.is_absolute() else path.parent / source, depth + 1))
     return result
+
+
+def reading_refusal(size, *, lower_bound=False):
+    observed = f"at least {size}" if lower_bound else str(size)
+    return AgentBoxError(
+        f"TEXT_LIMIT_EXCEEDED: required review reading: {observed} UTF-8 bytes; fixed bound "
+        f"{REVIEW_READING_MAX_BYTES}. Stop this delivery and tell the user. Do not truncate or split it, and "
+        "workflow.text_max_bytes does not apply; the user must decide how to reduce the review's scope "
+        "(fewer or shorter related task descriptions or repository instructions).")
 
 
 def tree(adapter, task):
@@ -1244,7 +1261,7 @@ def read_delegation_input(root, descriptor):
 
 
 def write_review_evidence(root, task_id, delegation, boundaries,
-                          descriptions, author_report, recorded_validation, text_settings):
+                          descriptions, author_report, recorded_validation):
     """Materialize one round without retiring evidence another reviewer may be reading."""
     path = review_evidence_path(root, task_id, delegation)
     path.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -1259,7 +1276,7 @@ def write_review_evidence(root, task_id, delegation, boundaries,
             "recorded-validation.json": json.dumps(recorded_validation, ensure_ascii=False, indent=2) + "\n",
             **({"author-report.md": author_report} if author_report else {}),
         }
-        instructions = repository_instruction_evidence(root, text_settings)
+        instructions = repository_instruction_evidence(root, reading=True)
         instruction_files = [(name, name if name in INSTRUCTION_FILES else f"instruction-{index}.md", value)
                              for index, (name, value) in enumerate(instructions)]
         manifest = {
@@ -1278,11 +1295,7 @@ def write_review_evidence(root, task_id, delegation, boundaries,
                    {"name": "recorded-validation.json", "path": str(path / "recorded-validation.json")}]
         raw, pages = required_reading(path, sources)
         if len(raw) > REVIEW_READING_MAX_BYTES:
-            raise AgentBoxError(
-                f"TEXT_LIMIT_EXCEEDED: required review reading: {len(raw)} UTF-8 bytes; fixed bound "
-                f"{REVIEW_READING_MAX_BYTES}. Stop this delivery and tell the user. Do not truncate or split it, and "
-                "workflow.text_max_bytes does not apply; the user must decide how to reduce the review's scope "
-                "(fewer or shorter related task descriptions or repository instructions).")
+            raise reading_refusal(len(raw))
         for name, content in pages:
             written.add(name)
             atomic_write_bytes(path / name, content, 0o400)
@@ -1348,7 +1361,7 @@ def reviewer_handoff(root, base, task, parent, tasks, brief, saved, review_conte
                   "head_commit": head, "diff_range": diff_range}
     evidence_path, manifest_sha256 = write_review_evidence(
         root, task.id, delegation, boundaries, review_descriptions(task, parent, tasks), brief,
-        saved.get("validation"), text_settings)
+        saved.get("validation"))
     reading = json.loads((evidence_path / "manifest.json").read_bytes())["required_reading"]
     handoff = {
         "task_description": str(evidence_path / "task.md"),

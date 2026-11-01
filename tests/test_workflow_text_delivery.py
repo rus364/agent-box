@@ -69,18 +69,24 @@ class WorkflowTextDeliveryTests(WorkflowCase):
 
     def test_required_reading_above_its_fixed_bound_refuses_before_a_round_is_reserved(self):
         """Mandatory reading that would crowd out the review stops for a scope decision, not a limit increase."""
-        (self.root / "AGENTS.md").write_text("Rule.\n" * 100)
-        workflow.gw.git(self.root, "add", ".")
-        workflow.gw.git(self.root, "commit", "-m", "instructions")
+        child = Task("2", "1", "Child", parent="1", description="Child rule.\n" * 40)
+        self.task.children = ["2"]
+        self.adapter.get.side_effect = {"1": self.task, "2": child}.get
         inputs = workflow.WORKFLOW_STATE / "review-inputs"
-        for flags in ((), ("--native",)):
-            with self.subTest(flags=flags), patch.object(workflow, "REVIEW_READING_MAX_BYTES", 256), \
-                    patch.object(workflow, "run") as run:
-                with self.assertRaisesRegex(AgentBoxError, "TEXT_LIMIT_EXCEEDED: required review reading.*scope"):
-                    self.run_workflow("review", "1", *flags)
-                run.assert_not_called()
-                self.assertFalse(workflow.read_review_state(self.root, BINDING, self.task).get("pending"))
-                self.assertFalse(list(inputs.rglob("*.*")) if inputs.exists() else [])
+        for source in ("descriptions", "instructions"):
+            if source == "instructions":
+                self.task.children = []
+                (self.root / "AGENTS.md").write_text("Rule.\n" * 100)
+                workflow.gw.git(self.root, "add", ".")
+                workflow.gw.git(self.root, "commit", "-m", "instructions")
+            for flags in ((), ("--native",)):
+                with self.subTest(source=source, flags=flags), \
+                        patch.object(workflow, "REVIEW_READING_MAX_BYTES", 400), patch.object(workflow, "run") as run:
+                    with self.assertRaisesRegex(AgentBoxError, "TEXT_LIMIT_EXCEEDED: required review reading.*scope"):
+                        self.run_workflow("review", "1", *flags)
+                    run.assert_not_called()
+                    self.assertFalse(workflow.read_review_state(self.root, BINDING, self.task).get("pending"))
+                    self.assertFalse(list(inputs.rglob("*.*")) if inputs.exists() else [])
 
     def test_reference_mode_preserves_original_reports_and_default_inline_schema(self):
         """The opt-in changes delivery, never the captured report or successful default fields."""
@@ -322,8 +328,11 @@ class WorkflowTextDeliveryTests(WorkflowCase):
             self.assertEqual(self.run_workflow("review", "1")["verdict"], "PASS")
             run.assert_called_once()
 
-    def test_mandatory_nested_instruction_imports_refuse_all_routes_before_paid_work(self):
-        """Moving an instruction into an unchanged imported file cannot evade the aggregate input limit."""
+    def test_mandatory_nested_instruction_imports_refuse_inline_routes_before_paid_work(self):
+        """Moving an instruction into an unchanged imported file cannot evade the aggregate input limit.
+
+        A reviewer pages instructions as required reading, so the same imports start its round.
+        """
         (self.root / "docs").mkdir()
         (self.root / "AGENTS.md").write_text("@docs/policy.md\n")
         (self.root / "docs/policy.md").write_text("@large.md\n")
@@ -332,14 +341,15 @@ class WorkflowTextDeliveryTests(WorkflowCase):
         workflow.gw.git(self.root, "commit", "-m", "mandatory imported instructions")
         for command in (("delegate", "1", "--role", "worker", "--brief", str(self.review_brief)),
                         ("delegate", "1", "--role", "scout", "--brief", str(self.review_brief)),
-                        ("review", "1"), ("sync", "1")):
+                        ("sync", "1")):
             for flags in ((), ("--native",)):
                 with self.subTest(command=command, flags=flags), patch.object(workflow, "run") as run:
                     with self.assertRaisesRegex(AgentBoxError, "TEXT_LIMIT_EXCEEDED.*including imports"):
                         self.run_workflow(*command, *flags)
                     run.assert_not_called()
         self.assertFalse(list(text_delivery.WORKFLOW_TEXTS.glob("*/page-*.txt")))
-        self.assertFalse(workflow.read_review_state(self.root, BINDING, self.task).get("pending"))
+        opened = self.native_round()
+        self.assertIn("x" * 65536, required_reading(delivered_bytes(opened["input"]).decode()))
 
     def test_separate_path_and_diff_evidence_stays_bound_to_the_review_round(self):
         """On-demand evidence must not accept the original head after its paths or diff are altered."""
