@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.2.0
+
 - Put forwarded registry and Helm credentials at their standard tool paths,
   preserving selected-only copies, read-only directory mounts and atomic refresh.
   Use standard Git/gh/glab config locations, kubectl and Bun caches, and
@@ -15,11 +17,21 @@
   existing runtimes and prior persistent caches are left untouched. Existing mise
   trust records remain shared through the same private host state.
 
-- Include host keyring access/job tokens in opted-in glab configuration copies.
+- Add glab to workspace images with opt-in configuration copies through
+  `credentials.gitlab.config` or `--glab-config`, including saved GitLab hosts
+  and file-stored tokens. Include host keyring access/job tokens in these copies.
   Host glab and an unlocked keyring are required for keyring-backed hosts; no
   D-Bus or host keyring is mounted. OAuth refresh tokens are omitted to preserve
   independent host sessions. Explicitly stop/relaunch a workspace to seed the
   new snapshot; OAuth access copies expire without renewal.
+
+- Add `--personal-browser-profile PROFILE` to select a desktop browser profile
+  for one launch without changing saved settings. Browser access still requires
+  its own opt-in; start a new session to adopt a different profile.
+
+- Tolerate a process exiting while native host k3s ownership is read, so stale
+  owners do not cause a false state error. Unreadable live ownership still
+  refuses cleanup.
 
 - Keep full changed-path inventories outside initial reviewer assignments, alongside
   the saved diff. Large moves and renames no longer exhaust the assignment budget
