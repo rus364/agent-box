@@ -138,6 +138,10 @@ with existing-only branch switching. It never recreates lost work from base.
   verdicts are never included. Each description is headed with the task's
   number, ID and URL. The prompt states the round's own boundary — read-only,
   unable to run the suite — so recorded validation is read as the only run.
+  Only `task.md` and the brief are inlined; the related descriptions,
+  instructions and validation are one paged required reading derived from
+  those hashed files. Inlining them was rejected: the assignment grew with
+  every subtask and the delivery limit refused exactly the final parent review.
   Artifacts are removed once the result is recorded or the managed run fails;
   oversized index metadata fails closed.
 - **What the reviewer judges.** Only what the repository shows. Requirements

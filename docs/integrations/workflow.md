@@ -343,8 +343,18 @@ AGENTS.md/CLAUDE.md imports are collected recursively, counted once and checked
 before launch; missing, symlinked or more than four-hop imports fail explicitly.
 Markdown code spans/blocks are examples, not imports.
 
-No role receives a diff in its initial assignment. Reviewers get requirements,
-commit boundaries, a compact Git change summary and a hash-bound evidence manifest.
+No role receives a diff in its initial assignment. Reviewers get the reviewed
+task's description, commit boundaries, a compact Git change summary and a
+hash-bound evidence manifest; only these and the author notes count toward the
+limit. Related descriptions (`parent.md` or every `subtask-N.md`), repository
+instructions with their imports and recorded validation form one exact required
+reading in 4 KiB pages beside the round's evidence, so a parent's review does not
+grow its assignment with each subtask. The reviewer reads every page in order
+through its end marker before a verdict; workflow rebuilds the pages from the
+round's hashed files and refuses changed or missing pages before a managed launch
+and when a result is recorded. Required reading has a fixed 262,144-byte bound
+that `text_max_bytes` does not change; above it the round refuses before it is
+reserved and the user decides how to reduce the scope.
 The complete `changed-paths.txt` inventory and `full.diff` remain separate evidence,
 including all renamed paths. Inspect the inventory in bounded line ranges with
 shell or Read/Grep, then use Git for selected paths or Grep plus bounded Read

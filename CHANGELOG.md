@@ -24,7 +24,15 @@
 - Keep full changed-path inventories outside initial reviewer assignments, alongside
   the saved diff. Large moves and renames no longer exhaust the assignment budget
   solely through path listings; reviewers retain the complete hash-bound evidence.
-  Required task text and instructions still count toward the unchanged limit.
+  The reviewed task's text and the author notes still count toward the unchanged limit.
+
+- Deliver related task descriptions (parent or every subtask), repository
+  instructions and recorded validation to reviewers as one exact, hash-bound
+  required reading in 4 KiB pages beside the round's evidence, read in full
+  before any verdict. A parent review no longer fails `workflow.text_max_bytes`
+  as its subtasks accumulate; required reading has its own fixed 256 KiB bound
+  and refuses before a round is reserved. A pending native round opened by an
+  earlier package cannot record its result; start a new round.
 
 - Accept a single standalone Plan sync outcome anywhere in its report, including
   bold or inline-code formatting. Preserve malformed native reports with precise

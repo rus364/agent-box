@@ -15,6 +15,7 @@ from agent_box.config import WorkflowConfig
 from agent_box.errors import AgentBoxError
 from agent_box.repo_binding import Binding
 from agent_box.tracker.core import Task
+from test_workflow_text_delivery import required_reading
 from workflow_fixtures import (BINDING, WorkflowCase, answer, candidate, managed_runner, repository,
                                selected_route)
 
@@ -560,26 +561,31 @@ class ReviewWorkflowTests(WorkflowCase):
             "# Task #141 (id 607, https://tracker.example/tasks/607): Parent\n"))
 
     def test_a_parent_review_carries_every_subtask_description(self):
-        """The final review checks acceptance that lives in the subtasks, one file each."""
+        """The final review checks acceptance that lives in the subtasks: one file each, all in required reading."""
         with tempfile.TemporaryDirectory() as directory:
             root = repository(directory)
             gw.git(root, "switch", "-c", "ab/7-parent")
             parent = Task("7", "1", "Parent", description="Parent goal", children=["8", "9"])
             children = [Task("8", "1", "First", description="First acceptance", parent="7"),
                         Task("9", "1", "Second", description="Second acceptance", parent="7")]
-            workflow.reviewer_handoff(root, "main", parent, parent, [children[1], parent, children[0]],
-                                      None, {}, "", "parent", behavior_version="v2", text_settings=WorkflowConfig(text_max_bytes=1048576))
+            prompt = workflow.reviewer_handoff(root, "main", parent, parent, [children[1], parent, children[0]],
+                                               None, {}, "", "parent", behavior_version="v2",
+                                               text_settings=WorkflowConfig(text_max_bytes=1048576))
             path = workflow.review_evidence_path(root, "7", "parent")
             self.assertEqual(sorted(item.name for item in path.iterdir()),
-                             ["changed-paths.txt", "full.diff", "handoff.txt", "manifest.json",
+                             ["changed-paths.txt", "full.diff", "handoff.txt", "manifest.json", "page-000001.txt",
                               "recorded-validation.json", "subtask-1.md", "subtask-2.md", "task.md"])
             self.assertIn("Second acceptance", (path / "subtask-1.md").read_text())
             self.assertIn("First acceptance", (path / "subtask-2.md").read_text())
-            (path / "subtask-3.md").write_text("not written by this round")
-            with self.assertRaisesRegex(AgentBoxError, "Unknown delegation input content"):
-                workflow.cleanup_review_evidence(path)
-            self.assertTrue((path / "subtask-1.md").exists())
-            (path / "subtask-3.md").unlink()
+            reading = required_reading(prompt)
+            self.assertLess(reading.index("Second acceptance"), reading.index("First acceptance"))
+            self.assertNotIn("First acceptance", prompt)
+            for stray in ("subtask-3.md", "page-000002.txt"):
+                (path / stray).write_text("not written by this round")
+                with self.assertRaisesRegex(AgentBoxError, "Unknown delegation input content"):
+                    workflow.cleanup_review_evidence(path)
+                self.assertTrue((path / "page-000001.txt").exists())
+                (path / stray).unlink()
             workflow.cleanup_review_evidence(path)
             self.assertFalse(path.exists())
 
@@ -680,7 +686,8 @@ class ReviewerInputTests(unittest.TestCase):
             self.assertEqual(small_payload["boundaries"]["head_commit"], gw.head_sha(root))
             self.assertIn("large.py", (manifest_path.parent / "changed-paths.txt").read_text())
             self.assertRegex(small_payload["change_summary"], "files? changed")
-            self.assertIn(instruction_marker, small)
+            self.assertNotIn(instruction_marker, small)
+            self.assertIn(instruction_marker, required_reading(small))
             self.assertNotIn(diff_marker, small)
 
             (root / "large.py").write_text((diff_marker + "\n") * 12000)
