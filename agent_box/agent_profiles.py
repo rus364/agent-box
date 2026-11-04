@@ -39,8 +39,13 @@ def body(provider, role, tier, spec):
         if role == "sync":
             fields.pop("sandbox_mode")
             fields["default_permissions"] = "agent_box_sync"
+            # A native agent inherits the session's TMPDIR, often unset, so bash's
+            # heredoc spill falls back to /tmp; the workspace stays read-only even
+            # when it lives under /tmp, because the more specific entry wins.
             suffix = ('\n[permissions.agent_box_sync]\nextends = ":read-only"\n'
-                      '[permissions.agent_box_sync.network]\nenabled = true\n')
+                      '[permissions.agent_box_sync.network]\nenabled = true\n'
+                      '[permissions.agent_box_sync.filesystem]\n":tmpdir" = "write"\n":slash_tmp" = "write"\n'
+                      '[permissions.agent_box_sync.filesystem.":workspace_roots"]\n"." = "read"\n')
         return "\n".join(f"{key} = {_codex_field(value)}" for key, value in fields.items()) + "\n" + suffix
     tools = ("Read, Grep, Glob, Bash, Edit, Write" if role == "worker" else
              "Read, Grep, Glob, Bash" if role == "sync" else "Read, Grep, Glob")

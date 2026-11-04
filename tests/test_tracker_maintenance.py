@@ -222,6 +222,17 @@ class MaintenanceTests(unittest.TestCase):
         self.assertEqual(result.description, "Preserved text with corrected reference\n")
         self.assertEqual(len(self.client.writes), 1)
 
+    def test_empty_description_input_never_erases_the_task(self):
+        """A heredoc or pipe that failed in a sandbox delivers empty stdin; saving it erased a real task."""
+        import io
+        self.client.tasks[5]["description"] = "Requirements"
+        self.client.revisions["/tasks/5"] = "rev-1"
+        for text in ("", " \n\n"):
+            with self.subTest(text=text), patch("sys.stdin", io.StringIO(text)):
+                with self.assertRaisesRegex(TrackerError, "empty"):
+                    self.run_cli("update", "5", "--revision", "rev-1", "--description-file", "-")
+        self.assertEqual(self.client.writes, [])
+
     def test_naming_a_task_by_id_is_no_way_past_the_binding(self):
         """Every task write shares one boundary; a project outside it stays readable only."""
         self.client.tasks[7]["description"] = "- [ ] erste Prüfung\n"

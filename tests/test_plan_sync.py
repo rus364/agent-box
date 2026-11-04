@@ -4,7 +4,8 @@ import io
 import json
 import os
 import tomllib
-from unittest.mock import patch
+from pathlib import Path
+from unittest.mock import Mock, patch
 
 from agent_box import agent_profiles, config_menu, plan_sync, provider_runner, workflow
 from agent_box.config import Config
@@ -486,6 +487,28 @@ class PlanSyncTests(WorkflowCase):
         self.assertNotIn("Edit", tools)
         self.assertNotIn("Write", tools)
         self.assertIn("Bash(agent-box tracker *)", claude[claude.index("--allowedTools") + 1])
+
+    def test_codex_sync_may_spill_long_heredocs_only_into_temporary_directories(self):
+        """Bash writes a heredoc of 8 KiB or more to a temporary file; a fully read-only
+        sandbox made every long description update fail, while project files must stay closed."""
+        spec = candidate("codex", "gpt-sync", "high")
+        filesystem = tomllib.loads(agent_profiles.body("codex", "sync", None, spec))["permissions"]["agent_box_sync"]["filesystem"]
+        self.assertEqual(filesystem, {":tmpdir": "write", ":slash_tmp": "write", ":workspace_roots": {".": "read"}})
+        command = provider_runner.build_command(spec, "sync", self.root, self.report)
+        self.assertIn('permissions.agent_box_sync.filesystem={":tmpdir"="write"}', command)
+        self.assertNotIn("slash_tmp", " ".join(command))
+        seen = {}
+        def popen(command, **kwargs):
+            scratch = Path(kwargs["env"]["TMPDIR"])
+            seen.update(tmpdir=scratch, private=scratch.is_dir() and scratch.stat().st_mode & 0o077 == 0)
+            Path(command[command.index("-o") + 1]).write_text("Sync: UNCHANGED\n")
+            return Mock(returncode=0)
+        with patch.object(provider_runner.subprocess, "Popen", side_effect=popen), \
+                patch.dict(os.environ, {"TMPDIR": "/tmp"}):
+            provider_runner.run(spec, "sync", self.root, "brief")
+        self.assertTrue(seen["private"])
+        self.assertNotEqual(seen["tmpdir"], Path("/tmp"))
+        self.assertFalse(seen["tmpdir"].exists())
 
     def test_settings_round_trip_menu_and_tiers_share_the_existing_model_mechanism(self):
         settings = self.config.workflow.sync

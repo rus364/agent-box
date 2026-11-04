@@ -436,6 +436,9 @@ def dispatch(args):
         fields = {name: value for name in ("title", "priority") if (value := getattr(args, name)) is not None}
         if args.description_file:
             fields["description"] = text_file(args.description_file)
+            # Empty input is a failed heredoc or pipe far more often than an intent to erase.
+            if not fields["description"].strip():
+                raise TrackerError("Refusing to replace the description with empty text; nothing was written")
         if not fields:
             raise TrackerError("No changes requested")
         return adapter.update(task, fields)

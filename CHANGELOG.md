@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Let Codex Plan sync save descriptions of 8 KiB or more: Bash writes such a
+  heredoc to a temporary file, which the read-only sandbox refused. Managed runs
+  get a private writable `TMPDIR`; the native `ab-sync` profile may write
+  `$TMPDIR` and `/tmp` while workspace roots stay read-only. Rerun
+  `agent-box config apply` (or relaunch after updating) to refresh the profile.
+- `agent-box tracker update` refuses an empty description instead of erasing the task.
+
 ## 0.2.0
 
 - Put forwarded registry and Helm credentials at their standard tool paths,

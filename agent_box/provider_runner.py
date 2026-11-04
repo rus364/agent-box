@@ -242,9 +242,12 @@ def build_command(route, role, root, result_path, read_paths=()):
         command = ["codex", "exec", "--ephemeral", "--ignore-user-config", "--json", "-C", str(root),
                    "--model", route["model"]]
         if sync:
+            # Bash spills a heredoc of 8 KiB or more into $TMPDIR; run() points it
+            # at a private per-run directory, the only path this grant opens.
             command += ["-c", 'default_permissions="agent_box_sync"',
                         "-c", 'permissions.agent_box_sync.extends=":read-only"',
-                        "-c", "permissions.agent_box_sync.network.enabled=true"]
+                        "-c", "permissions.agent_box_sync.network.enabled=true",
+                        "-c", 'permissions.agent_box_sync.filesystem={":tmpdir"="write"}']
         else:
             command += ["--sandbox", "read-only" if readonly else "workspace-write"]
         if route["effort"] != "default":
@@ -357,6 +360,10 @@ def run(route, role, root, prompt, *, timeout=3600, read_paths=(), diagnostics=N
             raise
         if role == "sync":
             env[SYNC_EXECUTOR_ENV] = "1"
+            # The sandbox grants write to $TMPDIR, so it must not be a shared /tmp.
+            scratch = directory / "tmp"
+            scratch.mkdir(mode=0o700)
+            env["TMPDIR"] = str(scratch)
         with (output_directory / "stdout").open("w+") as stdout, (output_directory / "stderr").open("w+") as stderr:
             try:
                 # The CLI runs in its own session, so a signal to this process
