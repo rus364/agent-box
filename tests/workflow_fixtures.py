@@ -154,6 +154,14 @@ class WorkflowCase(unittest.TestCase):
         for item in self.patches:
             item.start()
             self.addCleanup(item.stop)
+        # Native launches serve the calling CLI; the default reviewer candidate is claude's.
+        session = patch.object(workflow, "session_provider", return_value="claude")
+        self.session = session.start()
+        self.addCleanup(session.stop)
+
+    def run_as(self, provider):
+        """Run later commands as if from this CLI's session; None when it cannot be told."""
+        self.session.return_value = provider
 
     def run_workflow(self, *argv):
         return workflow.dispatch(workflow.parser().parse_args(list(argv)))

@@ -25,9 +25,22 @@ def profile_name(role, tier=None):
     return f"ab-{role}" + (f"-{tier}" if tier is not None else "")
 
 
-def body(provider, role, tier, spec):
+def describe(provider, role, tier, spec, position=None):
+    """What the agent list shows: the pinned candidate and when spawning it is right.
+
+    Every provider gets a profile of the same name, and a session lists only its
+    own, so a bare "configured reviewer" read as the route even when it was a
+    later, fallback candidate and the route was managed.
+    """
+    where = f", candidate {position[0]} of {position[1]}" if position else ""
+    return (f"agent-box {role}" + (f" tier {tier}" if tier is not None else "")
+            + f" on {provider} {spec['model']}{where}. Spawn only when agent-box workflow inspect lists it "
+            f"under native.{provider} for this role; otherwise run the route's managed command")
+
+
+def body(provider, role, tier, spec, position=None):
     name = profile_name(role, tier)
-    description = f"Configured agent-box {role}" + (f", tier {tier}" if tier is not None else "")
+    description = describe(provider, role, tier, spec, position)
     instructions = profile_instructions(role)
     if provider == "codex":
         fields = {"name": name, "description": description, "model": spec["model"],
@@ -50,12 +63,12 @@ def body(provider, role, tier, spec):
     tools = ("Read, Grep, Glob, Bash, Edit, Write" if role == "worker" else
              "Read, Grep, Glob, Bash" if role == "sync" else "Read, Grep, Glob")
     effort = "" if spec["effort"] == "default" else f"effort: {json.dumps(spec['effort'])}\n"
-    return (f"---\nname: {name}\ndescription: {description}\n"
+    return (f"---\nname: {name}\ndescription: {json.dumps(description)}\n"
             f"model: {json.dumps(spec['model'])}\n{effort}tools: {tools}\n---\n{instructions}\n")
 
 
-def content_for(provider, role, tier, spec):
-    value = body(provider, role, tier, spec)
+def content_for(provider, role, tier, spec, position=None):
+    value = body(provider, role, tier, spec, position)
     # Claude requires frontmatter at the start, so ownership uses a sidecar.
     return value
 
@@ -137,7 +150,7 @@ def sync(config, codex_home, claude_home):
                     path.unlink(missing_ok=True)
                     marker.unlink()
                 continue
-            content = content_for(provider, role, tier, spec)
+            content = content_for(provider, role, tier, spec, (models.index(spec) + 1, len(models)))
             if not has_toml_spelling(content):
                 # Any configured field can carry a lone surrogate, which
                 # no UTF-8 write can encode: report the profile as

@@ -120,10 +120,18 @@ with existing-only branch switching. It never recreates lost work from base.
 
 - **Backend choice per round.** A local round uses the first candidate's
   native profile when it is available with the configured model, effort and
-  speed, otherwise the managed command. An earlier thread-limit error is not
-  proof native launching is still unavailable. An empty reviewer list allows
-  only an independent native reviewer, never self-review. A native result is
-  taken on trust: its model and fresh context are the coordinator's word. Only
+  speed, otherwise the managed command. Every provider's profile shares one
+  name and runs that provider's first candidate, so the route names only the
+  provider opening the list. `--native` reviews, Plan sync and delegation
+  refuse a session whose provider the route does not name; the session's CLI
+  is read from `CLAUDECODE` or `CODEX_THREAD_ID` (`CODEX_HOME` is set in every
+  box), else from `--provider`, and `inspect` reports it as
+  `for_this_session`. An earlier thread-limit error is not proof native
+  launching is still unavailable. An empty reviewer list allows only an
+  independent native reviewer, never self-review. A native result is taken on
+  trust: its model and fresh context are the coordinator's word, but a round
+  opened for a configured profile refuses an answer named as another
+  provider, model or effort. Only
   the latest round can be answered, and a new round removes the input of an
   unanswered native one.
 - **Answer format.** Exactly one `Verdict:` line and findings as

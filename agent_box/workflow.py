@@ -877,7 +877,7 @@ def recorded_step(task, parent, config, saved, blockers, *, no_work):
         return f"Validate this head with agent-box workflow validate {task.id} -- COMMAND ARGS"
     if blockers and not cloud_review(config, task, parent):
         return (f"Obtain acceptance for this head with ab-review: agent-box workflow review {task.id} [--native]; "
-                "choose the backend from execution.reviewer")
+                "choose the backend from execution.reviewer, for_this_session when present")
     if task.id != parent.id:
         return f"Integrate the accepted subtask with agent-box workflow finish {task.id}"
     if task.state != "In review":
@@ -924,6 +924,7 @@ def inspect(root, binding, adapter, task, config, authors=None):
             "status": "awaiting --result" if backend == "native" else "awaiting the pull request answer"}
     result = {"task": task.id, **info, "task_branch": expected, "current_branch": branch,
               "head": head, "scope": None, "configuration": configuration_summary(config),
+              "session_provider": session_provider(),
               "acceptance": {"available": not unavailable, "reasons": unavailable},
               "review": review, "validation": None,
               "execution": {"worker": execution(config, "worker", config.workflow.effective_tier(task.tier), task.id),
@@ -1577,6 +1578,7 @@ def parser():
             mode = cmd.add_mutually_exclusive_group()
             mode.add_argument("--native", action="store_true", help="Return a short assignment for the configured native profile")
             mode.add_argument("--result", metavar="FILE", help="Record the native agent's unchanged Markdown answer")
+            cmd.add_argument("--provider", choices=("codex", "claude"), help=SESSION_PROVIDER_HELP)
             mode.add_argument("--reconcile", metavar="FILE", help="After executor stops and live-task checks, record recovery evidence with one standalone Sync: UPDATED|UNCHANGED|BLOCKED|ERROR|REQUIRED line; no model call")
             cmd.add_argument("--event", choices=("manual", "before", "after", "plan"), default="manual",
                              help="Manual always runs; other events follow Workflow Plan sync settings")
@@ -1595,6 +1597,7 @@ def parser():
             cmd.add_argument("--role", choices=("worker", "scout"), required=True)
             cmd.add_argument("--native", action="store_true",
                              help="Prepare the same assignment as generated file pages for the configured native profile")
+            cmd.add_argument("--provider", choices=("codex", "claude"), help=SESSION_PROVIDER_HELP)
             cmd.add_argument("--output", choices=("inline", "reference"), default="inline",
                              help="Managed answer: inline (default), or generated pages when longer than 4 KiB")
         if name in ("review", "delegate"):
@@ -1611,7 +1614,8 @@ def parser():
             mode.add_argument("--native", action="store_true",
                               help="Open a round and print the input message for a fresh native reviewer")
             mode.add_argument("--result", metavar="FILE", help="Record the pending native round's Markdown answer")
-            cmd.add_argument("--provider", choices=("codex", "claude"), help="Provider that ran the native reviewer")
+            cmd.add_argument("--provider", choices=("codex", "claude"),
+                             help="With --native: " + SESSION_PROVIDER_HELP + "; with --result: the provider that ran")
             cmd.add_argument("--model", help="Model that ran the native reviewer")
             cmd.add_argument("--effort", help="Effort of the native reviewer, when known")
         if name == "pr":
@@ -1782,11 +1786,52 @@ def execution(config, role, tier, task_id, authors=None):
             and not limitation
             and (role not in ("reviewer", "sync") or first["effort"] != "default")):
         native[first["provider"]] = profile_name(role, tier if ".tiers." in path else None)
+    provider = session_provider()
     return {"mode": "delegate", "models": path, "native": native,
             **({"native_limitation": limitation} if limitation else {}),
+            **({"for_this_session": "native" if provider in native else "managed"} if provider else {}),
             "managed": (f"agent-box workflow review {task_id}{named}" if role == "reviewer" else
                         f"agent-box workflow sync {task_id} --output reference" if role == "sync" else
                         f"agent-box workflow delegate {task_id} --role {role} --brief FILE --output reference")}
+
+
+SESSION_MARKERS = (("claude", "CLAUDECODE"), ("codex", "CODEX_THREAD_ID"))
+SESSION_PROVIDER_HELP = ("This session's CLI for --native, detected from the session when omitted; "
+                         "a provider the route runs managed is refused")
+
+
+def session_provider():
+    """The CLI whose session runs this command, or None when it cannot be told.
+
+    Claude Code exports CLAUDECODE and Codex CODEX_THREAD_ID to the commands
+    they run. CODEX_HOME is no marker: agent-box sets it in every box. Both
+    markers mean one CLI runs inside the other, so neither is guessed.
+    """
+    found = [provider for provider, name in SESSION_MARKERS if os.environ.get(name)]
+    return found[0] if len(found) == 1 else None
+
+
+def native_provider(route, provider):
+    """The session provider a native launch serves, refusing one its route does not name.
+
+    Every provider has a profile of the same name running that provider's own
+    first candidate, a fallback unless it opens the list; the route names only
+    the opening provider. Reading the profile name alone once ran fallbacks
+    while the session's route was managed, so the launch checks it here.
+    """
+    if route["mode"] == "authors-required":
+        raise AgentBoxError(f"workflow.review.other_vendor_first orders reviewers by the code's authors; "
+                            f"pass {AUTHOR_FORM}")
+    detected = session_provider()
+    if provider and detected and provider != detected:
+        raise AgentBoxError(f"--provider {provider} differs from this {detected} session")
+    provider = provider or detected
+    if not provider:
+        raise AgentBoxError("Cannot tell this session's CLI; name it with --provider codex|claude")
+    if provider not in route.get("native", {}):
+        reason = route.get("native_limitation") or f"{route['models']} does not open with a {provider} candidate"
+        raise AgentBoxError(f"The route is managed for this {provider} session ({reason}); run {route['managed']}")
+    return provider
 
 
 def scout_diagnostics(config):
@@ -1806,6 +1851,8 @@ def delegate(args, root, adapter, config):
     and HEAD was the rejected alternative; most of its refusals fired after a
     paid run, on edits that changed nothing the delegate relied on.
     """
+    if args.provider and not args.native:
+        raise AgentBoxError("--provider names the session of a native run; pass it with --native")
     task = adapter.get(args.task)
     brief = read_brief(args.brief)
     if args.role == "worker":
@@ -1832,8 +1879,7 @@ def delegate(args, root, adapter, config):
     text_delivery.prepare(config)
     if args.native:
         route = execution(config, args.role, tier, task.id)
-        if not route.get("native"):
-            raise AgentBoxError("No configured native profile; use the managed delegation command")
+        native_provider(route, args.provider)
         artifact = text_delivery.publish(prompt, config)
         return {"task": task.id, "role": args.role, "route": route, "input": artifact,
                 "message": bootstrap(args.role, artifact), **({"summary": brief_summary} if brief_summary else {})}
@@ -1862,8 +1908,10 @@ def delegate(args, root, adapter, config):
 
 def review(args, root, binding, adapter, config, task, parent, tasks, base, fingerprint, identity):
     """Open a review round: run it managed, or hand its input to a native reviewer."""
-    if args.provider or args.model or args.effort:
-        raise AgentBoxError("--provider, --model and --effort describe a native answer; pass them with --result")
+    if args.model or args.effort:
+        raise AgentBoxError("--model and --effort describe a native answer; pass them with --result")
+    if args.provider and not args.native:
+        raise AgentBoxError("--provider names the session of a native round; pass it with --native or --result")
     files, lines = diff_stats(root, base, config.workflow.review)
     required = review_required(config.workflow.review, tasks, files, lines)
     review_context = ""
@@ -1891,6 +1939,16 @@ def review(args, root, binding, adapter, config, task, parent, tasks, base, fing
     limit = config.workflow.review.max_rounds
     round_id = secrets.token_urlsafe(18)
     if args.native:
+        tier = config.workflow.effective_tier(task.tier)
+        authors = author_vendors(config, getattr(args, "author", None))
+        route = execution(config, "reviewer", tier, task.id, authors)
+        expected = None
+        if route["mode"] != "native":
+            # An empty list takes any fresh native reviewer; a configured one only its opening candidate.
+            provider = native_provider(route, args.provider)
+            first = config.workflow.models_for("reviewer", tier, authors or ())[1][0]
+            expected = {"provider": provider, "model": first["model"], "effort": first["effort"],
+                        "profile": route["native"][provider], "managed": route["managed"]}
         require_review_budget(task, read_review_budget(root, binding, task, limit))
         saved = evidence(root, task, fingerprint, base)
         try:
@@ -1898,6 +1956,8 @@ def review(args, root, binding, adapter, config, task, parent, tasks, base, fing
                                       config.workflow.languages().engineering, behavior_version=config.workflow.behavior_version,
                                       text_settings=config.workflow, text_config=config)
             descriptor = review_descriptor(identity, task, fingerprint, round_id)
+            if expected:
+                descriptor["native"] = expected
             bind_delegation_input(root, descriptor, prompt, local_evidence=True)
             from .text_delivery import publish
             artifact = publish(prompt, config)
@@ -1907,11 +1967,15 @@ def review(args, root, binding, adapter, config, task, parent, tasks, base, fing
             raise
         return {"task": task.id, "round": round_id, "scope": fingerprint, "review_budget": budget,
                 "message": bootstrap("reviewer", artifact), "input": artifact,
-                "instructions": "Start a new read-only reviewer in fresh context without the parent's history and pass "
-                                "message as its whole initial prompt. Save its final message unchanged to a file outside "
-                                "the working tree and record it with result_command, naming the provider and model "
-                                "that ran. A new commit before then makes the verdict stale.",
-                "result_command": f"agent-box workflow review {task.id} --result FILE --provider PROVIDER --model MODEL"}
+                **({"profile": expected["profile"]} if expected else {}),
+                "instructions": "Start a new read-only reviewer in fresh context without the parent's history"
+                                + (f" on profile {expected['profile']}" if expected else "")
+                                + " and pass message as its whole initial prompt. Save its final message unchanged to a "
+                                "file outside the working tree and record it with result_command, naming the provider "
+                                "and model that ran. A new commit before then makes the verdict stale.",
+                "result_command": f"agent-box workflow review {task.id} --result FILE "
+                                  + (f"--provider {expected['provider']} --model {expected['model']}" if expected
+                                     else "--provider PROVIDER --model MODEL")}
     if cloud_review(config, task, parent):
         from .github_review import review as in_pull_request
         return in_pull_request(root, binding, adapter, config, task, parent, tasks, base, fingerprint,
@@ -1967,7 +2031,13 @@ def review(args, root, binding, adapter, config, task, parent, tasks, base, fing
 
 
 def native_result(args, root, binding, adapter, config, task):
-    """Record a native reviewer's answer on trust: its model and context are the coordinator's word."""
+    """Record a native reviewer's answer on the coordinator's word for its model and context.
+
+    A round opened for a configured profile records which candidate it expects,
+    so a named provider or model that differs is refused rather than recorded:
+    the answer came from a profile the route did not choose. This catches a
+    mistaken spawn, not a false statement.
+    """
     if not args.provider or not args.model:
         raise AgentBoxError("Name the native reviewer that ran: --result FILE --provider PROVIDER --model MODEL")
     with lock(root, "review-budget"):
@@ -1982,6 +2052,13 @@ def native_result(args, root, binding, adapter, config, task):
         raise AgentBoxError(f"Cannot read the native round or its answer: {exc}") from exc
     # A damaged input means the reviewer may have read something else; nothing is spent on it.
     read_delegation_input(root, descriptor)
+    if expected := descriptor.get("native"):
+        named = {"provider": args.provider, "model": args.model, **({"effort": args.effort} if args.effort else {})}
+        if any(expected[key] != value for key, value in named.items()):
+            raise AgentBoxError(
+                f"Round {round_id} expects profile {expected['profile']} on {expected['provider']} {expected['model']} "
+                f"effort {expected['effort']}; an answer from another model is not recorded. Rerun the reviewer on "
+                f"that profile with workflow review {task.id} --native, or run {expected['managed']}")
     try:
         report = {**review_report(text), "text": text}
     except ProviderFailure as exc:
@@ -2037,7 +2114,8 @@ def dispatch(args):
     if args.command == "sync":
         from .plan_sync import run as sync
         return sync(root, binding, adapter, config, adapter.get(args.task), args.event,
-                    native=args.native, result_file=args.result, reconcile_file=args.reconcile)
+                    native=args.native, result_file=args.result, reconcile_file=args.reconcile,
+                    provider=args.provider)
     if args.command == "delegate":
         return delegate(args, root, adapter, config)
     if args.command == "review" and args.result is not None:

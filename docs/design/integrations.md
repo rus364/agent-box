@@ -133,7 +133,8 @@ host stays the source of truth; changes made in the box disappear with it.
   keys or key fingerprints; an accepted route records `api_provider` and
   `api_fingerprint`.
 - A native review is recorded on trust with the provider and model the
-  coordinator names. Codex `spawn_agent` takes the session API's catalog
+  coordinator names; a round opened for a configured profile refuses names
+  other than that profile's candidate. Codex `spawn_agent` takes the session API's catalog
   `model` and `reasoning_effort`; Claude's Agent tool accepts only aliases,
   which `ext` maps to the session model, and the session's
   `CLAUDE_CODE_EFFORT_LEVEL` overrides a profile's effort.

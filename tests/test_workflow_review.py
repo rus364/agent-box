@@ -45,8 +45,8 @@ class ReviewWorkflowTests(WorkflowCase):
     def budget(self):
         return workflow.read_review_budget(self.root, BINDING, self.task, self.config.workflow.review.max_rounds)
 
-    def test_native_result_is_recorded_on_trust_for_the_round_it_opened(self):
-        """The coordinator's word names the reviewer; no descriptor, model check or context flag stands in for it."""
+    def test_native_result_is_recorded_for_the_round_it_opened(self):
+        """The coordinator's word names the reviewer; the round only checks it against the candidate it opened for."""
         opened = self.native_round()
         handoff = self.delegation_input(opened)
         self.assertIn(opened["input"]["path"], opened["message"])
@@ -68,6 +68,51 @@ class ReviewWorkflowTests(WorkflowCase):
             self.native_result()
         with self.assertRaisesRegex(AgentBoxError, "pass them with --result"):
             self.run_workflow("review", "1", "--native", "--model", "m")
+
+    def test_a_native_round_is_refused_where_the_sessions_route_is_managed(self):
+        """A same-named profile of a later candidate is a fallback; spawning it skipped the preferred reviewer.
+
+        The refusal comes before any round opens, names the managed command, and
+        an explicit --provider can neither contradict the detected session nor
+        widen the route.
+        """
+        self.config.workflow.review.models = [candidate("codex", "sol", "high"), candidate("claude", "m", "high")]
+        with self.assertRaisesRegex(AgentBoxError, r"managed for this claude session.*run agent-box workflow review 1$"):
+            self.native_round()
+        with self.assertRaisesRegex(AgentBoxError, "--provider codex differs from this claude session"):
+            self.native_round("--provider", "codex")
+        self.assertNotIn("pending_round", self.run_workflow("inspect", "1")["review"])
+        with self.assertRaisesRegex(AgentBoxError, "pass it with --native or --result"):
+            self.run_workflow("review", "1", "--provider", "claude")
+        self.run_as(None)
+        with self.assertRaisesRegex(AgentBoxError, "Cannot tell this session's CLI; name it with --provider"):
+            self.native_round()
+        opened = self.native_round("--provider", "codex")
+        self.assertEqual(opened["profile"], "ab-reviewer")
+        self.assertTrue(opened["result_command"].endswith("--provider codex --model sol"))
+
+    def test_an_answer_from_another_candidate_is_not_recorded_and_leaves_the_round_open(self):
+        """A haiku answer recorded as the round's verdict passed for the configured reviewer's acceptance."""
+        opened = self.native_round()
+        for flags in (("--provider", "codex", "--model", "m"), ("--provider", "claude", "--model", "haiku"),
+                      ("--provider", "claude", "--model", "m", "--effort", "low")):
+            with self.subTest(flags=flags):
+                with self.assertRaisesRegex(AgentBoxError, "expects profile ab-reviewer on claude m effort high.*"
+                                                           "workflow review 1 --native, or run agent-box workflow review 1"):
+                    self.run_workflow("review", "1", "--result", str(self.report), *flags)
+        self.assertEqual(self.budget()["used"], 0)
+        self.assertEqual(self.run_workflow("inspect", "1")["review"]["pending_round"]["round"], opened["round"])
+        self.assertEqual(self.native_result()["verdict"], "PASS")
+
+    def test_an_empty_reviewer_list_takes_any_fresh_native_reviewer(self):
+        """Without candidates there is no route to contradict, so the session need not be known."""
+        self.config.workflow.review.models = []
+        self.run_as(None)
+        opened = self.native_round()
+        self.assertNotIn("profile", opened)
+        self.report.write_text("Verdict: PASS\n")
+        result = self.run_workflow("review", "1", "--result", str(self.report), "--provider", "codex", "--model", "any")
+        self.assertEqual(result["route"]["model"], "any")
 
     def test_a_native_answer_without_exactly_one_verdict_line_is_a_failure_like_a_managed_one(self):
         """A native round is counted from its start, so neither a bad answer nor an abandoned reviewer retries forever."""

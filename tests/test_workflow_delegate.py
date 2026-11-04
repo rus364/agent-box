@@ -186,13 +186,14 @@ class DelegateCommandTests(WorkflowCase):
         Only the provider opening the list gets a profile: another provider's
         profile runs a later fallback, which would silently skip the preferred
         model. A tier list selects the tier's profile only while tiers are on.
+        The fixture runs from a Claude session, so only a claude profile is its native route.
         """
         self.config.workflow.worker.tiers["1"] = [candidate("codex", "worker-tier1", "high")]
         self.config.workflow.scout.models = []
         for use_tiers, worker in ((False, {"mode": "delegate", "models": "workflow.worker.models",
-                                           "native": {"claude": "ab-worker"}}),
+                                           "native": {"claude": "ab-worker"}, "for_this_session": "native"}),
                                   (True, {"mode": "delegate", "models": "workflow.worker.tiers.1",
-                                          "native": {"codex": "ab-worker-1"}})):
+                                          "native": {"codex": "ab-worker-1"}, "for_this_session": "managed"})):
             self.config.workflow.use_tiers = use_tiers
             with self.subTest(use_tiers=use_tiers):
                 execution = self.run_workflow("inspect", "1")["execution"]
@@ -206,6 +207,21 @@ class DelegateCommandTests(WorkflowCase):
         execution = self.run_workflow("inspect", "1")["execution"]
         self.assertEqual((execution["worker"]["native"], execution["scout"]["native"]), ({}, {"codex": "ab-scout"}))
 
+    def test_a_native_assignment_is_refused_where_the_sessions_route_is_managed(self):
+        """The scout list opens with codex, so a Claude session's same-named profile is the fallback."""
+        inspected = self.run_workflow("inspect", "1")
+        self.assertEqual((inspected["session_provider"], inspected["execution"]["scout"]["for_this_session"]),
+                         ("claude", "managed"))
+        with self.assertRaisesRegex(AgentBoxError, r"managed for this claude session.*"
+                                                   r"run agent-box workflow delegate 1 --role scout"):
+            self.run_workflow("delegate", "1", "--role", "scout", "--brief", str(self.review_brief), "--native")
+        with self.assertRaisesRegex(AgentBoxError, "pass it with --native"):
+            self.run_workflow("delegate", "1", "--role", "scout", "--brief", str(self.review_brief),
+                              "--provider", "codex")
+        self.run_as("codex")
+        opened = self.run_workflow("delegate", "1", "--role", "scout", "--brief", str(self.review_brief), "--native")
+        self.assertEqual(opened["route"]["native"], {"codex": "ab-scout"})
+
     def test_inspect_exposes_the_root_native_wait_policy(self):
         """The coordinator can follow the global switch without passing it to delegates."""
         self.config.agents.codex.native_agent_wait.enabled = False
@@ -218,13 +234,14 @@ class DelegateCommandTests(WorkflowCase):
         self.config.workflow.review.models = [candidate("codex", "gpt-5.6-luna", "max"),
                                               candidate("claude", "fallback", "high")]
         self.config.workflow.review.tiers["1"] = [candidate("claude", "tier-reviewer", "high")]
-        for tiered, native, source in ((False, {"codex": "ab-reviewer"}, "workflow.review.models"),
-                                      (True, {"claude": "ab-reviewer-1"}, "workflow.review.tiers.1")):
+        for tiered, native, source, session in (
+                (False, {"codex": "ab-reviewer"}, "workflow.review.models", "managed"),
+                (True, {"claude": "ab-reviewer-1"}, "workflow.review.tiers.1", "native")):
             self.config.workflow.use_tiers = tiered
             with self.subTest(tiered=tiered):
                 self.assertEqual(self.run_workflow("inspect", "1")["execution"]["reviewer"],
                                  {"mode": "delegate", "models": source, "native": native,
-                                  "managed": "agent-box workflow review 1"})
+                                  "for_this_session": session, "managed": "agent-box workflow review 1"})
         self.config.workflow.use_tiers = False
         self.config.workflow.review.models[0]["api_provider"] = "deepseek"
         self.assertEqual(self.run_workflow("inspect", "1")["execution"]["reviewer"]["native"], {})
@@ -350,3 +367,21 @@ class RepositoryInstructionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SessionProviderTests(unittest.TestCase):
+    def test_the_session_is_read_from_each_clis_own_marker_and_never_guessed(self):
+        """CODEX_HOME is set in every box, so only CLAUDECODE and CODEX_THREAD_ID name the calling CLI.
+
+        Both markers mean one CLI runs inside the other; naming either could pick
+        the wrong route, so the coordinator must say which with --provider.
+        """
+        import os
+        cases = (({"CLAUDECODE": "1"}, "claude"), ({"CODEX_THREAD_ID": "t"}, "codex"),
+                 ({"CLAUDECODE": "1", "CODEX_THREAD_ID": "t"}, None), ({"CODEX_HOME": "/x"}, None))
+        for markers, expected in cases:
+            with self.subTest(markers=markers):
+                environment = {key: value for key, value in os.environ.items()
+                               if key not in ("CLAUDECODE", "CODEX_THREAD_ID")}
+                with patch.dict(os.environ, {**environment, **markers}, clear=True):
+                    self.assertEqual(workflow.session_provider(), expected)

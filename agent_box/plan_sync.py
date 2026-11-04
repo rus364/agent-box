@@ -215,8 +215,11 @@ def complete(root, task, result, report):
     return result
 
 
-def run(root, binding, adapter, config, task, event="manual", *, native=False, result_file=None, reconcile_file=None):
+def run(root, binding, adapter, config, task, event="manual", *, native=False, result_file=None, reconcile_file=None,
+        provider=None):
     from . import workflow
+    if provider and not native:
+        raise AgentBoxError("--provider names the session of a native run; pass it with --native")
     settings = config.workflow.sync
     if reconcile_file is not None:
         with lock(root, "work"):
@@ -286,8 +289,7 @@ def run(root, binding, adapter, config, task, event="manual", *, native=False, r
                   "backend": "native" if native else "managed"}
         if native:
             route = workflow.execution(config, "sync", tier, task.id)
-            if not route.get("native"):
-                raise AgentBoxError("No configured native Plan sync profile; use the managed command")
+            workflow.native_provider(route, provider)
             artifact = text_delivery.publish(prompt, config)
             result.update(status="NATIVE", route=route)
             save(root, task, result)

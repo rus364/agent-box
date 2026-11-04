@@ -1,4 +1,5 @@
 """Native profile pins and local edits survive the apply/remove lifecycle."""
+import json
 import tempfile
 import unittest
 from unittest import mock
@@ -117,8 +118,31 @@ class AgentProfileTests(unittest.TestCase):
             self.assertEqual(sorted(path.name for path in (codex / "agents").glob("*.toml")),
                              ["ab-reviewer-3.toml", "ab-reviewer.toml", "ab-scout.toml", "ab-worker.toml"])
             self.assertEqual(tomllib.loads((codex / "agents/ab-reviewer-3.toml").read_text())["model"], "reviewer-tier3")
-            self.assertEqual(tomllib.loads((codex / "agents/ab-scout.toml").read_text())["description"],
-                             "Configured agent-box scout")
+            self.assertTrue(tomllib.loads((codex / "agents/ab-scout.toml").read_text())["description"].startswith(
+                "agent-box scout on codex scout-model, candidate 1 of 1."))
+
+    def test_a_fallback_profile_names_its_candidate_and_when_it_may_be_spawned(self):
+        """Each provider's profile shares one name, so the agent list must show which candidate it pins.
+
+        A Claude session listed "Configured agent-box reviewer" pinned to a later
+        fallback while its route was managed, and the name read as the route.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            codex, claude = Path(directory) / "codex", Path(directory) / "claude"
+            config = Config()
+            config.workflow.enabled = True
+            config.workflow.review.models = [entry("codex", "first", "high"), entry("codex", "second", "high"),
+                                             entry("claude", "fallback", "high")]
+            sync(config, codex, claude)
+            frontmatter = (claude / "agents/ab-reviewer.md").read_text().split("---\n")[1]
+            line = next(item for item in frontmatter.splitlines() if item.startswith("description: "))
+            # Quoted, so the description's own colons and punctuation stay one YAML scalar.
+            described = json.loads(line.removeprefix("description: "))
+            self.assertIn("claude fallback, candidate 3 of 3", described)
+            self.assertIn("under native.claude", described)
+            self.assertIn("managed command", described)
+            self.assertIn("codex first, candidate 1 of 3",
+                          tomllib.loads((codex / "agents/ab-reviewer.toml").read_text())["description"])
 
     def test_a_profile_agent_box_no_longer_defines_is_removed_only_while_intact(self):
         """Removing a role list or tier list retires its owned profile; an edited one stays the user's."""

@@ -175,6 +175,7 @@ class WorkflowTextDeliveryTests(WorkflowCase):
     def test_native_sync_answer_remains_direct_and_inspectable_above_the_managed_limit(self):
         """Recording an already delivered native answer must not turn success into an overflow."""
         report = "x" * 65536 + "\nSync: UPDATED\n"
+        self.run_as("codex")
         self.run_workflow("sync", "1", "--native")
         answer_file = self.root.parent / "sync-answer.md"
         answer_file.write_text(report)
@@ -219,6 +220,7 @@ class WorkflowTextDeliveryTests(WorkflowCase):
                     for role in ("worker", "scout")] + [("review", "1"), ("sync", "1")]
         for command in commands:
             with self.subTest(command=command):
+                self.run_as("claude" if command[0] == "review" else "codex")
                 native = self.run_workflow(*command, "--native")
                 prompt = delivered_bytes(native["input"]).decode()
                 self.assertNotIn(marker, prompt)
@@ -434,6 +436,7 @@ class WorkflowTextDeliveryTests(WorkflowCase):
             self.assertEqual(delivered_bytes(artifact), source.strip().encode())
             self.assertNotIn(source.strip(), prompt)
             return "Scope: verify the documented boundary."
+        self.run_as("codex")
         with patch.object(workflow, "run", side_effect=summarize):
             native = self.run_workflow("delegate", "1", "--role", "worker", "--brief", str(self.review_brief), "--native")
         native_prompt = delivered_bytes(native["input"]).decode()

@@ -304,7 +304,7 @@ class LandingFreshnessTests(LandingCase):
         report = answer("Verdict: PASS\n\nReviewed current implementation and requirements.\n")
         with patch.object(workflow, "candidates", side_effect=selected_route):
             if native:
-                opened = self.dispatch(["review", "7", "--native", "--brief", str(brief)])
+                opened = self.dispatch(["review", "7", "--native", "--provider", "claude", "--brief", str(brief)])
                 prompt = (workflow.review_evidence_path(self.root, "7", opened["round"]) / "handoff.txt").read_text()
                 handoff = json.JSONDecoder().raw_decode(prompt.split("Delegation handoff:\n", 1)[1])[0]
                 self.assertIn("review the complete implementation", handoff["scope_note"])

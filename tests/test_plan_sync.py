@@ -22,6 +22,7 @@ class PlanSyncTests(WorkflowCase):
         self.config.workflow.sync.models = [candidate("codex", "gpt-sync", "high")]
         self.adapter.subtree.return_value = ["1"]
         self.binding = BINDING
+        self.run_as("codex")
 
     def test_managed_executor_cannot_start_or_record_sync_before_any_context_access(self):
         """Wrong-role calls must name the mistake before tracker access or a read-only lock failure."""
@@ -175,6 +176,17 @@ class PlanSyncTests(WorkflowCase):
         self.assertEqual(result["reason"], prior["reason"])
         self.assertIn("--event plan", self.run_workflow("inspect", "1")["next_step"])
         self.assertEqual(self.run_workflow("sync", "1", "--native")["status"], "NATIVE")
+
+    def test_a_native_run_is_refused_where_the_sessions_route_is_managed(self):
+        """Plan sync once ran natively on a Claude fallback while the codex list made the route managed."""
+        self.config.workflow.sync.models.append(candidate("claude", "fallback", "high"))
+        self.run_as("claude")
+        with self.assertRaisesRegex(AgentBoxError, r"managed for this claude session.*"
+                                                   r"run agent-box workflow sync 1 --output reference"):
+            self.run_workflow("sync", "1", "--native")
+        self.assertIsNone(plan_sync.last_result(self.root, self.task))
+        with self.assertRaisesRegex(AgentBoxError, "pass it with --native"):
+            self.run_workflow("sync", "1", "--provider", "claude")
 
     def test_reconciliation_never_credits_old_work_to_a_new_head(self):
         """A moved checkout can reconcile old writes but must still schedule new decisions."""

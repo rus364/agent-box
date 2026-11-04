@@ -134,6 +134,7 @@ class BehaviorDeliveryTests(WorkflowCase):
         """The coordinator copies only a generated locator, never reconstructs requirements or policy."""
         for role in ("worker", "scout"):
             self.config.workflow.role(role).models = [candidate("codex", "model", "high")]
+        self.run_as("codex")
         original = self.task.description = "Authoritative requirement: preserve 日本語 and the final line"
         self.review_brief.write_text("Only inspect the assigned path; do not change requirements.")
         for version in behavior.VERSIONS:
@@ -161,17 +162,20 @@ class BehaviorDeliveryTests(WorkflowCase):
         self.adapter.subtree.return_value = ["1"]
         for version in behavior.VERSIONS:
             with self.project_override(version):
+                self.run_as("claude")
                 native = json.loads(self.command("review", "1", "--native"))
                 text = delivered_bytes(native["input"]).decode()
                 self.assertEqual(text, self.delegation_input(native).read_text())
                 self.assertIn(f"Workflow behavior: {version} (reviewer)", text)
                 self.assertNotIn(f"Workflow behavior: {version} (coordinator)", text)
                 self.native_result()
+                # An unknown session names its CLI; sync opens with codex.
+                self.run_as(None)
                 from workflow_fixtures import answer
                 with patch.object(workflow, "run", return_value=answer()) as run:
                     self.command("review", "1")
                 self.assertIn(f"Workflow behavior: {version} (reviewer)", run.call_args.args[3])
-                opened = json.loads(self.command("sync", "1", "--native"))
+                opened = json.loads(self.command("sync", "1", "--native", "--provider", "codex"))
                 prepared = delivered_bytes(opened["input"]).decode()
                 self.assertIn(f"Workflow behavior: {version} (sync)", prepared)
                 self.assertNotIn(f"Workflow behavior: {version} (coordinator)", prepared)

@@ -200,6 +200,7 @@ class GeneratedPromptTests(WorkflowCase):
         self.assertTrue(after.startswith(before))
         self.assertIn("Working language: English\n", after)
         from test_text_delivery import delivered_bytes
+        self.run_as("codex")
         self.assertIn("Working language: English\n",
                       delivered_bytes(self.run_workflow("sync", "1", "--native")["input"]).decode())
 
@@ -210,8 +211,11 @@ class GeneratedPromptTests(WorkflowCase):
         self.config.workflow.tracker_language = "Russian"
         self.assertIn("Working language: Russian\n", self.sync_prompt())
         self.assertIn("Working language: English\n", self.worker_prompt())
-        for command, expected in ((["sync", "1", "--native"], "Russian"),
-                                   (["delegate", "1", "--role", "worker", "--brief", str(self.review_brief), "--native"], "English")):
+        # Unknown session: each native launch names the CLI its own route runs.
+        self.run_as(None)
+        for command, expected in ((["sync", "1", "--native", "--provider", "codex"], "Russian"),
+                                   (["delegate", "1", "--role", "worker", "--brief", str(self.review_brief), "--native",
+                                     "--provider", "claude"], "English")):
             with self.subTest(command=command):
                 prompt = delivered_bytes(self.run_workflow(*command)["input"]).decode()
                 self.assertIn(f"Working language: {expected}\n", prompt)
