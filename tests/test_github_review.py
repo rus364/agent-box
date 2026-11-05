@@ -162,7 +162,8 @@ class CloudReviewTests(LandingCase):
         created = created or when(60)
         body = github_review.request_body(provider, self.head, gw.base_commit(self.root, "main"),
                                           workflow.review_descriptions(self.parent, self.parent, [self.parent]),
-                                          language=self.config.workflow.languages().engineering, behavior_version="v2")
+                                          language=self.config.workflow.languages().engineering,
+                                          behavior_version=self.config.workflow.behavior_version)
         return {"id": 100, "user": {"login": "rus364", "type": "User"}, "created_at": created,
                 "updated_at": created, "body": body,
                 "html_url": "https://github.com/o/r/pull/9#issuecomment-100"}
@@ -182,11 +183,12 @@ class CloudReviewTests(LandingCase):
         """Both bots judge engineering text using project policy, regardless of tracker or global language."""
         from agent_box import project_config
         original = self.config
-        original.workflow.review.max_rounds = 4
+        versions = ("v1", "v2", "v3")
+        original.workflow.review.max_rounds = 2 * len(versions)
         original.workflow.language = "Deutsch"
         original.workflow.tracker_language = "日本語"
         for provider in ("codex", "claude"):
-            for version in ("v1", "v2"):
+            for version in versions:
                 original.workflow.behavior_version = "v2" if version == "v1" else "v1"
                 original.workflow.review.github_provider = provider
                 path = self.root / ".agent-box.json"

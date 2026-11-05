@@ -16,7 +16,7 @@ from .external_config import API_EFFORTS, EFFORTS, ExternalProvider, cli_models,
 from .model_catalog import load_model_catalogs
 
 CHOICES = {
-    "workflow.behavior_version": ("v1", "v2"),
+    "workflow.behavior_version": ("v1", "v2", "v3"),
     "host.personal_browser.browser": ("auto", "chrome", "chromium"),
     "box.network.mode": ("default", "host"),
     "agents.default": LAUNCH_AGENTS,
@@ -30,7 +30,7 @@ CHOICES = {
     "box.k3s.lifetime": K3S_LIFETIMES,
 }
 HELP = {
-    "workflow.behavior_version": "Engineering guidance: v1 preserves previous instructions; v2 (default) adds proportionate impact analysis, reuse and evidence-based disagreement. Projects may override it. New assignments use the selected version; existing agents keep their context.",
+    "workflow.behavior_version": "Engineering guidance: v1 preserves previous instructions; v2 adds proportionate impact analysis, reuse and evidence-based disagreement; v3 (default) also offers only viable, fairly described alternatives. Projects may override it. New assignments use the selected version; existing agents keep their context.",
     "workflow.text_max_bytes": "Maximum delivered UTF-8 bytes (default 65536). Oversized notes/reports use the configured scout once; requirements stay exact and unresolved overflow stops delivery. Diffs are read on demand. Global only; not a session spending budget.",
     "workflow.text_retention_days": "Keep temporary text pages for this many days (default 7). New entries keep their creation-time expiry; setting changes affect new entries. Writes/preparation silently clean expired owned entries. Reads do not delete files. Global only.",
     "box.network": "Publish workspace or k3s services, reach selected host services, or explicitly share the host network. Changes need a stopped workspace.",
@@ -224,6 +224,7 @@ OPTION_HELP = {
     "workflow.behavior_version": {
         "v1": "Preserve previous engineering guidance, including existing local review safeguards.",
         "v2": "Trace affected contracts, reuse suitable code and question costly or harmful approaches with evidence; keep effort proportionate.",
+        "v3": "v2, plus offer only viable alternatives described as fairly as the recommendation; state a settled choice instead of padding a question.",
     },
     "host.personal_browser.browser": {
         "auto": "Use installed Google Chrome, otherwise Chromium; never fall back to another browser after a connection failure.",

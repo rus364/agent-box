@@ -1,7 +1,7 @@
 """Versioned engineering guidance; role permissions and execution policy stay separate."""
 from .errors import AgentBoxError
 
-VERSIONS = ("v1", "v2")
+VERSIONS = ("v1", "v2", "v3")
 ROLES = ("coordinator", "worker", "reviewer", "scout", "sync")
 
 COMMON = """Before proposing or changing an implementation, trace the relevant callers, dependencies and contracts: public interfaces, configuration readers/writers/defaults, persisted data, generated/installed artifacts, tests and documentation. Cover additions, modifications and deletions, including indirect consumers and obsolete cleanup. Follow evidenced dependencies outside the diff; bound research by impact, risk and uncertainty, not every imaginable connection.
@@ -10,6 +10,12 @@ Assess the requested approach against the user's goal. Investigate material cont
 Separate observed facts, hypotheses and unverified assumptions. Use the cheapest discriminating check: inspect a consumer or test, reproduce in isolation, or consult authoritative documentation when needed. If proof is unavailable or disproportionately costly, state the uncertainty and concrete alternatives with effort/risk tradeoffs. A guess is not a blocker; passing static tests is not live acceptance.
 Scale investigation and validation with risk, not line count. Flag a small benefit requiring a large rewrite before expanding scope; a tiny public-interface or data-handling change may still need broad checks. Report material affected contracts, decisions and verification limits concisely, without mandatory essays or repetitive checklists.
 """
+
+# v3: a fixed option count made agents pad a settled choice with strawman alternatives.
+CHOICES = """When offering alternatives or asking the user to choose, include only viable options: each one a competent engineer could pick here, with its real cost and the case where it wins. Describe alternatives as fairly as the recommendation and never pad to reach a count. If only one option is reasonable, state it as a decision or assumption instead of offering a choice.
+"""
+
+GUIDANCE = {"v1": "", "v2": COMMON, "v3": COMMON + CHOICES}
 
 ROLE_RULES = {
     "coordinator": "Discuss material scope/requirement alternatives with the user; routine implementation choices need no extra approval. Verify delegated claims and close required executable checks.\n",
@@ -23,12 +29,12 @@ ROLE_RULES = {
 def instructions(version, role):
     """Global profiles cannot hold a project's choice; each assignment carries it."""
     if version not in VERSIONS:
-        raise AgentBoxError("workflow.behavior_version must be v1 or v2")
+        raise AgentBoxError("workflow.behavior_version must be v1, v2 or v3")
     if role not in ROLES:
         raise AgentBoxError("Unknown workflow behavior role")
     text = f"Workflow behavior: {version} ({role}).\n"
-    if version == "v2":
-        text += COMMON + ROLE_RULES[role]
+    if GUIDANCE[version]:
+        text += GUIDANCE[version] + ROLE_RULES[role]
     return text
 
 

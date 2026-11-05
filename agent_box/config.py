@@ -989,7 +989,7 @@ class WorkflowConfig:
     enabled: bool = False
     merge_mode: str = "github"
     #: Engineering guidance only; permissions and review/model policy are independent.
-    behavior_version: str = "v2"
+    behavior_version: str = "v3"
     #: Global: a whole delivered text, independent of page size or provider tokens.
     text_max_bytes: int = 65536
     #: Global: each temporary text keeps the expiry chosen when it was created.
@@ -1068,8 +1068,8 @@ class WorkflowConfig:
         errors = []
         if self.merge_mode not in ("github", "local"):
             errors.append("workflow.merge_mode must be github or local")
-        if self.behavior_version not in ("v1", "v2"):
-            errors.append("workflow.behavior_version must be v1 or v2")
+        if self.behavior_version not in ("v1", "v2", "v3"):
+            errors.append("workflow.behavior_version must be v1, v2 or v3")
         for name in ("text_max_bytes", "text_retention_days"):
             value = getattr(self, name)
             if type(value) is not int or value < 1:

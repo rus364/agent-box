@@ -20,8 +20,8 @@ from test_text_delivery import delivered_bytes
 
 class BehaviorConfigTests(unittest.TestCase):
     def test_default_and_explicit_versions_survive_saved_and_rendered_settings(self):
-        """The default is v2; an explicit supported behavior selection must survive saving."""
-        self.assertEqual(config.Config.from_dict({}).workflow.behavior_version, "v2")
+        """The default is v3; an explicit supported behavior selection must survive saving."""
+        self.assertEqual(config.Config.from_dict({}).workflow.behavior_version, "v3")
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             for version in behavior.VERSIONS:
@@ -39,14 +39,14 @@ class BehaviorConfigTests(unittest.TestCase):
 
     def test_unknown_versions_are_errors_instead_of_silent_defaults(self):
         """A typo must not select a different engineering contract."""
-        for value in ("v3", "", None, 2, True, [], {}):
+        for value in ("v4", "", None, 2, True, [], {}):
             with self.subTest(value=value):
                 settings = config.Config.from_dict({"workflow": {"behavior_version": value}})
                 self.assertTrue(any("behavior_version" in x for x in settings.workflow.validate()))
                 with self.assertRaises(AgentBoxError):
                     project_config.validate({"workflow": {"behavior_version": value}}, Path(".agent-box.json"))
 
-    def test_project_reset_inherits_and_global_proposal_reset_restores_v2(self):
+    def test_project_reset_inherits_and_global_proposal_reset_restores_v3(self):
         """Resetting an override must not accidentally pin the project's last effective version."""
         settings = config.Config()
         settings.workflow.behavior_version = "v1"
@@ -55,14 +55,14 @@ class BehaviorConfigTests(unittest.TestCase):
         reset = project_config.changed(override, resets=[("workflow", "behavior_version")])
         self.assertEqual(project_config.apply(settings, reset).workflow.behavior_version, "v1")
         proposed = config_proposal.applied(settings.to_dict(), {"set": {}, "reset": ["workflow.behavior_version"]})
-        self.assertEqual(config.Config.from_dict(proposed).workflow.behavior_version, "v2")
+        self.assertEqual(config.Config.from_dict(proposed).workflow.behavior_version, "v3")
 
     def test_behavior_discovery_needs_no_task_tracker_or_enabled_workflow(self):
         """Planning must load policy before a task exists, including an unbound checkout."""
         with patch.object(workflow, "effective_config", return_value=config.Config()), \
                 patch.object(workflow, "make_adapter") as adapter, patch.object(workflow, "repository_root") as root:
             result = workflow.dispatch(workflow.parser().parse_args(["behavior", "--role", "coordinator"]))
-        self.assertEqual(result["version"], "v2")
+        self.assertEqual(result["version"], "v3")
         self.assertEqual(result["role"], "coordinator")
         self.assertIn("user's goal", result["instructions"])
         adapter.assert_not_called()
@@ -99,8 +99,17 @@ class BehaviorConfigTests(unittest.TestCase):
                 for role in behavior.ROLES:
                     self.assertIn(role, result.stderr)
 
+    def test_only_v3_carries_the_viable_alternatives_rule_for_every_role(self):
+        """v2 must stay exactly as released; v3 adds the rule against strawman options to all roles."""
+        for role in behavior.ROLES:
+            v2, v3 = behavior.instructions("v2", role), behavior.instructions("v3", role)
+            self.assertNotIn(behavior.CHOICES, v2)
+            self.assertIn(behavior.CHOICES, v3)
+            self.assertEqual(v3.replace("v3", "v2", 1).replace(behavior.CHOICES, ""), v2)
+            self.assertIn(behavior.ROLE_RULES[role], v3)
+
     def test_shared_native_profiles_cannot_pin_another_projects_behavior(self):
-        """Each assignment supplies policy; static profiles never choose v1 or v2."""
+        """Each assignment supplies policy; static profiles never choose a version."""
         for role in ("worker", "scout", "reviewer", "sync"):
             text = delegation.profile_instructions(role)
             self.assertNotIn(behavior.COMMON, text)
@@ -146,7 +155,7 @@ class BehaviorDeliveryTests(WorkflowCase):
                     prepared = delivered_bytes(native["input"]).decode()
                     self.assertIn(original, prepared)
                     self.assertIn(f"Workflow behavior: {version} ({role})", prepared)
-                    self.assertEqual(behavior.COMMON in prepared, version == "v2")
+                    self.assertEqual(behavior.COMMON in prepared, version != "v1")
                     self.assertNotIn(f"Workflow behavior: {version} (coordinator)", prepared)
                     with patch.object(workflow, "execute", return_value={"report": "Done", "route": {},
                             "failures": [], "diagnostics": {"usage": None}}) as execute:
@@ -157,7 +166,7 @@ class BehaviorDeliveryTests(WorkflowCase):
         """Routes with their own builders must still use the effective project selection."""
         self.config.workflow.review.policy = "always"
         self.config.workflow.review.incremental = "off"
-        self.config.workflow.review.max_rounds = 4
+        self.config.workflow.review.max_rounds = 2 * len(behavior.VERSIONS)
         self.config.workflow.sync.models = [candidate("codex", "sync", "high")]
         self.adapter.subtree.return_value = ["1"]
         for version in behavior.VERSIONS:
@@ -200,7 +209,7 @@ class BehaviorDeliveryTests(WorkflowCase):
                     self.run_workflow("delegate", "1", "--role", role, "--brief", str(brief))
                 prompt = execute.call_args.args[4]
                 self.assertIn(f"Workflow behavior: {version} ({role})", prompt)
-                self.assertEqual(behavior.COMMON in prompt, version == "v2")
+                self.assertEqual(behavior.COMMON in prompt, version != "v1")
 
     def test_local_review_keeps_v1_safeguards_and_selects_v2_per_round(self):
         """v1 must keep existing review quality while v2 adds the shared analysis policy."""
@@ -211,7 +220,7 @@ class BehaviorDeliveryTests(WorkflowCase):
             self.assertIn('ask "then what?"', prompt)
             self.assertIn("simpler behavior-preserving alternative", prompt)
             self.assertIn(f"Workflow behavior: {version} (reviewer)", prompt)
-            self.assertEqual(behavior.COMMON in prompt, version == "v2")
+            self.assertEqual(behavior.COMMON in prompt, version != "v1")
             self.native_result()
 
     def test_sync_and_github_requests_carry_the_selected_policy(self):
@@ -228,7 +237,7 @@ class BehaviorDeliveryTests(WorkflowCase):
                                                 behavior_version=version)
             for role, text in (("sync", sync), ("reviewer", cloud)):
                 self.assertIn(f"Workflow behavior: {version} ({role})", text)
-                self.assertEqual(behavior.COMMON in text, version == "v2")
+                self.assertEqual(behavior.COMMON in text, version != "v1")
 
     def test_inspect_exposes_the_actual_version_without_changing_it(self):
         """The coordinator must see a project override before handing work to a native agent."""

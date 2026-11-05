@@ -8,6 +8,12 @@
   `$TMPDIR` and `/tmp` while workspace roots stay read-only. Rerun
   `agent-box config apply` (or relaunch after updating) to refresh the profile.
 - `agent-box tracker update` refuses an empty description instead of erasing the task.
+- Add Workflow behavior v3, now the default: v2 plus offering only viable,
+  fairly described alternatives, and stating a settled choice instead of padding
+  a question with strawman options. `ab-interview` and `ab-config` no longer
+  force 2-4 options when only one is reasonable. A saved configuration keeps
+  its explicit version; select `v3` under Workflow → Behavior or as a project
+  override to adopt it.
 
 ## 0.2.0
 

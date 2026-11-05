@@ -263,7 +263,7 @@ expected. A cleanup failure never undoes the merge or Done.
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `workflow.enabled` | off | Install and allow the workflow (global only) |
-| `workflow.behavior_version` | `v2` | Engineering guidance: `v1` preserves previous rules; `v2` adds consistent impact analysis, reuse and evidence-based disagreement |
+| `workflow.behavior_version` | `v3` | Engineering guidance: `v1` preserves previous rules; `v2` adds consistent impact analysis, reuse and evidence-based disagreement; `v3` also offers only viable, fairly described alternatives |
 | `workflow.merge_mode` | `github` | `github` pull request or `local` fast-forward |
 | `workflow.auto_push` | on | Publish the parent (GitHub) or the landed base (local) |
 | `workflow.pause_push` | off | Publish and verify unfinished task branches on an explicit pause |
@@ -416,7 +416,8 @@ role with `--role worker|reviewer|scout|sync`, never coordinator behavior. Nativ
 managed assignments carry the chosen role's instructions, including GitHub review
 requests. Shared installed profiles do not store a project's version. v1 retains
 the earlier local review safeguards; v2 extends the common reasoning policy across
-roles without changing ownership or requiring speculative refactors. Read-only
+roles without changing ownership or requiring speculative refactors; v3 adds that
+offered alternatives must be viable and fairly described. Read-only
 reviewers describe necessary executable checks for the coordinator to perform.
 
 After a package update, the first host launch applies shared integrations. Each
