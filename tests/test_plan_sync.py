@@ -13,7 +13,11 @@ from agent_box.errors import AgentBoxError
 from agent_box.provider_runner import ProviderFailure
 from agent_box.project_config import PROJECT_FIELDS, apply
 from agent_box.repo_binding import block_text
+from agent_box.tracker.core import Task
 from workflow_fixtures import BINDING, WorkflowCase, candidate
+
+# The fixture stubs branch resolution; integration targets need the real derivation.
+REAL_RESOLVE = workflow.resolve
 
 
 class PlanSyncTests(WorkflowCase):
@@ -107,6 +111,41 @@ class PlanSyncTests(WorkflowCase):
         self.assertEqual(choose.call_args.args[1], "sync")
         self.assertNotIn(self.task.description, execute.call_args.args[4])
         self.assertIn("Source: 1", execute.call_args.args[4])
+
+    def sync_assignment(self, task_id):
+        with patch.object(workflow, "resolve", REAL_RESOLVE), patch.object(workflow, "candidates", return_value={}), \
+                patch.object(workflow, "execute", return_value={
+                    "report": "Sync: UNCHANGED\n", "route": {}, "diagnostics": {"usage": None}}) as execute:
+            self.run_workflow("sync", task_id)
+        return execute.call_args.args[4]
+
+    def test_subtask_assignment_names_its_parent_branch_instead_of_the_default_branch(self):
+        """A finished subtask's commits live in the parent branch until the parent lands.
+
+        An executor left to verify integration itself searched the default branch,
+        found nothing and reported a false outcome the coordinator had to reconcile.
+        """
+        child = Task("2", "1", "Child", state="Done", parent="1")
+        self.adapter.get.side_effect = {"1": self.task, "2": child}.__getitem__
+        prompt = self.sync_assignment("2")
+        self.assertIn("Integration: verified by workflow into ab/1-task;", prompt)
+        self.assertNotIn("verify integration", prompt)
+        child.state = "In progress"
+        self.assertIn("Integration: not yet in ab/1-task;", self.sync_assignment("2"))
+        # After the parent lands its branch may be released; the work is in the base.
+        self.task.state, child.state = "Done", "Done"
+        workflow.gw.git(self.root, "switch", "main")
+        workflow.gw.git(self.root, "branch", "-D", "ab/1-task")
+        self.assertIn("Integration: verified by workflow into main;", self.sync_assignment("2"))
+
+    def test_parent_assignment_names_the_base_and_a_missing_branch_is_never_guessed(self):
+        """A parent integrates into origin's default branch; with no parent branch there is no target to name."""
+        self.assertIn("Integration: not yet in main;", self.sync_assignment("1"))
+        child = Task("2", "1", "Child", state="In progress", parent="1")
+        self.adapter.get.side_effect = {"1": self.task, "2": child}.__getitem__
+        workflow.gw.git(self.root, "switch", "main")
+        workflow.gw.git(self.root, "branch", "-D", "ab/1-task")
+        self.assertIn("Integration target unknown: parent 1 has no branch", self.sync_assignment("2"))
 
     def test_native_result_records_partial_writes_as_blocked_without_touching_lifecycle(self):
         """A native report is an outcome, never code acceptance or task completion."""

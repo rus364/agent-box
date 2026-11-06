@@ -215,6 +215,31 @@ def complete(root, task, result, report):
     return result
 
 
+def integration(root, adapter, task):
+    """State where the source's work belongs instead of letting the executor guess.
+
+    Executors asked to verify integration themselves searched origin's default
+    branch for a subtask whose commits only live in its parent branch, and
+    reported a false outcome. Done already proves integration (finish or
+    landing), and a squash or rebase merge leaves no ancestry to check, so the
+    fact is stated rather than re-verified.
+    """
+    from . import workflow
+    try:
+        parent, info, _, target = workflow.resolve(root, adapter, task, allow_missing=True)
+    except AgentBoxError as exc:
+        return f"Integration target unknown ({exc}); never infer it from the default branch"
+    if task.id != parent.id and parent.state == "Done":
+        # A landed parent's branch may be released; its subtasks' work is in the base now.
+        target = info["base"]
+    if not target:
+        return f"Integration target unknown: parent {parent.id} has no branch; never infer it from the default branch"
+    if task.state == "Done":
+        return (f"Integration: verified by workflow into {target}; squash or rebase merges may "
+                "change hashes there; do not re-verify")
+    return f"Integration: not yet in {target}; do not propagate its unmerged changes"
+
+
 def run(root, binding, adapter, config, task, event="manual", *, native=False, result_file=None, reconcile_file=None,
         provider=None):
     from . import workflow
@@ -265,6 +290,10 @@ def run(root, binding, adapter, config, task, event="manual", *, native=False, r
               f"project {binding.project}; recursive={str(binding.recursive).lower()}")
     prompt = (RULES + f"\nAssigned role: sync executor\nSource: {task.id}\nRead: agent-box tracker get {task.url or task.id} --no-comments\nEvent: {event}\nScope: {target}\n"
               f"References: {str(settings.references).lower()}\n")
+    saved = workflow.read_evidence(root, task)
+    if saved.get("base_head") and saved.get("head"):
+        prompt += f"Source commits: {saved['base_head']}..{saved['head']}\n"
+    prompt += integration(root, adapter, task) + "\n"
     from .workflow_behavior import instructions
     prompt += instructions(config.workflow.behavior_version, "sync")
     guidance = workflow.repository_instructions(root, config.workflow)
@@ -274,9 +303,6 @@ def run(root, binding, adapter, config, task, event="manual", *, native=False, r
     if language:
         # The rules are also the native profile shared by every repository; only the value is this one's.
         prompt += f"Working language: {language}\n"
-    saved = workflow.read_evidence(root, task)
-    if saved.get("base_head") and saved.get("head"):
-        prompt += f"Source commits: {saved['base_head']}..{saved['head']} (verify integration before propagation).\n"
     from . import text_delivery
     text_delivery.check_size(len(prompt.encode("utf-8")), config.workflow, "sync assignment")
     text_delivery.prepare(config)
