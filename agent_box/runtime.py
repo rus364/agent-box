@@ -1321,12 +1321,15 @@ def rendered_workflow(config: Config, external: dict) -> dict:
 
     A disabled API is not rendered, so its name would fail the session's
     vendor check; it cannot run there either, so its share is dropped rather
-    than rendering a placeholder API entry.
+    than rendering a placeholder API entry. Without a reachable positive
+    weight the session has nothing to balance and runs list order.
     """
     workflow = config.workflow.to_dict()
-    weights = workflow["balance"]["weights"]
-    workflow["balance"]["weights"] = {name: weight for name, weight in weights.items()
-                                      if name in ("codex", "claude") or name in external}
+    balance = workflow["balance"]
+    balance["weights"] = {name: weight for name, weight in balance["weights"].items()
+                          if name in ("codex", "claude") or name in external}
+    if not any(balance["weights"].values()):
+        balance["mode"] = "off"
     return workflow
 
 

@@ -223,8 +223,9 @@ with existing-only branch switching. It never recreates lost work from base.
   follow the vendor's first candidate in the list), and subtract the total
   weight from the winner. Its first usable model opens; every other usable
   candidate remains a fallback in list order. Zero or missing weights never
-  open a balanced run; with fewer than two eligible vendors, list order stands
-  and no counter changes. Pins bypass balancing.
+  open a balanced run; a sole eligible vendor opens without a counter change,
+  and with none list order stands. Counters pause, not reset, while fewer than
+  two vendors are eligible: the skew stays within one rotation. Pins bypass balancing.
 - Credits persist per role and effective tier (`none` when untiered) in the
   global `WORKFLOW_STATE/balance.json`, independently of tasks and repositories.
   Changed eligible weights reset that key. A blocking global lock protects each

@@ -132,8 +132,8 @@ empty.
   nonnegative whole numbers, with at least one positive weight in weighted
   mode. Smooth weighted round-robin chooses among usable vendors, then runs
   the winner's first usable model. All other usable models remain fallbacks in
-  list order, including vendors with zero or missing weights. With fewer than
-  two eligible vendors, list order stands and no turn is consumed.
+  list order, including vendors with zero or missing weights. A sole eligible
+  vendor opens without consuming a turn; with none, list order stands.
   Counters persist across processes and repositories per role and effective
   tier; changed eligible weights reset that rotation. Route reasons name the
   choice and weights. Inspection consumes no turn: a list with multiple positive

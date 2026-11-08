@@ -61,8 +61,9 @@ def select(config, role, tier, usage=None, *, now=None, available=None, authors=
             # Author weights cannot displace a usable independent reviewer.
             group = [spec for spec in allowed if vendor(spec) not in authors] or allowed
         weights = eligible_weights(config, group)
-        if len(weights) > 1:
-            winner = balance(role, tier, weights)
+        if weights:
+            # A sole weighted vendor takes every turn, so it opens without spending a counter.
+            winner = balance(role, tier, weights) if len(weights) > 1 else next(iter(weights))
             index = next(index for index, spec in enumerate(allowed) if vendor(spec) == winner)
             allowed.insert(0, allowed.pop(index))
             reason = "Balanced by weights " + ", ".join(f"{name}={weight}" for name, weight in weights.items())

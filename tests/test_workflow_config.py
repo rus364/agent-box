@@ -128,6 +128,23 @@ class BalanceValidationTests(unittest.TestCase):
             self.assertEqual(rendered.workflow.balance.weights, {"claude": 3})
             self.assertEqual(rendered.workflow.validate(rendered.agents.external_apis), [])
 
+    def test_a_session_whose_weights_all_name_disabled_apis_runs_list_order(self):
+        """Valid host settings must not render an invalid session: no reachable weight means nothing to balance."""
+        from agent_box import runtime
+        config = Config.from_dict({"agents": {"external_apis": {"api": {}}},
+                                  "workflow": {"enabled": True, "balance": {"mode": "weighted", "weights": {"api": 1}}}})
+        self.assertEqual(config_menu_validate(config), [])
+        with tempfile.TemporaryDirectory() as directory:
+            runtime.sync_tracker_runtime(config, Path(directory))
+            rendered = Config.from_dict(json.loads((Path(directory) / "config.json").read_text()))
+        self.assertEqual((rendered.workflow.balance.mode, rendered.workflow.balance.weights), ("off", {}))
+        self.assertEqual(rendered.workflow.validate(rendered.agents.external_apis), [])
+
+
+def config_menu_validate(config):
+    from agent_box import config_menu
+    return config_menu.validate(config)
+
 
 class ConfigShowTests(unittest.TestCase):
     def test_every_schema_setting_is_shown_without_per_field_code(self):

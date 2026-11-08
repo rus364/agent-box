@@ -250,13 +250,20 @@ class WeightedRoutingTests(unittest.TestCase):
                                     candidate("codex", "c", api_provider="second")]
         self.assertEqual([self.select()["model"] for _ in range(4)], ["a", "c", "a", "c"])
 
-    def test_zero_or_one_eligible_vendor_keeps_list_order_and_never_touches_state(self):
-        """A lone weighted vendor is no balancing choice, even when an unweighted candidate precedes it."""
+    def test_a_lone_weighted_vendor_opens_ahead_of_unweighted_ones_without_touching_state(self):
+        """An unweighted vendor is only a fallback, so it cannot open ahead of the sole weighted one."""
         unused = Mock(side_effect=AssertionError("allocation reached"))
-        for weights in ({"claude": 0, "codex": 1}, {"unused": 1}):
-            self.config.balance.weights = weights
-            self.assertEqual(self.select(balance=unused)["model"], "opus")
+        self.config.balance.weights = {"claude": 0, "codex": 1}
+        selected = self.select(balance=unused)
+        self.assertEqual([selected["model"], *[spec["model"] for spec in selected["fallbacks"]]][:2],
+                         ["gpt", "opus"])
         unused.assert_not_called()
+        self.assertFalse(self.path.exists())
+
+    def test_no_eligible_weighted_vendor_keeps_list_order(self):
+        """Weights naming no usable vendor leave the configured preference as it is."""
+        self.config.balance.weights = {"unused": 1}
+        self.assertEqual(self.select(balance=Mock(side_effect=AssertionError("allocation reached")))["model"], "opus")
         self.assertFalse(self.path.exists())
 
     def test_cli_and_reserve_filters_remove_vendors_before_balancing(self):
