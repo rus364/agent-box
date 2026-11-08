@@ -86,6 +86,38 @@ class ReviewWorkflowTests(WorkflowCase):
         self.assertEqual(opened["route"]["model"], "selected")
         run.assert_not_called()
 
+    def test_managed_retry_replaces_a_sole_weighted_native_round_and_records_its_verdict(self):
+        """An unstarted native reviewer can retry managed within the failure budget instead of returning another handoff."""
+        self.config.workflow.balance = BalanceConfig("weighted", {"codex": 1})
+        self.config.workflow.review.models.append(candidate("codex", "selected", "high"))
+
+        def reviewed(*args, **kwargs):
+            state = workflow.read_review_state(self.root, BINDING, self.task)
+            self.assertEqual(state["pending_backend"], "managed")
+            self.assertNotEqual(state["pending"], opened["round"])
+            return answer()
+
+        with routing_session("codex"), patch.object(workflow, "run", side_effect=managed_runner(reviewed)) as run:
+            opened = self.run_workflow("review", "1")
+            self.assertEqual(opened["launch"], "native")
+            self.assertEqual(opened["review_budget"]["failures"], 1)
+            run.assert_not_called()
+            result = self.run_workflow("review", "1", "--managed")
+        self.assertEqual((result["route"]["model"], result["verdict"]), ("selected", "PASS"))
+        self.assertEqual(result["reconciliation"]["status"], "applied")
+        self.assertEqual((result["review_budget"]["used"], result["review_budget"]["failures"]), (1, 0))
+        self.assertEqual(json.loads(Path(result["result_path"]).read_text())["backend"], "managed")
+        self.assertFalse(self.delegation_input(opened).parent.exists())
+        self.assertEqual(run.call_count, 1)
+
+    def test_managed_flag_keeps_an_unbalanced_review_managed(self):
+        """The managed override must remain harmless when ordinary selection already launches a managed reviewer."""
+        with patch.object(workflow, "run", side_effect=managed_runner(lambda *args, **kwargs: answer())) as run:
+            result = self.run_workflow("review", "1", "--managed")
+        self.assertEqual(result["verdict"], "PASS")
+        self.assertEqual(json.loads(Path(result["result_path"]).read_text())["backend"], "managed")
+        self.assertEqual(run.call_count, 1)
+
     def test_balanced_reviewer_without_a_detected_session_runs_managed(self):
         """Unknown session identity must not turn a weighted pick into an arbitrary native profile."""
         self.config.workflow.balance = BalanceConfig("weighted", {"codex": 1})

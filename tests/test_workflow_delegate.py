@@ -55,14 +55,46 @@ class DelegateCommandTests(WorkflowCase):
                 first = self.delegate(role)
                 opened = self.delegate(role)
                 third = self.delegate(role)
-                self.assertEqual(turn.call_count, 3)
-                self.assertEqual(run.call_count, 2)
+                forced = self.run_workflow("delegate", "1", "--role", role, "--brief", str(self.review_brief), "--managed")
+                self.assertEqual(turn.call_count, 4)
+                self.assertEqual(run.call_count, 3)
             self.assertEqual((first["route"]["provider"], third["route"]["provider"]), ("claude", "claude"))
+            self.assertEqual((forced["route"]["provider"], forced["response"]), ("codex", ANSWER))
             self.assertEqual(opened["launch"], "native")
             self.assertEqual(opened["profile"], "ab-worker-1" if role == "worker" else "ab-scout")
             self.assertEqual((opened["route"]["provider"], opened["route"]["model"]), ("codex", "second"))
             self.assertNotIn("native_limitation", opened["route"])
             self.assertIn(opened["input"]["path"], opened["message"])
+
+    def test_managed_retry_runs_the_sole_weighted_native_delegate_and_its_fallbacks(self):
+        """A failed native spawn must be able to retry managed even when every weighted pick matches its CLI."""
+        self.config.workflow.balance = BalanceConfig("weighted", {"codex": 1})
+        for role in ("worker", "scout"):
+            self.config.workflow.role(role).models = [candidate("claude", "first", "high"),
+                                                     candidate("codex", "weighted", "high")]
+            command = ("delegate", "1", "--role", role, "--brief", str(self.review_brief))
+            with self.subTest(role=role), routing_session("codex"), \
+                    patch.object(workflow, "run", return_value=ANSWER) as run:
+                opened = self.run_workflow(*command)
+                self.assertEqual(opened["launch"], "native")
+                run.assert_not_called()
+                result = self.run_workflow(*command, "--managed")
+                self.assertEqual((result["route"]["model"], result["response"]), ("weighted", ANSWER))
+                self.assertEqual(run.call_count, 1)
+                run.reset_mock()
+                run.side_effect = [provider_runner.ProviderFailure("CLI unavailable", "unavailable"), ANSWER]
+                fallback = self.run_workflow(*command, "--managed")
+                self.assertEqual([call.args[0]["model"] for call in run.call_args_list], ["weighted", "first"])
+                self.assertEqual((fallback["route"]["model"], fallback["response"]), ("first", ANSWER))
+
+    def test_managed_flag_keeps_unbalanced_delegates_managed(self):
+        """An explicit managed retry remains valid when weighting is disabled and the opener has a native profile."""
+        for role, provider in (("worker", "claude"), ("scout", "codex")):
+            with self.subTest(role=role), routing_session(provider), patch.object(workflow, "run", return_value=ANSWER) as run:
+                result = self.run_workflow("delegate", "1", "--role", role, "--brief", str(self.review_brief), "--managed")
+            self.assertEqual(result["route"]["provider"], provider)
+            self.assertEqual(result["response"], ANSWER)
+            self.assertEqual(run.call_count, 1)
 
     def test_balanced_delegates_preserve_explicit_speed_in_a_managed_launch(self):
         """A matching CLI must not inherit session speed when the selected candidate requests standard speed."""
@@ -452,6 +484,23 @@ class DelegateContractTests(unittest.TestCase):
     per-delegate isolation is available to it; deliberately, none is imposed on
     the managed one either.
     """
+
+    def test_managed_launch_rejects_native_and_result_modes_before_dispatch(self):
+        """Contradictory launch or recording modes must fail as arguments before they can consume a turn or write state."""
+        commands = [("delegate", "1", "--role", role, "--brief", "FILE") for role in ("worker", "scout")]
+        commands += [("review", "1"), ("sync", "1")]
+        for command in commands:
+            conflicts = [("--native",)]
+            if command[0] in ("review", "sync"):
+                conflicts.append(("--result", "FILE"))
+            if command[0] == "sync":
+                conflicts.append(("--reconcile", "FILE"))
+            for flags in conflicts:
+                with self.subTest(command=command, flags=flags), \
+                        contextlib.redirect_stderr(io.StringIO()) as stderr, self.assertRaises(SystemExit) as error:
+                    workflow.parser().parse_args([*command, "--managed", *flags])
+                self.assertEqual(error.exception.code, 2)
+                self.assertIn("not allowed with argument --managed", stderr.getvalue())
 
     def test_the_native_profile_states_the_same_rules_as_the_managed_prompt(self):
         for role in ("worker", "scout"):

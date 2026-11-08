@@ -240,8 +240,8 @@ def integration(root, adapter, task):
     return f"Integration: not yet in {target}; do not propagate its unmerged changes"
 
 
-def run(root, binding, adapter, config, task, event="manual", *, native=False, result_file=None, reconcile_file=None,
-        provider=None):
+def run(root, binding, adapter, config, task, event="manual", *, native=False, managed=False, result_file=None,
+        reconcile_file=None, provider=None):
     from . import workflow
     if provider and not native:
         raise AgentBoxError("--provider names the session of a native run; pass it with --native")
@@ -316,7 +316,7 @@ def run(root, binding, adapter, config, task, event="manual", *, native=False, r
             workflow.native_provider(route, provider)
         else:
             selected = workflow.candidates(config, "sync", tier)
-            route = workflow.balanced_native_route(config, "sync", tier, task.id, selected)
+            route = None if managed else workflow.balanced_native_route(config, "sync", tier, task.id, selected)
         result = {"task": task.id, "event": event, "head": workflow.gw.head_sha(root), "status": "RUNNING",
                   "backend": "native" if route else "managed"}
         if route:

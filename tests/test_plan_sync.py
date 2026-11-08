@@ -86,6 +86,37 @@ class PlanSyncTests(WorkflowCase):
         self.assertEqual(result["backend"], "managed")
         self.assertEqual(run.call_count, 1)
 
+    def test_managed_retry_records_a_sole_weighted_sync_after_required_reconciliation(self):
+        """A failed native spawn can run managed only after recovery, preserving the original automatic event."""
+        self.config.workflow.balance = BalanceConfig("weighted", {"claude": 1})
+        self.config.workflow.sync.models.append(candidate("claude", "weighted", "high"))
+        self.config.workflow.sync.policy = "always"
+        self.config.workflow.sync.events = ["plan"]
+        command = ("sync", "1", "--event", "plan")
+        with routing_session("claude"), patch.object(workflow, "run", return_value="Sync: UNCHANGED\n") as run:
+            opened = self.run_workflow(*command)
+            self.assertEqual(opened["launch"], "native")
+            with self.assertRaisesRegex(AgentBoxError, "--reconcile"):
+                self.run_workflow(*command, "--managed")
+            run.assert_not_called()
+            self.report.write_text("Spawn failed before work; no executor or tracker writes.\nSync: REQUIRED\n")
+            recovered = self.run_workflow("sync", "1", "--reconcile", str(self.report))
+            self.assertEqual((recovered["status"], recovered["event"]), ("REQUIRED", "plan"))
+            result = self.run_workflow(*command, "--managed")
+        self.assertEqual(result["route"]["model"], "weighted")
+        self.assertEqual((result["status"], result["event"], result["backend"]), ("UNCHANGED", "plan", "managed"))
+        saved = plan_sync.last_result(self.root, self.task)
+        self.assertEqual((saved["status"], saved["event"], saved["backend"]), ("UNCHANGED", "plan", "managed"))
+        self.assertEqual(run.call_count, 1)
+        self.adapter.set_state.assert_not_called()
+
+    def test_managed_flag_keeps_an_unbalanced_sync_managed(self):
+        """Disabling balancing must not invalidate a managed launch of the session CLI's native-capable model."""
+        with patch.object(workflow, "run", return_value="Sync: UNCHANGED\n") as run:
+            result = self.run_workflow("sync", "1", "--managed")
+        self.assertEqual((result["status"], result["backend"]), ("UNCHANGED", "managed"))
+        self.assertEqual(run.call_count, 1)
+
     def test_balanced_sync_refuses_explicit_native_without_a_pending_record_or_turn(self):
         """Explicit native must name the selecting command before it can reserve a sync run."""
         self.config.workflow.balance = BalanceConfig("weighted", {"codex": 1, "claude": 1})

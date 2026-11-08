@@ -143,6 +143,9 @@ empty.
   `launch: native` handoff (`profile`, `message`, and a review/sync `result_command`)
   if the pick exactly matches the session CLI's native-capable profile; otherwise
   it runs managed. An undetected session runs managed; explicit `--native` is refused.
+  If native spawning fails before work starts, rerun with `--managed` to select
+  again and run the pick and fallbacks managed, following review failure-budget
+  and sync reconciliation rules.
 - **An empty list means "do it yourself"** for workers and scouts: the
   coordinator does the work in its own session. An empty reviewer list means a
   fresh native subagent of the coordinator's session reviews — never the

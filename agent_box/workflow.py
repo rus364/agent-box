@@ -1577,6 +1577,7 @@ def parser():
         if name == "sync":
             mode = cmd.add_mutually_exclusive_group()
             mode.add_argument("--native", action="store_true", help="Return a short assignment for the configured native profile")
+            mode.add_argument("--managed", action="store_true", help="Run the selected candidate and fallbacks managed, without a native handoff")
             mode.add_argument("--result", metavar="FILE", help="Record the native agent's unchanged Markdown answer")
             cmd.add_argument("--provider", choices=("codex", "claude"), help=SESSION_PROVIDER_HELP)
             mode.add_argument("--reconcile", metavar="FILE", help="After executor stops and live-task checks, record recovery evidence with one standalone Sync: UPDATED|UNCHANGED|BLOCKED|ERROR|REQUIRED line; no model call")
@@ -1595,8 +1596,10 @@ def parser():
             cmd.add_argument("--reason", required=True, help="The user's explicit acceptance of the current head, recorded by the coordinator")
         if name == "delegate":
             cmd.add_argument("--role", choices=("worker", "scout"), required=True)
-            cmd.add_argument("--native", action="store_true",
-                             help="Prepare the same assignment as generated file pages for the configured native profile")
+            mode = cmd.add_mutually_exclusive_group()
+            mode.add_argument("--native", action="store_true",
+                              help="Prepare the same assignment as generated file pages for the configured native profile")
+            mode.add_argument("--managed", action="store_true", help="Run the selected candidate and fallbacks managed, without a native handoff")
             cmd.add_argument("--provider", choices=("codex", "claude"), help=SESSION_PROVIDER_HELP)
             cmd.add_argument("--output", choices=("inline", "reference"), default="inline",
                              help="Managed answer: inline (default), or generated pages when longer than 4 KiB")
@@ -1613,6 +1616,7 @@ def parser():
             mode = cmd.add_mutually_exclusive_group()
             mode.add_argument("--native", action="store_true",
                               help="Open a round and print the input message for a fresh native reviewer")
+            mode.add_argument("--managed", action="store_true", help="Run the selected candidate and fallbacks managed, without a native handoff")
             mode.add_argument("--result", metavar="FILE", help="Record the pending native round's Markdown answer")
             cmd.add_argument("--provider", choices=("codex", "claude"),
                              help="With --native: " + SESSION_PROVIDER_HELP + "; with --result: the provider that ran")
@@ -1920,7 +1924,7 @@ def delegate(args, root, adapter, config):
         native_provider(route, args.provider)
     else:
         selected = candidates(config, args.role, tier)
-        route = balanced_native_route(config, args.role, tier, task.id, selected)
+        route = None if args.managed else balanced_native_route(config, args.role, tier, task.id, selected)
     if route:
         artifact = text_delivery.publish(prompt, config)
         return {"task": task.id, "role": args.role, "route": route, "input": artifact,
@@ -2037,7 +2041,7 @@ def review(args, root, binding, adapter, config, task, parent, tasks, base, fing
                             f"rerun workflow review {task.id} {AUTHOR_FORM}")
     require_review_budget(task, read_review_budget(root, binding, task, limit))
     selected = candidates(config, "reviewer", tier, authors=authors or ())
-    route = balanced_native_route(config, "reviewer", tier, task.id, selected, authors)
+    route = None if args.managed else balanced_native_route(config, "reviewer", tier, task.id, selected, authors)
     if route:
         expected = {key: selected[key] for key in ("provider", "model", "effort")}
         expected.update(profile=route["native"][selected["provider"]], managed=route["managed"])
@@ -2166,7 +2170,7 @@ def dispatch(args):
     if args.command == "sync":
         from .plan_sync import run as sync
         return sync(root, binding, adapter, config, adapter.get(args.task), args.event,
-                    native=args.native, result_file=args.result, reconcile_file=args.reconcile,
+                    native=args.native, managed=args.managed, result_file=args.result, reconcile_file=args.reconcile,
                     provider=args.provider)
     if args.command == "delegate":
         return delegate(args, root, adapter, config)
