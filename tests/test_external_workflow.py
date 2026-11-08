@@ -7,6 +7,8 @@ import unittest
 from unittest.mock import patch, Mock
 
 from agent_box import agent_profiles, external_launch, provider_runner, routing, workflow, workflow_state
+from agent_box.config import BalanceConfig
+from agent_box.errors import AgentBoxError
 from test_external_config import external_config
 import workflow_fixtures
 
@@ -99,6 +101,19 @@ class ExternalRoutingTests(unittest.TestCase):
         config.workflow.worker.tiers['1'][0]['speed'] = 'fast'
         self.assertTrue(any('external API' in e for e in config.workflow.validate()))
 
+    def test_external_sessions_cannot_open_subscription_profiles_natively(self):
+        """A built-in profile cannot replace the external endpoint inherited by a native child."""
+        config = external_config()
+        config.workflow.enabled = True
+        for cli in ('codex', 'claude'):
+            config.workflow.scout.models = [workflow_fixtures.candidate(cli, 'builtin', 'high')]
+            with self.subTest(cli=cli), patch.dict(os.environ, {external_launch.BASELINE_ENV: '/unused-baseline'}), \
+                    patch.object(workflow, 'session_provider', return_value=cli):
+                route = workflow.execution(config, 'scout', None, '1')
+                self.assertEqual((route['native'], route['for_this_session']), ({}, 'managed'))
+                with self.assertRaisesRegex(AgentBoxError, 'external API.*run agent-box workflow delegate 1 --role scout'):
+                    workflow.native_provider(route, cli)
+
     def test_endpoint_drift_is_refused_before_process_creation_without_key_fingerprints(self):
         """The prepared endpoint is stable; credential rotation remains private."""
         config = external_config()
@@ -137,6 +152,34 @@ class ExternalRoutingTests(unittest.TestCase):
 
 
 class ExternalDelegateTests(unittest.TestCase):
+    def test_balanced_subscription_picks_run_managed_from_an_external_session_of_the_same_cli(self):
+        """Every launch path must restore built-in API identity instead of handing it to an external native child."""
+        fixture = workflow_fixtures.WorkflowCase()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        fixture.config.agents.external_apis = external_config().agents.external_apis
+        fixture.config.workflow.balance = BalanceConfig('weighted', {'codex': 1, 'claude': 1})
+        fixture.config.workflow.review.policy = 'always'
+        fixture.adapter.subtree.return_value = ['1']
+        for cli, other in (('codex', 'claude'), ('claude', 'codex')):
+            with tempfile.TemporaryDirectory() as tmp:
+                _, env = external_launch.prepare([cli], 'deepseek', cli, fixture.config, tmp, {})
+                for role in ('worker', 'scout', 'reviewer', 'sync'):
+                    fixture.config.workflow.role(role).models = [workflow_fixtures.candidate(cli, 'builtin', 'high'),
+                                                                 workflow_fixtures.candidate(other, 'fallback', 'high')]
+                    report = (workflow_fixtures.answer() if role == 'reviewer' else
+                              'Sync: UNCHANGED\n' if role == 'sync' else '## Done\nWorked.\n')
+                    command = (('review', '1') if role == 'reviewer' else ('sync', '1') if role == 'sync' else
+                               ('delegate', '1', '--role', role, '--brief', str(fixture.review_brief)))
+                    with self.subTest(cli=cli, role=role), patch.dict(os.environ, env, clear=True), \
+                            workflow_fixtures.routing_session(cli), patch.object(workflow, 'run',
+                                side_effect=workflow_fixtures.managed_runner(lambda *a, **kw: report)) as run:
+                        result = fixture.run_workflow(*command)
+                    self.assertEqual(result['route']['provider'], cli)
+                    self.assertFalse(result['route'].get('api_provider'))
+                    self.assertNotIn('launch', result)
+                    self.assertEqual(run.call_count, 1)
+
     def test_delegated_worker_runs_its_external_candidate_through_that_api(self):
         """The candidate's API travels to the managed run; the key stays out of the answer and its metadata."""
         fixture = workflow_fixtures.WorkflowCase()

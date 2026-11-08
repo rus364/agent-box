@@ -13,6 +13,14 @@ def applicable_windows(snapshot, model):
             if not window.get("models") or any(name in model for name in window["models"])]
 
 
+def reserve_excluded(candidate, snapshot, reserve_percent, *, now=None):
+    """External APIs and already-reset or unrelated windows cannot exclude a model."""
+    now = time.time() if now is None else now
+    return not candidate.get("api_provider") and any(
+        window["remaining"] <= reserve_percent and window["reset_at"] > now
+        for window in applicable_windows(snapshot, candidate["model"]))
+
+
 def eligible_weights(config, models):
     """Positive vendor weights in first-candidate order, for a caller's eligible list."""
     return {vendor(spec): config.balance.weights[vendor(spec)] for spec in models
@@ -45,9 +53,8 @@ def select(config, role, tier, usage=None, *, now=None, available=None, authors=
         raise AgentBoxError(f"No configured candidate in {path} has its CLI installed here")
     if not pinned:
         # A pin names its model outright; lists preserve subscription headroom.
-        usable = [spec for spec in allowed if spec.get("api_provider") or not any(
-            w["remaining"] <= config.reserve_percent and w["reset_at"] > now
-            for w in applicable_windows(usage.get(spec["provider"], {}), spec["model"]))]
+        usable = [spec for spec in allowed if not reserve_excluded(
+            spec, usage.get(spec["provider"], {}), config.reserve_percent, now=now)]
         if allowed and not usable:
             raise AgentBoxError(f"Every candidate in {path} is at or below the {config.reserve_percent}% usage reserve; "
                                 "wait for a reset or add a candidate")

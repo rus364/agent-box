@@ -151,6 +151,30 @@ class ReviewWorkflowTests(WorkflowCase):
         self.assertNotIn("pending_round", self.run_workflow("inspect", "1")["review"])
         self.assertEqual(self.budget()["used"], 0)
 
+    def test_explicit_native_review_checks_the_reserve_before_opening_a_round(self):
+        """Refusing a depleted profile must preserve the review budget and point to managed fallback selection."""
+        self.config.workflow.review.models.append(candidate("codex", "fallback", "high"))
+        exhausted = {"windows": [{"remaining": 5, "reset_at": 4102444800}]}
+        for mode in ("off", "weighted"):
+            self.config.workflow.balance = BalanceConfig(mode, {"claude": 1})
+            with self.subTest(mode=mode), routing_session("claude"), \
+                    patch.object(workflow, "usage_snapshot", return_value=exhausted) as usage, \
+                    patch.object(workflow, "balance_vendor", side_effect=AssertionError("turn consumed")), \
+                    patch.object(workflow, "bind_delegation_input") as bind, \
+                    patch.object(workflow, "start_review") as start:
+                with self.assertRaisesRegex(AgentBoxError, "5% usage reserve; run agent-box workflow review 1$"):
+                    self.native_round()
+                usage.assert_called_once_with("claude", no_cache=True)
+                bind.assert_not_called()
+                start.assert_not_called()
+            self.assertFalse(workflow.review_budget_path(self.root, BINDING, self.task).exists())
+            self.assertNotIn("pending_round", self.run_workflow("inspect", "1")["review"])
+        with routing_session("claude"), patch.object(workflow, "usage_snapshot", return_value={
+                "windows": [{"remaining": 6, "reset_at": 4102444800}]}) as usage:
+            opened = self.native_round()
+        self.assertEqual((opened["launch"], opened["profile"]), ("native", "ab-reviewer"))
+        usage.assert_called_once_with("claude", no_cache=True)
+
     def test_balanced_reviewer_keeps_default_effort_managed(self):
         """Native review must not inherit the coordinator's effort in place of a selected model default."""
         self.config.workflow.balance = BalanceConfig("weighted", {"codex": 1})
@@ -238,7 +262,8 @@ class ReviewWorkflowTests(WorkflowCase):
         """Without candidates there is no route to contradict, so the session need not be known."""
         self.config.workflow.review.models = []
         self.run_as(None)
-        opened = self.native_round()
+        with patch.object(workflow, "usage_snapshot", side_effect=AssertionError("empty list read usage")):
+            opened = self.native_round()
         self.assertNotIn("profile", opened)
         self.report.write_text("Verdict: PASS\n")
         result = self.run_workflow("review", "1", "--result", str(self.report), "--provider", "codex", "--model", "any")

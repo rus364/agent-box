@@ -158,6 +158,7 @@ class WorkflowCase(unittest.TestCase):
             patch.object(workflow, "make_adapter", return_value=self.adapter),
             patch.object(workflow, "resolve", return_value=(self.task, info, {}, "main")),
             patch.object(workflow, "candidates", side_effect=reviewer_route),
+            patch.object(workflow, "usage_snapshot", return_value={}),
             patch.object(provider_runner.shutil, "which", side_effect=lambda name: name),
             patch.object(workflow, "WORKFLOW_STATE", Path(self.directory.name) / "state"),
             patch.object(workflow_state, "WORKFLOW_STATE", Path(self.directory.name) / "state"),

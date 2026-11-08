@@ -314,6 +314,7 @@ def run(root, binding, adapter, config, task, event="manual", *, native=False, m
         if native:
             route = workflow.execution(config, "sync", tier, task.id)
             workflow.native_provider(route, provider)
+            workflow.require_native_reserve(config.workflow, route, models[0])
         else:
             selected = workflow.candidates(config, "sync", tier)
             route = None if managed else workflow.balanced_native_route(config, "sync", tier, task.id, selected)

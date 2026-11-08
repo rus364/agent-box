@@ -60,9 +60,8 @@ with existing-only branch switching. It never recreates lost work from base.
   answer. Workflow records nothing about the run, so editing the task or
   committing while a delegate works affects no later command.
 - A managed worker needs the task branch checked out and holds the local work
-  lock, so validation cannot run under it. A worker failure other than an
-  unavailable CLI or model never falls back to another candidate, because files
-  may already have changed.
+  lock, so validation cannot run under it. Unavailability or quota failure can
+  fall back only while the working tree is clean; other failures stop.
 - Managed scouts overlap up to `workflow.scout.limit`, counted by
   per-repository slot locks that a finished or killed process releases; the
   coordinator counts its native scouts itself.
@@ -222,9 +221,13 @@ with existing-only branch switching. It never recreates lost work from base.
   This global setting accepts whole numbers from 0 through 99, defaults to 5, and
   applies with or without task tiers; 0 skips only exhausted windows. Session
   pins and external API candidates bypass the reserve. If all candidates are
-  excluded, the error names the list path and reserve. A failed live refresh
-  keeps cached usage evidence and exits nonzero; a failure without such evidence
-  excludes nothing. Provider APIs may lag regardless of cache.
+  excluded, the error names the list path and reserve. Explicit `--native` on a
+  configured list checks the opener before creating a handoff, round or sync
+  record, without consuming a balance turn. If excluded, it refuses with the
+  reserve and managed command, which selects a usable fallback or reports that
+  all are excluded. An empty reviewer list has no candidate to filter. A failed
+  live refresh keeps cached usage evidence and exits nonzero; a failure without
+  such evidence excludes nothing. Provider APIs may lag regardless of cache.
 - After filtering, two or more positive-weight vendors use smooth weighted
   round-robin: add each weight to its credit, choose the largest credit (ties
   follow the vendor's first candidate in the list), and subtract the total
@@ -261,8 +264,10 @@ with existing-only branch switching. It never recreates lost work from base.
   `ab-worker-N`, `ab-sync-N`, `ab-reviewer-N` for nonempty tiers), each from
   that CLI's first built-in-API candidate. Profiles agent-box no longer defines
   are removed while unedited. A profile is a convenience, not proof of the live
-  tool's capabilities. Effort `default` omits the override; it is not a literal
-  provider value.
+  tool's capabilities. Sessions launched through `ext` cannot use these native
+  profiles: children inherit the external API, while managed runs restore the
+  built-in environment. This also applies to balanced picks of the session CLI.
+  Effort `default` omits the override; it is not a literal provider value.
 
 ## Local landing
 

@@ -126,6 +126,27 @@ class PlanSyncTests(WorkflowCase):
                 self.run_workflow("sync", "1", "--native")
         self.assertIsNone(plan_sync.last_result(self.root, self.task))
 
+    def test_explicit_native_sync_checks_the_reserve_before_creating_a_record(self):
+        """A reserve refusal must leave sync retryable without a pending run or reconciliation requirement."""
+        self.config.workflow.sync.models.append(candidate("claude", "fallback", "high"))
+        exhausted = {"windows": [{"remaining": 4, "reset_at": 4102444800}]}
+        for mode in ("off", "weighted"):
+            self.config.workflow.balance = BalanceConfig(mode, {"codex": 1})
+            with self.subTest(mode=mode), routing_session("codex"), \
+                    patch.object(workflow, "usage_snapshot", return_value=exhausted) as usage, \
+                    patch.object(workflow, "balance_vendor", side_effect=AssertionError("turn consumed")), \
+                    patch.object(plan_sync, "save") as save:
+                with self.assertRaisesRegex(AgentBoxError, "5% usage reserve; run agent-box workflow sync 1 --output reference$"):
+                    self.run_workflow("sync", "1", "--native")
+                usage.assert_called_once_with("codex", no_cache=True)
+                save.assert_not_called()
+            self.assertIsNone(plan_sync.last_result(self.root, self.task))
+        with routing_session("codex"), patch.object(workflow, "usage_snapshot", return_value={
+                "windows": [{"remaining": 6, "reset_at": 4102444800}]}) as usage:
+            opened = self.run_workflow("sync", "1", "--native")
+        self.assertEqual((opened["status"], opened["profile"]), ("NATIVE", "ab-sync"))
+        usage.assert_called_once_with("codex", no_cache=True)
+
     def test_balanced_sync_keeps_default_effort_managed(self):
         """A sync profile that omits effort cannot enforce a selected model default in the parent's session."""
         self.config.workflow.balance = BalanceConfig("weighted", {"claude": 1})

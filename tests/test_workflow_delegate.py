@@ -15,7 +15,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from agent_box import delegation, git_workflow as gw, provider_runner, workflow, workflow_state
+from agent_box import delegation, git_workflow as gw, provider_runner, text_delivery, workflow, workflow_state
 from agent_box.agent_profiles import body
 from agent_box.config import BalanceConfig
 from agent_box.errors import AgentBoxError
@@ -164,6 +164,36 @@ class DelegateCommandTests(WorkflowCase):
                 with self.assertRaisesRegex(AgentBoxError, f"run agent-box workflow delegate 1 --role {role} "
                                                           "--brief FILE --output reference$"):
                     self.run_workflow("delegate", "1", "--role", role, "--brief", str(self.review_brief), "--native")
+
+    def test_explicit_native_delegates_respect_the_reserve_before_publishing_a_handoff(self):
+        """Native profiles cannot skip headroom checks or consume a turn while refusing the opener."""
+        self.config.workflow.reserve_percent = 12
+        for role in ("worker", "scout"):
+            self.config.workflow.role(role).models = [candidate("codex", "opener", "high"),
+                                                     candidate("claude", "fallback", "high")]
+            command = ("delegate", "1", "--role", role, "--brief", str(self.review_brief))
+            for mode in ("off", "weighted"):
+                self.config.workflow.balance = BalanceConfig(mode, {"codex": 1})
+                for remaining in (11, 12, 13):
+                    snapshot = {"fresh": False, "windows": [{"remaining": remaining, "reset_at": 4102444800}]}
+                    with self.subTest(role=role, mode=mode, remaining=remaining), routing_session("codex"), \
+                            patch.object(workflow, "usage_snapshot", return_value=snapshot) as usage, \
+                            patch.object(workflow, "balance_vendor", side_effect=AssertionError("turn consumed")), \
+                            patch.object(workflow, "run") as run, \
+                            patch.object(text_delivery, "publish", wraps=text_delivery.publish) as publish:
+                        if remaining <= 12:
+                            with self.assertRaisesRegex(AgentBoxError, f"12% usage reserve; run agent-box workflow "
+                                    f"delegate 1 --role {role} --brief FILE --output reference$"):
+                                self.run_workflow(*command, "--native")
+                            publish.assert_not_called()
+                        else:
+                            result = self.run_workflow(*command, "--native")
+                            self.assertEqual((result["launch"], result["route"]["native"]),
+                                             ("native", {"codex": f"ab-{role}"}))
+                            publish.assert_called_once()
+                        usage.assert_called_once_with("codex", no_cache=True)
+                        run.assert_not_called()
+            self.assertFalse(workflow.review_budget_path(self.root, BINDING, self.task).exists())
 
     def test_balanced_delegate_cli_prints_a_native_handoff_as_json(self):
         """The plain command can return a handoff instead of the Markdown response its stdout path expects."""

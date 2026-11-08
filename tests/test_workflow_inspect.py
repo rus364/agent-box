@@ -133,6 +133,17 @@ class InspectTests(unittest.TestCase):
         c.balance.mode = "off"
         self.assertEqual(workflow.execution(self.config, "worker", None, "1")["native"], {"claude": "ab-worker"})
 
+    def test_native_profile_inspection_never_reads_usage_or_consumes_a_turn(self):
+        """The native reserve is a launch check; inspecting ordered lists must stay static and read-only."""
+        for role in ("worker", "scout", "reviewer", "sync"):
+            self.config.workflow.role(role).models = [model_entry({"provider": "codex", "model": role, "effort": "high"})]
+        with patch.object(workflow, "usage_snapshot", side_effect=AssertionError("usage read")), \
+                patch.object(workflow, "balance_vendor", side_effect=AssertionError("turn consumed")):
+            inspected = self.inspect_readonly()
+        routes = {**inspected["execution"], "sync": inspected["plan_sync"]["execution"]}
+        for role, route in routes.items():
+            self.assertEqual(route["native"], {"codex": f"ab-{role}"})
+
     def test_a_sole_weighted_vendor_behind_an_unweighted_opener_is_not_promised_natively(self):
         """Selection opens with the weighted vendor, so inspect must not advertise the unweighted opener's profile."""
         c = self.config.workflow

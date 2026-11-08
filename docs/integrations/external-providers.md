@@ -332,14 +332,15 @@ A native subagent always runs on its parent's API: both CLIs send the child's
 requests to the session's endpoint with the session's credentials. A candidate on
 another API therefore runs as a separate managed `codex exec` or `claude -p`
 process, and a built-in candidate called from an external session uses one with
-the original API environment restored. `workflow delegate` and `workflow review`
-always run managed, so a worker, scout or reviewer reaches its candidate's API.
+the original API environment restored. Configured candidates for
+`workflow delegate`, `workflow review` and `workflow sync` run managed from
+external sessions, including balanced picks of the session's own CLI.
 A changed endpoint, a deleted or disabled connection or a missing key fails
-before anything runs. A native review runs on the coordinator's own API,
-whatever the reviewer list names.
+before anything runs. An empty reviewer list still allows a fresh native
+reviewer on the coordinator's own API.
 
-Owned native profiles are removed for external candidates when configuration is
-applied. Existing role contracts, the reviewer's verdict format, review budgets
+Native profiles use only built-in candidates and are removed when none remain.
+Existing role contracts, the reviewer's verdict format, review budgets
 and fallback rules still apply. Candidate order keeps its meaning; subscription
 usage and exhaustion are ignored for external candidates. Subscription fast mode
 is unsupported for external workflow candidates. Managed review from an external

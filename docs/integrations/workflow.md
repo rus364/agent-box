@@ -124,7 +124,11 @@ empty.
   applicable shared or model-specific window has that percentage or less
   remaining and a future reset. Set 0 to skip only exhausted windows. The rule
   applies with or without task tiers; session pins and external API candidates
-  bypass it. An all-excluded error names the list and reserve.
+  bypass it. An all-excluded error names the list and reserve. Explicit
+  `--native` also checks the configured opener; at the reserve it refuses before
+  creating a handoff or pending review/sync run and names the managed command
+  to select a fallback. This check consumes no balancing turn. An empty reviewer
+  list has no candidate to check.
 - **Vendor balancing.** Global `workflow.balance.mode` is `off` by default.
   Set it to `weighted` and set `workflow.balance.weights`, for example
   `{"claude": 3, "codex": 1}`, to spread launches in that proportion.
@@ -142,7 +146,8 @@ empty.
   command without `--native`: selection consumes the turn, then returns a
   `launch: native` handoff (`profile`, `message`, and a review/sync `result_command`)
   if the pick exactly matches the session CLI's native-capable profile; otherwise
-  it runs managed. An undetected session runs managed; explicit `--native` is refused.
+  it runs managed. An undetected session or one launched through `ext` runs
+  managed; explicit `--native` is refused for balanced routes.
   If native spawning fails before work starts, rerun with `--managed` to select
   again and run the pick and fallbacks managed, following review failure-budget
   and sync reconciliation rules.
@@ -153,7 +158,8 @@ empty.
 - **Any CLI may serve any role.** A model of the other CLI than the
   coordinator's runs as a managed `codex exec` or `claude -p` process; a
   candidate of the coordinator's own CLI runs as a native subagent when
-  available.
+  its profile and built-in API match. Configured candidates run managed from
+  an external-API session so built-in picks can restore their API environment.
 - **Session pins** override the lists for one session:
   `--worker`, `--scout`, `--sync`, `--reviewer` with
   `PROVIDER[@API]:MODEL[:EFFORT]`. Pins bypass balancing.
@@ -301,7 +307,7 @@ expected. A cleanup failure never undoes the merge or Done.
 | `workflow.cleanup_local_branches`, `cleanup_remote_branches` | off | Delete integrated task branches |
 | `workflow.use_tiers` | off | Let task tiers select model lists |
 | `workflow.reserve_percent` | 5 | Skip subscription usage at or below this percentage, 0–99 (global only) |
-| `workflow.balance.mode` | `off` | `off` preserves list order; `weighted` spreads managed launches by vendor (global only) |
+| `workflow.balance.mode` | `off` | `off` preserves list order; `weighted` spreads workflow launches by vendor (global only) |
 | `workflow.balance.weights` | `{}` | Vendor → nonnegative whole weight; weighted mode needs a positive weight (global only) |
 | `workflow.language` | — | [Engineering language](../configuration.md#the-configuration-menu) of repository text, commits, PRs and review replies; also the tracker fallback. Empty uses English for engineering |
 | `workflow.tracker_language` | — | Tracker tasks, plans, comments, normalization, adoption and Plan sync; empty inherits `workflow.language`, then each task's language |

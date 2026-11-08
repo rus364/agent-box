@@ -37,7 +37,7 @@ from . import git_workflow as gw
 from .paths import WORKFLOW_STATE
 from .provider_runner import SEVERITIES, ProviderFailure, preflight, require_sync_coordinator, review_report, run, save_private
 from .repo_binding import Binding, repository_root, server_identity
-from .routing import eligible_weights, select
+from .routing import eligible_weights, reserve_excluded, select
 from .tracker.core import TrackerError, claim, checkboxes, root_task, completion_reasons, blocking_reasons
 from .tracker.registry import make_adapter
 from .usage import usage_snapshot
@@ -1762,7 +1762,7 @@ def native_profile(config, role, tier, candidate):
     from .speed import configuration_error, native_limitation
     path, models = config.workflow.models_for(role, tier)
     provider = candidate["provider"]
-    if (path.startswith("--") or not config.workflow.enabled or candidate.get("api_provider")
+    if (path.startswith("--") or not config.workflow.enabled or candidate.get("api_provider") or session_external_api()
             or configuration_error(provider, candidate)
             or native_limitation(provider, candidate.get("speed", "inherit"))
             or role in ("reviewer", "sync") and candidate["effort"] == "default"):
@@ -1806,7 +1806,8 @@ def execution(config, role, tier, task_id, authors=None):
     weights = eligible_weights(config.workflow, models) if config.workflow.balance.mode == "weighted" else {}
     # A rotation, or a sole weighted vendor that does not open the list, changes the opener.
     balanced = not path.startswith("--") and (len(weights) > 1 or bool(weights) and vendor(first) not in weights)
-    limitation = native_limitation(first["provider"], first.get("speed", "inherit"))
+    limitation = ("native subagents inherit this session's external API" if session_external_api()
+                  else native_limitation(first["provider"], first.get("speed", "inherit")))
     if not balanced and (profile := native_profile(config, role, tier, first)):
         native[first["provider"]] = profile
     provider = session_provider()
@@ -1836,6 +1837,12 @@ def session_provider():
     return found[0] if len(found) == 1 else None
 
 
+def session_external_api():
+    """Only a managed run can restore the built-in environment from an ext session."""
+    from .external_launch import BASELINE_ENV
+    return bool(os.environ.get(BASELINE_ENV))
+
+
 def native_provider(route, provider):
     """The session provider a native launch serves, refusing one its route does not name.
 
@@ -1859,6 +1866,13 @@ def native_provider(route, provider):
         reason = route.get("native_limitation") or f"{route['models']} does not open with a {provider} candidate"
         raise AgentBoxError(f"The route is managed for this {provider} session ({reason}); run {route['managed']}")
     return provider
+
+
+def require_native_reserve(config, route, candidate):
+    """Validate a configured native opener without selecting or consuming a balance turn."""
+    if reserve_excluded(candidate, usage_snapshot(candidate["provider"], no_cache=True), config.reserve_percent):
+        raise AgentBoxError(f"The opening candidate in {route['models']} is at or below the "
+                            f"{config.reserve_percent}% usage reserve; run {route['managed']}")
 
 
 def balanced_native_route(config, role, tier, task_id, selected, authors=None):
@@ -1922,6 +1936,7 @@ def delegate(args, root, adapter, config):
     if args.native:
         route = execution(config, args.role, tier, task.id)
         native_provider(route, args.provider)
+        require_native_reserve(config.workflow, route, models[0])
     else:
         selected = candidates(config, args.role, tier)
         route = None if args.managed else balanced_native_route(config, args.role, tier, task.id, selected)
@@ -2023,6 +2038,7 @@ def review(args, root, binding, adapter, config, task, parent, tasks, base, fing
             # An empty list takes any fresh native reviewer; a configured one only its opening candidate.
             provider = native_provider(route, args.provider)
             first = config.workflow.models_for("reviewer", tier, authors or ())[1][0]
+            require_native_reserve(config.workflow, route, first)
             expected = {"provider": provider, "model": first["model"], "effort": first["effort"],
                         "profile": route["native"][provider], "managed": route["managed"]}
         return open_native(route, expected)
