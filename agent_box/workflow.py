@@ -1035,7 +1035,7 @@ def authors_missing(config, authors):
 
 
 def candidates(config, role, tier, authors=()):
-    """Consume a managed launch choice, with ordered fallbacks bound to their APIs."""
+    """Consume one launch choice, with ordered fallbacks bound to their APIs."""
     _, models = config.workflow.models_for(role, tier, authors)
     # Every role reserves headroom in applicable subscription windows;
     # external API candidates have no subscription usage to read.
@@ -1557,7 +1557,7 @@ def parser():
             "resume": "Resume existing task branches; refuse lost work instead of recreating it from the base",
             "sync": "Synchronize live tracker tasks with a separate agent; repository is read-only",
             "inspect": "Read branch, acceptance availability, review budget and next step; works before begin or with uncommitted files",
-            "delegate": "Run a managed worker or scout on the role's first available candidate and print its Markdown answer; "
+            "delegate": "Run a worker or scout and print its Markdown answer, or return a native handoff for a balanced pick; "
                         "records nothing. A worker needs the task branch",
             "review": "Apply review policy to the clean task scope and run a required review on the first available "
                       "reviewer candidate; --native writes the input for a native reviewer, --result records its answer",
@@ -1752,6 +1752,24 @@ def release_branch(root, config, task, branch, base, *, expected_head=None):
     return _cleanup_branch(root, config, task, branch=branch, base=base, expected_head=expected_head)
 
 
+def native_profile(config, role, tier, candidate):
+    """Name the installed profile only when it can run this exact candidate."""
+    from .agent_profiles import profile_candidate, profile_name
+    from .speed import configuration_error, native_limitation
+    path, models = config.workflow.models_for(role, tier)
+    provider = candidate["provider"]
+    if (path.startswith("--") or not config.workflow.enabled or candidate.get("api_provider")
+            or configuration_error(provider, candidate)
+            or native_limitation(provider, candidate.get("speed", "inherit"))
+            or role in ("reviewer", "sync") and candidate["effort"] == "default"):
+        return None
+    profile = profile_candidate(models, provider)
+    if any(candidate.get(key, default) != profile.get(key, default)
+           for key, default in (("model", ""), ("effort", "default"), ("speed", "inherit"))):
+        return None
+    return profile_name(role, tier if ".tiers." in path else None)
+
+
 def execution(config, role, tier, task_id, authors=None):
     """How the coordinator launches a configured role.
 
@@ -1767,11 +1785,10 @@ def execution(config, role, tier, task_id, authors=None):
     know, so the route is named per provider. Sync always requires its own list.
     A reviewer order that needs the code's authors is not guessed: without
     them inspect names the rerun instead of a route. Weights that can change
-    the opener require a managed launch until native launches can consume a
-    balancing turn; inspection never reads usage or allocation counters.
+    the opener defer native versus managed to launch; inspection never reads
+    usage or allocation counters.
     """
-    from .agent_profiles import profile_name
-    from .speed import configuration_error, native_limitation
+    from .speed import native_limitation
     path, models = config.workflow.models_for(role, tier, authors or ())
     if not models:
         return {"mode": "unconfigured" if role == "sync" else "native" if role == "reviewer" else "self", "models": path}
@@ -1786,17 +1803,14 @@ def execution(config, role, tier, task_id, authors=None):
     # A rotation, or a sole weighted vendor that does not open the list, changes the opener.
     balanced = not path.startswith("--") and (len(weights) > 1 or bool(weights) and vendor(first) not in weights)
     limitation = native_limitation(first["provider"], first.get("speed", "inherit"))
-    if (not balanced and not path.startswith("--") and config.workflow.enabled and not first.get("api_provider")
-            and not configuration_error(first["provider"], first)
-            and not limitation
-            and (role not in ("reviewer", "sync") or first["effort"] != "default")):
-        native[first["provider"]] = profile_name(role, tier if ".tiers." in path else None)
+    if not balanced and (profile := native_profile(config, role, tier, first)):
+        native[first["provider"]] = profile
     provider = session_provider()
     return {"mode": "delegate", "models": path, "native": native,
-            **({"balanced": "Weighted vendor choice requires a managed launch; native launch-time selection is unavailable"}
-               if balanced else {}),
-            **({"native_limitation": limitation} if limitation else {}),
-            **({"for_this_session": "native" if provider in native else "managed"} if provider or balanced else {}),
+            **({"balanced": True} if balanced else {}),
+            **({"native_limitation": limitation} if limitation and not balanced else {}),
+            **({"for_this_session": "balanced" if balanced else "native" if provider in native else "managed"}
+               if provider else {}),
             "managed": (f"agent-box workflow review {task_id}{named}" if role == "reviewer" else
                         f"agent-box workflow sync {task_id} --output reference" if role == "sync" else
                         f"agent-box workflow delegate {task_id} --role {role} --brief FILE --output reference")}
@@ -1829,6 +1843,8 @@ def native_provider(route, provider):
     if route["mode"] == "authors-required":
         raise AgentBoxError(f"workflow.review.other_vendor_first orders reviewers by the code's authors; "
                             f"pass {AUTHOR_FORM}")
+    if route.get("balanced"):
+        raise AgentBoxError(f"Weighted vendor choice selects native or managed at launch; run {route['managed']}")
     detected = session_provider()
     if provider and detected and provider != detected:
         raise AgentBoxError(f"--provider {provider} differs from this {detected} session")
@@ -1836,9 +1852,24 @@ def native_provider(route, provider):
     if not provider:
         raise AgentBoxError("Cannot tell this session's CLI; name it with --provider codex|claude")
     if provider not in route.get("native", {}):
-        reason = route.get("balanced") or route.get("native_limitation") or f"{route['models']} does not open with a {provider} candidate"
+        reason = route.get("native_limitation") or f"{route['models']} does not open with a {provider} candidate"
         raise AgentBoxError(f"The route is managed for this {provider} session ({reason}); run {route['managed']}")
     return provider
+
+
+def balanced_native_route(config, role, tier, task_id, selected, authors=None):
+    """Use the consumed pick natively only when the session's profile matches it.
+
+    Reserve filtering can select a later model of the same CLI; spawning its
+    first-model profile would discard the selection and bypass that reserve.
+    """
+    route = execution(config, role, tier, task_id, authors)
+    if not route.get("balanced") or session_provider() != selected["provider"]:
+        return None
+    profile = native_profile(config, role, tier, selected)
+    if profile:
+        return {**route, **selected, "native": {selected["provider"]: profile}, "for_this_session": "native"}
+    return None
 
 
 def scout_diagnostics(config):
@@ -1851,7 +1882,7 @@ def scout_diagnostics(config):
 
 
 def delegate(args, root, adapter, config):
-    """Launch one managed worker or scout and return its Markdown answer.
+    """Return a native handoff or launch one managed worker or scout for its answer.
 
     Nothing about the run is recorded: the coordinator reads the answer and
     decides what to commit. Binding the answer to a prepared descriptor, scope
@@ -1887,10 +1918,14 @@ def delegate(args, root, adapter, config):
     if args.native:
         route = execution(config, args.role, tier, task.id)
         native_provider(route, args.provider)
+    else:
+        selected = candidates(config, args.role, tier)
+        route = balanced_native_route(config, args.role, tier, task.id, selected)
+    if route:
         artifact = text_delivery.publish(prompt, config)
         return {"task": task.id, "role": args.role, "route": route, "input": artifact,
+                "launch": "native", "profile": next(iter(route["native"].values())),
                 "message": bootstrap(args.role, artifact), **({"summary": brief_summary} if brief_summary else {})}
-    selected = candidates(config, args.role, tier)
     # A worker shares the working tree with validation; scouts only read, up to their limit.
     slot = lock(root, "work") if args.role == "worker" else scout_slot(root, config.workflow.scout.limit)
     try:
@@ -1945,17 +1980,8 @@ def review(args, root, binding, adapter, config, task, parent, tasks, base, fing
     prepare(config)
     limit = config.workflow.review.max_rounds
     round_id = secrets.token_urlsafe(18)
-    if args.native:
-        tier = config.workflow.effective_tier(task.tier)
-        authors = author_vendors(config, getattr(args, "author", None))
-        route = execution(config, "reviewer", tier, task.id, authors)
-        expected = None
-        if route["mode"] != "native":
-            # An empty list takes any fresh native reviewer; a configured one only its opening candidate.
-            provider = native_provider(route, args.provider)
-            first = config.workflow.models_for("reviewer", tier, authors or ())[1][0]
-            expected = {"provider": provider, "model": first["model"], "effort": first["effort"],
-                        "profile": route["native"][provider], "managed": route["managed"]}
+
+    def open_native(route, expected):
         require_review_budget(task, read_review_budget(root, binding, task, limit))
         saved = evidence(root, task, fingerprint, base)
         try:
@@ -1973,6 +1999,7 @@ def review(args, root, binding, adapter, config, task, parent, tasks, base, fing
             cleanup_review_evidence(review_evidence_path(root, task.id, round_id))
             raise
         return {"task": task.id, "round": round_id, "scope": fingerprint, "review_budget": budget,
+                "launch": "native", "route": route,
                 "message": bootstrap("reviewer", artifact), "input": artifact,
                 **({"profile": expected["profile"]} if expected else {}),
                 "instructions": "Start a new read-only reviewer in fresh context without the parent's history"
@@ -1983,6 +2010,18 @@ def review(args, root, binding, adapter, config, task, parent, tasks, base, fing
                 "result_command": f"agent-box workflow review {task.id} --result FILE "
                                   + (f"--provider {expected['provider']} --model {expected['model']}" if expected
                                      else "--provider PROVIDER --model MODEL")}
+    if args.native:
+        tier = config.workflow.effective_tier(task.tier)
+        authors = author_vendors(config, getattr(args, "author", None))
+        route = execution(config, "reviewer", tier, task.id, authors)
+        expected = None
+        if route["mode"] != "native":
+            # An empty list takes any fresh native reviewer; a configured one only its opening candidate.
+            provider = native_provider(route, args.provider)
+            first = config.workflow.models_for("reviewer", tier, authors or ())[1][0]
+            expected = {"provider": provider, "model": first["model"], "effort": first["effort"],
+                        "profile": route["native"][provider], "managed": route["managed"]}
+        return open_native(route, expected)
     if cloud_review(config, task, parent):
         from .github_review import review as in_pull_request
         return in_pull_request(root, binding, adapter, config, task, parent, tasks, base, fingerprint,
@@ -1997,7 +2036,13 @@ def review(args, root, binding, adapter, config, task, parent, tasks, base, fing
         raise AgentBoxError(f"workflow.review.other_vendor_first orders reviewers by the code's authors; "
                             f"rerun workflow review {task.id} {AUTHOR_FORM}")
     require_review_budget(task, read_review_budget(root, binding, task, limit))
-    selected, preflight_failures = managed_review_route(candidates(config, "reviewer", tier, authors=authors or ()))
+    selected = candidates(config, "reviewer", tier, authors=authors or ())
+    route = balanced_native_route(config, "reviewer", tier, task.id, selected, authors)
+    if route:
+        expected = {key: selected[key] for key in ("provider", "model", "effort")}
+        expected.update(profile=route["native"][selected["provider"]], managed=route["managed"])
+        return open_native(route, expected)
+    selected, preflight_failures = managed_review_route(selected)
     output = None
     repository = repository_key(root)
 
@@ -2051,7 +2096,7 @@ def native_result(args, root, binding, adapter, config, task):
         state = read_review_state(root, binding, task)
         round_id = state.get("pending")
         if state.get("pending_backend") != "native" or any(item["round"] == round_id for item in state.get("results", [])):
-            raise AgentBoxError(f"No native review round is pending; run workflow review {task.id} --native first")
+            raise AgentBoxError(f"No native review round is pending; choose a new round via agent-box workflow inspect {task.id}")
     try:
         descriptor = json.loads((review_evidence_path(root, task.id, round_id) / "descriptor.json").read_text())
         text = Path(args.result).read_text(encoding="utf-8")
@@ -2065,7 +2110,7 @@ def native_result(args, root, binding, adapter, config, task):
             raise AgentBoxError(
                 f"Round {round_id} expects profile {expected['profile']} on {expected['provider']} {expected['model']} "
                 f"effort {expected['effort']}; an answer from another model is not recorded. Rerun the reviewer on "
-                f"that profile with workflow review {task.id} --native, or run {expected['managed']}")
+                f"that profile and submit its answer to this round, or run {expected['managed']}")
     try:
         report = {**review_report(text), "text": text}
     except ProviderFailure as exc:
@@ -2080,7 +2125,7 @@ def native_result(args, root, binding, adapter, config, task):
             cleanup_delegation_input(root, descriptor)
         raise AgentBoxError(f"{exc}; the round ended as failure {state.get('failures', 0)} of "
                             f"{REVIEW_FAILURE_LIMIT} in a row without spending an attempt. Rerun the reviewer "
-                            f"with workflow review {task.id} --native") from None
+                            f"via agent-box workflow inspect {task.id}") from None
     route = {"provider": args.provider, "model": args.model, **({"effort": args.effort} if args.effort else {}),
              "backend": "native"}
     store_review_result(root, binding, task, descriptor, {"route": route, "report": report,
@@ -2241,7 +2286,7 @@ def main(argv):
                     if len(report.encode("utf-8")) > text_delivery.PAGE_BYTES:
                         artifact = text_delivery.publish(report, config)
                         target.update(report=text_delivery.message(artifact), report_text=artifact)
-        if args.command == "delegate" and not args.native:
+        if args.command == "delegate" and "response" in result:
             # The answer is the output; its route and saved copy go beside it.
             print(result.pop("response"))
             print(json.dumps(result, ensure_ascii=False), file=sys.stderr)

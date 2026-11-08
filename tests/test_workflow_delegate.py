@@ -17,9 +17,11 @@ from unittest.mock import patch
 
 from agent_box import delegation, git_workflow as gw, provider_runner, workflow, workflow_state
 from agent_box.agent_profiles import body
+from agent_box.config import BalanceConfig
 from agent_box.errors import AgentBoxError
 from agent_box.tracker.core import Task
-from workflow_fixtures import BINDING, WorkflowCase, candidate, repository
+from test_external_config import external_config
+from workflow_fixtures import BINDING, WorkflowCase, candidate, repository, routing_session
 
 ANSWER = "## Done\nEdited change.py.\n\n## Evidence\n- unittest passed\n\n## Limitations\nNone."
 
@@ -36,6 +38,113 @@ class DelegateCommandTests(WorkflowCase):
 
     def delegate(self, role, brief=None):
         return self.run_workflow("delegate", "1", "--role", role, "--brief", str(brief or self.review_brief))
+
+    def test_balanced_delegates_consume_one_turn_for_each_native_or_managed_launch(self):
+        """A native turn must advance the same rotation so the next run returns to the other CLI."""
+        self.config.workflow.balance = BalanceConfig("weighted", {"claude": 1, "codex": 1})
+        for role in ("worker", "scout"):
+            models = [{**candidate("claude", "first", "high"), "speed": "standard"},
+                      candidate("codex", "second", "high")]
+            if role == "worker":
+                self.config.workflow.worker.tiers["1"] = models
+            else:
+                self.config.workflow.scout.models = models
+            with self.subTest(role=role), routing_session("codex"), \
+                    patch.object(workflow, "balance_vendor", wraps=workflow.balance_vendor) as turn, \
+                    patch.object(workflow, "run", return_value=ANSWER) as run:
+                first = self.delegate(role)
+                opened = self.delegate(role)
+                third = self.delegate(role)
+                self.assertEqual(turn.call_count, 3)
+                self.assertEqual(run.call_count, 2)
+            self.assertEqual((first["route"]["provider"], third["route"]["provider"]), ("claude", "claude"))
+            self.assertEqual(opened["launch"], "native")
+            self.assertEqual(opened["profile"], "ab-worker-1" if role == "worker" else "ab-scout")
+            self.assertEqual((opened["route"]["provider"], opened["route"]["model"]), ("codex", "second"))
+            self.assertNotIn("native_limitation", opened["route"])
+            self.assertIn(opened["input"]["path"], opened["message"])
+
+    def test_balanced_delegates_preserve_explicit_speed_in_a_managed_launch(self):
+        """A matching CLI must not inherit session speed when the selected candidate requests standard speed."""
+        self.config.workflow.balance = BalanceConfig("weighted", {"codex": 1})
+        for role in ("worker", "scout"):
+            self.config.workflow.role(role).models = [candidate("claude", "first", "high"),
+                {**candidate("codex", "standard", "high"), "speed": "standard"}]
+            with self.subTest(role=role), routing_session("codex"), \
+                    patch.object(workflow, "run", return_value=ANSWER) as run:
+                result = self.delegate(role)
+            self.assertEqual(result["route"]["speed"], "standard")
+            self.assertEqual(run.call_count, 1)
+
+    def test_sole_weighted_delegate_uses_native_only_when_its_session_is_detected(self):
+        """A weighted vendor behind the opener can use its profile, but an unknown session must run managed."""
+        self.config.workflow.balance = BalanceConfig("weighted", {"claude": 0, "codex": 1})
+        for role in ("worker", "scout"):
+            self.config.workflow.role(role).models = [candidate("claude", "first", "high"),
+                                                       candidate("codex", "weighted", "high")]
+            for provider in ("codex", None):
+                with self.subTest(role=role, provider=provider), routing_session(provider), \
+                        patch.object(workflow, "balance_vendor", side_effect=AssertionError("sole vendor spent a counter")), \
+                        patch.object(workflow, "run", return_value=ANSWER) as run:
+                    result = self.delegate(role)
+                self.assertEqual(result["route"]["model"], "weighted")
+                self.assertEqual(result.get("launch"), "native" if provider else None)
+                self.assertEqual(run.call_count, 0 if provider else 1)
+
+    def test_balanced_delegate_preserves_reserve_selection_over_the_native_profile(self):
+        """A later model of the session CLI must run managed when its installed profile names the exhausted model."""
+        self.config.workflow.balance = BalanceConfig("weighted", {"codex": 1})
+        exhausted = {"windows": [{"remaining": 0, "reset_at": 4102444800, "models": ["profile"]}]}
+        for role in ("worker", "scout"):
+            self.config.workflow.role(role).models = [candidate("claude", "first", "high"),
+                                                       candidate("codex", "profile", "high"),
+                                                       candidate("codex", "reserve", "high")]
+            with self.subTest(role=role), routing_session("codex"), \
+                    patch.object(workflow, "usage_snapshot", return_value=exhausted), \
+                    patch.object(workflow, "run", return_value=ANSWER) as run:
+                result = self.delegate(role)
+            self.assertEqual(result["route"]["model"], "reserve")
+            self.assertEqual(run.call_count, 1)
+            self.assertNotIn("launch", result)
+
+    def test_balanced_external_pick_cannot_use_a_same_model_native_profile(self):
+        """Matching model, effort and CLI must not discard an explicitly selected external API identity."""
+        self.config.agents.external_apis = external_config().agents.external_apis
+        self.config.workflow.balance = BalanceConfig("weighted", {"deepseek": 1})
+        for role in ("worker", "scout"):
+            spec = candidate("codex", "external-small", "high")
+            self.config.workflow.role(role).models = [spec, {**spec, "api_provider": "deepseek"}]
+            with self.subTest(role=role), routing_session("codex"), \
+                    patch.object(workflow, "run", return_value=ANSWER) as run:
+                result = self.delegate(role)
+            self.assertEqual(result["route"]["api_provider"], "deepseek")
+            self.assertEqual(run.call_count, 1)
+            self.assertNotIn("launch", result)
+
+    def test_balanced_delegate_refuses_explicit_native_without_consuming_a_turn(self):
+        """Explicit native cannot bypass selection, even when the calling CLI is undetected."""
+        self.config.workflow.balance = BalanceConfig("weighted", {"claude": 1, "codex": 1})
+        for role in ("worker", "scout"):
+            self.config.workflow.role(role).models = [candidate("claude", "first", "high"),
+                                                       candidate("codex", "second", "high")]
+            with self.subTest(role=role), routing_session(None), \
+                    patch.object(workflow, "candidates", side_effect=AssertionError("selection consumed")):
+                with self.assertRaisesRegex(AgentBoxError, f"run agent-box workflow delegate 1 --role {role} "
+                                                          "--brief FILE --output reference$"):
+                    self.run_workflow("delegate", "1", "--role", role, "--brief", str(self.review_brief), "--native")
+
+    def test_balanced_delegate_cli_prints_a_native_handoff_as_json(self):
+        """The plain command can return a handoff instead of the Markdown response its stdout path expects."""
+        self.config.workflow.balance = BalanceConfig("weighted", {"claude": 1})
+        with routing_session("claude"), patch.object(workflow, "run") as run, \
+                contextlib.redirect_stdout(io.StringIO()) as stdout, \
+                contextlib.redirect_stderr(io.StringIO()) as stderr:
+            code = workflow.main(["delegate", "1", "--role", "scout", "--brief", str(self.review_brief)])
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(stdout.getvalue())["profile"], "ab-scout")
+        self.assertEqual(json.loads(stdout.getvalue())["launch"], "native")
+        self.assertEqual(stderr.getvalue(), "")
+        run.assert_not_called()
 
     def test_scout_takes_the_first_candidate_and_skips_an_exhausted_window(self):
         """Order states the preference; a known exhausted subscription is passed over, not launched to fail."""

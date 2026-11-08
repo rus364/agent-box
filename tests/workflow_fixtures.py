@@ -4,9 +4,11 @@ Test modules import these from here rather than from each other, so deleting
 one module's tests never breaks another's setup.
 """
 import inspect
+import os
 import subprocess
 import tempfile
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -83,6 +85,17 @@ def managed_runner(provider):
 
 def candidate(provider, model, effort):
     return {"provider": provider, "model": model, "effort": effort, "speed": "inherit", "api_provider": ""}
+
+
+@contextmanager
+def routing_session(provider, candidates=workflow.candidates, session_provider=workflow.session_provider):
+    """Exercise real selection and CLI detection without consulting live subscription usage."""
+    with patch.dict(os.environ, {"CLAUDECODE": "1" if provider == "claude" else "",
+                                 "CODEX_THREAD_ID": "test" if provider == "codex" else ""}), \
+            patch.object(workflow, "session_provider", session_provider), \
+            patch.object(workflow, "candidates", candidates), \
+            patch.object(workflow, "usage_snapshot", return_value={}):
+        yield
 
 
 def selected_route(_config, role, tier, authors=()):

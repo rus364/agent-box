@@ -27,7 +27,7 @@ def select(config, role, tier, usage=None, *, now=None, available=None, authors=
     argmax herding on lagging data. Off keeps the first available candidate.
     ``tier`` is effective (scouts have none); CLI and reserve filters run before
     balancing. Pins bypass balancing, and reviewer authors stay last as
-    ``models_for`` describes. Only managed launch selection consumes a turn;
+    ``models_for`` describes. Only launch selection consumes a turn;
     ``balance`` may supply an in-memory allocator for tests.
     """
     errors = config.validate()

@@ -127,7 +127,7 @@ empty.
   bypass it. An all-excluded error names the list and reserve.
 - **Vendor balancing.** Global `workflow.balance.mode` is `off` by default.
   Set it to `weighted` and set `workflow.balance.weights`, for example
-  `{"claude": 3, "codex": 1}`, to spread managed launches in that proportion.
+  `{"claude": 3, "codex": 1}`, to spread launches in that proportion.
   Keys are `codex`, `claude` or configured external API names; values must be
   nonnegative whole numbers, with at least one positive weight in weighted
   mode. Smooth weighted round-robin chooses among usable vendors, then runs
@@ -136,9 +136,13 @@ empty.
   vendor opens without consuming a turn; with none, list order stands.
   Counters persist across processes and repositories per role and effective
   tier; changed eligible weights reset that rotation. Route reasons name the
-  choice and weights. Inspection consumes no turn: a list with multiple positive
-  vendor shares runs managed in every session until native launch-time choice
-  is supported.
+  choice and weights. Inspection consumes no turn: multiple positive-weight vendors,
+  or a sole weighted vendor behind the list opener, report `balanced: true` and
+  `for_this_session: balanced` when the session CLI is detected. Run the `managed`
+  command without `--native`: selection consumes the turn, then returns a
+  `launch: native` handoff (`profile`, `message`, and a review/sync `result_command`)
+  if the pick exactly matches the session CLI's native-capable profile; otherwise
+  it runs managed. An undetected session runs managed; explicit `--native` is refused.
 - **An empty list means "do it yourself"** for workers and scouts: the
   coordinator does the work in its own session. An empty reviewer list means a
   fresh native subagent of the coordinator's session reviews — never the

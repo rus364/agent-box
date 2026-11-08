@@ -35,7 +35,7 @@ def describe(provider, role, tier, spec, position=None):
     where = f", candidate {position[0]} of {position[1]}" if position else ""
     return (f"agent-box {role}" + (f" tier {tier}" if tier is not None else "")
             + f" on {provider} {spec['model']}{where}. Spawn only when agent-box workflow inspect lists it "
-            f"under native.{provider} for this role; otherwise run the route's managed command")
+            f"under native.{provider} for this role or a balanced launch returns it; otherwise run the route's managed command")
 
 
 def body(provider, role, tier, spec, position=None):

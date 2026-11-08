@@ -11,13 +11,13 @@ from agent_box import git_workflow as gw
 from agent_box import provider_runner
 from agent_box import workflow
 from agent_box import workflow_state
-from agent_box.config import WorkflowConfig
+from agent_box.config import BalanceConfig, WorkflowConfig
 from agent_box.errors import AgentBoxError
 from agent_box.repo_binding import Binding
 from agent_box.tracker.core import Task
 from test_workflow_text_delivery import required_reading
 from workflow_fixtures import (BINDING, WorkflowCase, answer, candidate, managed_runner, repository,
-                               selected_route)
+                               routing_session, selected_route)
 
 
 def package(payload):
@@ -44,6 +44,104 @@ class ReviewWorkflowTests(WorkflowCase):
 
     def budget(self):
         return workflow.read_review_budget(self.root, BINDING, self.task, self.config.workflow.review.max_rounds)
+
+    def test_balanced_review_rotates_between_managed_and_a_result_bound_native_round(self):
+        """A native pick spends one turn and accepts only the selected provider's profile as the round's reviewer."""
+        self.config.workflow.balance = BalanceConfig("weighted", {"claude": 1, "codex": 1})
+        self.config.workflow.review.models.append(candidate("codex", "selected", "high"))
+        self.config.workflow.review.max_rounds = 3
+        with routing_session("codex"), \
+                patch.object(workflow, "balance_vendor", wraps=workflow.balance_vendor) as turn, \
+                patch.object(workflow, "run", side_effect=managed_runner(lambda *args, **kwargs: answer())) as run:
+            first = self.run_workflow("review", "1")
+            opened = self.run_workflow("review", "1")
+            self.assertEqual(run.call_count, 1)
+            self.assertEqual(opened["launch"], "native")
+            self.assertEqual(opened["profile"], "ab-reviewer")
+            self.assertEqual((opened["route"]["provider"], opened["route"]["model"]), ("codex", "selected"))
+            descriptor = json.loads((self.delegation_input(opened).parent / "descriptor.json").read_text())
+            self.assertEqual(descriptor["native"], {"provider": "codex", "model": "selected", "effort": "high",
+                                                   "profile": "ab-reviewer", "managed": "agent-box workflow review 1"})
+            self.assertIn(opened["input"]["path"], opened["message"])
+            self.assertTrue(opened["result_command"].endswith("--provider codex --model selected"))
+            with self.assertRaisesRegex(AgentBoxError, "expects profile ab-reviewer on codex selected"):
+                self.native_result()
+            accepted = self.run_workflow("review", "1", "--result", str(self.report),
+                                         "--provider", "codex", "--model", "selected", "--effort", "high")
+            self.assertEqual((accepted["verdict"], accepted["reconciliation"]["status"]), ("PASS", "applied"))
+            third = self.run_workflow("review", "1")
+            self.assertEqual(turn.call_count, 3)
+            self.assertEqual(run.call_count, 2)
+        self.assertEqual((first["route"]["provider"], third["route"]["provider"]), ("claude", "claude"))
+        self.assertFalse(self.delegation_input(opened).parent.exists())
+
+    def test_sole_weighted_reviewer_can_open_natively_behind_the_list_opener(self):
+        """A sole positive weight still changes the opener and must reach launch-time native selection."""
+        self.config.workflow.balance = BalanceConfig("weighted", {"codex": 1})
+        self.config.workflow.review.models.append(candidate("codex", "selected", "high"))
+        with routing_session("codex"), patch.object(workflow, "run") as run, \
+                patch.object(workflow, "balance_vendor", side_effect=AssertionError("sole vendor spent a counter")):
+            opened = self.run_workflow("review", "1")
+        self.assertEqual(opened["launch"], "native")
+        self.assertEqual(opened["route"]["model"], "selected")
+        run.assert_not_called()
+
+    def test_balanced_reviewer_without_a_detected_session_runs_managed(self):
+        """Unknown session identity must not turn a weighted pick into an arbitrary native profile."""
+        self.config.workflow.balance = BalanceConfig("weighted", {"codex": 1})
+        self.config.workflow.review.models.append(candidate("codex", "selected", "high"))
+        with routing_session(None), \
+                patch.object(workflow, "run", side_effect=managed_runner(lambda *args, **kwargs: answer())) as run:
+            result = self.run_workflow("review", "1")
+        self.assertEqual(result["route"]["model"], "selected")
+        self.assertEqual(run.call_count, 1)
+        self.assertNotIn("launch", result)
+
+    def test_balanced_review_runs_a_reserve_fallback_managed_instead_of_the_native_profile(self):
+        """The installed profile cannot represent a later same-CLI model selected after the reserve check."""
+        self.config.workflow.balance = BalanceConfig("weighted", {"codex": 1})
+        self.config.workflow.review.models += [candidate("codex", "profile", "high"),
+                                               candidate("codex", "reserve", "high")]
+        exhausted = {"windows": [{"remaining": 0, "reset_at": 4102444800, "models": ["profile"]}]}
+        with routing_session("codex"), patch.object(workflow, "usage_snapshot", return_value=exhausted), \
+                patch.object(workflow, "run", side_effect=managed_runner(lambda *args, **kwargs: answer())) as run:
+            result = self.run_workflow("review", "1")
+        self.assertEqual(result["route"]["model"], "reserve")
+        self.assertEqual(run.call_count, 1)
+
+    def test_balanced_review_refuses_explicit_native_before_selection_or_a_round(self):
+        """Native must not bypass weighting or leave a pending round when the plain command is required."""
+        self.config.workflow.balance = BalanceConfig("weighted", {"claude": 1, "codex": 1})
+        self.config.workflow.review.models.append(candidate("codex", "selected", "high"))
+        with routing_session(None), patch.object(workflow, "candidates", side_effect=AssertionError("selection consumed")):
+            with self.assertRaisesRegex(AgentBoxError, "run agent-box workflow review 1$"):
+                self.native_round()
+        self.assertNotIn("pending_round", self.run_workflow("inspect", "1")["review"])
+        self.assertEqual(self.budget()["used"], 0)
+
+    def test_balanced_reviewer_keeps_default_effort_managed(self):
+        """Native review must not inherit the coordinator's effort in place of a selected model default."""
+        self.config.workflow.balance = BalanceConfig("weighted", {"codex": 1})
+        self.config.workflow.review.models.append(candidate("codex", "selected", "default"))
+        with routing_session("codex"), \
+                patch.object(workflow, "run", side_effect=managed_runner(lambda *args, **kwargs: answer())) as run:
+            result = self.run_workflow("review", "1")
+        self.assertEqual(result["route"]["effort"], "default")
+        self.assertEqual(run.call_count, 1)
+
+    def test_balanced_native_review_failure_cleans_the_round_and_rechecks_its_route(self):
+        """A malformed native answer ends its round without directing the retry to a refused --native launch."""
+        self.config.workflow.balance = BalanceConfig("weighted", {"codex": 1})
+        self.config.workflow.review.models.append(candidate("codex", "selected", "high"))
+        with routing_session("codex"):
+            opened = self.run_workflow("review", "1")
+            self.report.write_text("No verdict line.\n")
+            with self.assertRaisesRegex(AgentBoxError, "failure 1 of 2.*workflow inspect 1$"):
+                self.run_workflow("review", "1", "--result", str(self.report),
+                                  "--provider", "codex", "--model", "selected")
+        self.assertFalse(self.delegation_input(opened).parent.exists())
+        self.assertEqual(self.budget()["used"], 0)
+        self.assertNotIn("pending_round", self.run_workflow("inspect", "1")["review"])
 
     def test_native_result_is_recorded_for_the_round_it_opened(self):
         """The coordinator's word names the reviewer; the round only checks it against the candidate it opened for."""
@@ -98,7 +196,7 @@ class ReviewWorkflowTests(WorkflowCase):
                       ("--provider", "claude", "--model", "m", "--effort", "low")):
             with self.subTest(flags=flags):
                 with self.assertRaisesRegex(AgentBoxError, "expects profile ab-reviewer on claude m effort high.*"
-                                                           "workflow review 1 --native, or run agent-box workflow review 1"):
+                                                           "submit its answer to this round, or run agent-box workflow review 1"):
                     self.run_workflow("review", "1", "--result", str(self.report), *flags)
         self.assertEqual(self.budget()["used"], 0)
         self.assertEqual(self.run_workflow("inspect", "1")["review"]["pending_round"]["round"], opened["round"])
@@ -118,7 +216,7 @@ class ReviewWorkflowTests(WorkflowCase):
         """A native round is counted from its start, so neither a bad answer nor an abandoned reviewer retries forever."""
         for count, text in ((1, "Looks fine to me.\n"), (2, "Verdict: PASS\nVerdict: NEEDS_WORK\n")):
             opened = self.native_round()
-            with self.assertRaisesRegex(AgentBoxError, f"ended as failure {count} of 2.*--native"):
+            with self.assertRaisesRegex(AgentBoxError, f"ended as failure {count} of 2.*workflow inspect 1"):
                 self.native_result(text)
             self.assertFalse(self.delegation_input(opened).exists())
             with self.assertRaisesRegex(AgentBoxError, "No native review round is pending"):

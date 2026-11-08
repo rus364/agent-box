@@ -66,6 +66,13 @@ with existing-only branch switching. It never recreates lost work from base.
 - Managed scouts overlap up to `workflow.scout.limit`, counted by
   per-repository slot locks that a finished or killed process releases; the
   coordinator counts its native scouts itself.
+- When weights can change the list opener, inspection reports `balanced: true`
+  and, for a detected CLI, `for_this_session: balanced`. Its `managed` command
+  selects once, then returns a `launch: native` handoff only if the pick matches
+  that CLI's profile (model, effort, inherited speed and built-in API); otherwise
+  it runs managed. Review and sync also require non-default effort. The handoff
+  names `profile`, `message` and, for review/sync, `result_command`. Unknown
+  sessions run managed; explicit `--native` is refused with the plain command.
 - With workflow enabled, interactive `agent-box codex` and `--host codex`
   launches derive Codex's native capacity from the effective scout limit:
   V1 receives that many subagent slots and V2 one more for the coordinator (a
@@ -118,7 +125,7 @@ with existing-only branch switching. It never recreates lost work from base.
 
 ## Review rounds
 
-- **Backend choice per round.** A local round uses the first candidate's
+- **Backend choice per round.** Without balancing, a local round uses the first candidate's
   native profile when it is available with the configured model, effort and
   speed, otherwise the managed command. Every provider's profile shares one
   name and runs that provider's first candidate, so the route names only the
@@ -231,9 +238,10 @@ with existing-only branch switching. It never recreates lost work from base.
   Changed eligible weights reset that key. A blocking global lock protects each
   atomic private write; malformed, unreadable or unsupported formats are refused.
   Credits use an equivalent exact integer scale to avoid float overflow/drift.
-  Only managed launch selection consumes turns. Inspection checks lists
-  statically: two positive vendor shares force a managed route for every session
-  until native launches can consume a balancing turn.
+  Launch selection consumes one turn whether it returns a native handoff or
+  runs managed. Inspection checks lists statically without consuming turns:
+  multiple positive vendor shares, or a sole weighted vendor that does not
+  open the list, require the balanced launch route.
 - A managed worker advances after unavailability, model unavailability or quota
   failure only when the working tree is clean. A dirty tree or any other
   failure stops for reconciliation before retrying.

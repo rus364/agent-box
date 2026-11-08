@@ -8,13 +8,13 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from agent_box import agent_profiles, config_menu, plan_sync, provider_runner, workflow
-from agent_box.config import Config
+from agent_box.config import BalanceConfig, Config
 from agent_box.errors import AgentBoxError
 from agent_box.provider_runner import ProviderFailure
 from agent_box.project_config import PROJECT_FIELDS, apply
 from agent_box.repo_binding import block_text
 from agent_box.tracker.core import Task
-from workflow_fixtures import BINDING, WorkflowCase, candidate
+from workflow_fixtures import BINDING, WorkflowCase, candidate, routing_session
 
 # The fixture stubs branch resolution; integration targets need the real derivation.
 REAL_RESOLVE = workflow.resolve
@@ -27,6 +27,83 @@ class PlanSyncTests(WorkflowCase):
         self.adapter.subtree.return_value = ["1"]
         self.binding = BINDING
         self.run_as("codex")
+
+    def test_balanced_sync_native_result_and_managed_run_share_one_rotation(self):
+        """Completing a native sync preserves its event and advances the next turn to the other CLI."""
+        self.config.workflow.balance = BalanceConfig("weighted", {"codex": 1, "claude": 1})
+        self.config.workflow.sync.models.append(candidate("claude", "other", "high"))
+        self.config.workflow.sync.policy = "always"
+        self.config.workflow.sync.events = ["plan"]
+        with routing_session("codex"), \
+                patch.object(workflow, "balance_vendor", wraps=workflow.balance_vendor) as turn, \
+                patch.object(workflow, "run", return_value="Sync: UNCHANGED\n") as run:
+            opened = self.run_workflow("sync", "1", "--event", "plan")
+            run.assert_not_called()
+            self.assertEqual((opened["status"], opened["backend"], opened["launch"]), ("NATIVE", "native", "native"))
+            self.assertEqual(opened["profile"], "ab-sync")
+            self.assertEqual(opened["route"]["model"], "gpt-sync")
+            self.assertIn(opened["input"]["path"], opened["message"])
+            self.assertEqual(opened["result_command"], "agent-box workflow sync 1 --result FILE")
+            self.report.write_text("Sync: UNCHANGED\n")
+            recorded = self.run_workflow("sync", "1", "--result", str(self.report))
+            self.assertEqual((recorded["status"], recorded["event"], recorded["backend"]), ("UNCHANGED", "plan", "native"))
+            second = self.run_workflow("sync", "1")
+            self.assertEqual(second["route"]["provider"], "claude")
+            third = self.run_workflow("sync", "1")
+            self.assertEqual(third["launch"], "native")
+            self.assertEqual(turn.call_count, 3)
+            self.assertEqual(run.call_count, 1)
+        self.adapter.set_state.assert_not_called()
+
+    def test_sole_weighted_sync_uses_native_only_with_a_detected_matching_session(self):
+        """The weighted vendor behind the opener uses its profile only when the coordinator's CLI is known."""
+        self.config.workflow.balance = BalanceConfig("weighted", {"claude": 1})
+        self.config.workflow.sync.models.append(candidate("claude", "weighted", "high"))
+        with routing_session("claude"), patch.object(workflow, "run") as run, \
+                patch.object(workflow, "balance_vendor", side_effect=AssertionError("sole vendor spent a counter")):
+            opened = self.run_workflow("sync", "1")
+            self.report.write_text("Sync: UNCHANGED\n")
+            self.run_workflow("sync", "1", "--result", str(self.report))
+        self.assertEqual(opened["launch"], "native")
+        self.assertEqual(opened["route"]["model"], "weighted")
+        run.assert_not_called()
+        with routing_session(None), patch.object(workflow, "run", return_value="Sync: UNCHANGED\n") as run:
+            result = self.run_workflow("sync", "1")
+        self.assertEqual(result["route"]["model"], "weighted")
+        self.assertEqual(result["backend"], "managed")
+        self.assertEqual(run.call_count, 1)
+
+    def test_balanced_sync_preserves_reserve_selection_instead_of_spawning_the_first_model(self):
+        """A same-CLI reserve fallback cannot run through a native profile pinned to an exhausted model."""
+        self.config.workflow.balance = BalanceConfig("weighted", {"claude": 1})
+        self.config.workflow.sync.models += [candidate("claude", "profile", "high"),
+                                             candidate("claude", "reserve", "high")]
+        exhausted = {"windows": [{"remaining": 0, "reset_at": 4102444800, "models": ["profile"]}]}
+        with routing_session("claude"), patch.object(workflow, "usage_snapshot", return_value=exhausted), \
+                patch.object(workflow, "run", return_value="Sync: UNCHANGED\n") as run:
+            result = self.run_workflow("sync", "1")
+        self.assertEqual(result["route"]["model"], "reserve")
+        self.assertEqual(result["backend"], "managed")
+        self.assertEqual(run.call_count, 1)
+
+    def test_balanced_sync_refuses_explicit_native_without_a_pending_record_or_turn(self):
+        """Explicit native must name the selecting command before it can reserve a sync run."""
+        self.config.workflow.balance = BalanceConfig("weighted", {"codex": 1, "claude": 1})
+        self.config.workflow.sync.models.append(candidate("claude", "other", "high"))
+        with routing_session(None), patch.object(workflow, "candidates", side_effect=AssertionError("selection consumed")):
+            with self.assertRaisesRegex(AgentBoxError, "run agent-box workflow sync 1 --output reference$"):
+                self.run_workflow("sync", "1", "--native")
+        self.assertIsNone(plan_sync.last_result(self.root, self.task))
+
+    def test_balanced_sync_keeps_default_effort_managed(self):
+        """A sync profile that omits effort cannot enforce a selected model default in the parent's session."""
+        self.config.workflow.balance = BalanceConfig("weighted", {"claude": 1})
+        self.config.workflow.sync.models.append(candidate("claude", "selected", "default"))
+        with routing_session("claude"), patch.object(workflow, "run", return_value="Sync: UNCHANGED\n") as run:
+            result = self.run_workflow("sync", "1")
+        self.assertEqual(result["route"]["effort"], "default")
+        self.assertEqual(result["backend"], "managed")
+        self.assertEqual(run.call_count, 1)
 
     def test_managed_executor_cannot_start_or_record_sync_before_any_context_access(self):
         """Wrong-role calls must name the mistake before tracker access or a read-only lock failure."""

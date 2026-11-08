@@ -311,17 +311,22 @@ def run(root, binding, adapter, config, task, event="manual", *, native=False, r
         if prior and prior.get("status") in PENDING:
             raise AgentBoxError(f"Plan sync {prior['status']}; stop/await its executor and inspect live tasks, "
                                 f"then workflow sync {task.id} --reconcile FILE before retrying")
-        result = {"task": task.id, "event": event, "head": workflow.gw.head_sha(root), "status": "RUNNING",
-                  "backend": "native" if native else "managed"}
         if native:
             route = workflow.execution(config, "sync", tier, task.id)
             workflow.native_provider(route, provider)
+        else:
+            selected = workflow.candidates(config, "sync", tier)
+            route = workflow.balanced_native_route(config, "sync", tier, task.id, selected)
+        result = {"task": task.id, "event": event, "head": workflow.gw.head_sha(root), "status": "RUNNING",
+                  "backend": "native" if route else "managed"}
+        if route:
             artifact = text_delivery.publish(prompt, config)
             result.update(status="NATIVE", route=route)
             save(root, task, result)
             from .delegation import bootstrap
-            return {**result, "message": bootstrap("sync", artifact), "input": artifact}
-        selected = workflow.candidates(config, "sync", tier)
+            return {**result, "launch": "native", "profile": next(iter(route["native"].values())),
+                    "message": bootstrap("sync", artifact), "input": artifact,
+                    "result_command": f"agent-box workflow sync {task.id} --result FILE"}
         save(root, task, result)
         try:
             output = workflow.execute(config.workflow, selected, "sync", root, prompt)

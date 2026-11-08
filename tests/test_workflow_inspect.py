@@ -1,4 +1,5 @@
 """Read-only diagnostics must not become acceptance or spend a review attempt."""
+import os
 import subprocess
 import tempfile
 import unittest
@@ -87,23 +88,32 @@ class InspectTests(unittest.TestCase):
                 self.assertIsNone(result["review"]["required"])
                 self.assertIn(next_step, result["next_step"])
 
-    def test_weighted_roles_are_managed_in_every_session_without_reading_usage_or_counters(self):
-        """Inspect cannot promise a native profile when the next managed turn may select another vendor."""
+    def test_weighted_roles_defer_launch_choice_without_reading_usage_or_counters(self):
+        """Inspect advertises balancing without spending the launch's turn or guessing its native profile."""
         self.config.workflow.balance = BalanceConfig("weighted", {"claude": 3, "codex": 1})
         for role in ("worker", "scout", "reviewer", "sync"):
             self.config.workflow.role(role).models = [model_entry({"provider": name, "model": name})
                                                       for name in ("claude", "codex")]
         (workflow_state.WORKFLOW_STATE / "balance.json").write_text("unreadable counters")
         for provider in ("codex", "claude", None):
-            with self.subTest(provider=provider), patch.object(workflow, "session_provider", return_value=provider), \
+            with self.subTest(provider=provider), \
+                 patch.dict(os.environ, {"CLAUDECODE": "1" if provider == "claude" else "",
+                                         "CODEX_THREAD_ID": "test" if provider == "codex" else ""}), \
                  patch.object(workflow, "usage_snapshot", side_effect=AssertionError("usage read")), \
                  patch.object(workflow, "balance_vendor", side_effect=AssertionError("counter consumed")):
                 inspected = self.inspect_readonly()
                 routes = {**inspected["execution"], "sync": inspected["plan_sync"]["execution"]}
                 for role in ("worker", "scout", "reviewer", "sync"):
                     self.assertEqual(routes[role]["native"], {})
-                    self.assertEqual(routes[role]["for_this_session"], "managed")
-                    self.assertIn("Weighted vendor choice", routes[role]["balanced"])
+                    self.assertEqual(routes[role]["mode"], "delegate")
+                    self.assertIs(routes[role]["balanced"], True)
+                    if provider:
+                        self.assertEqual(routes[role]["for_this_session"], "balanced")
+                    else:
+                        self.assertNotIn("for_this_session", routes[role])
+                    command = "review" if role == "reviewer" else "sync" if role == "sync" else "delegate"
+                    self.assertIn(f"agent-box workflow {command} 1", routes[role]["managed"])
+                    self.assertNotIn("--native", routes[role]["managed"])
 
     def test_static_balance_check_respects_vendor_identity_tiers_pins_and_disabled_mode(self):
         """Shares that rotate the opener suppress a native route; tier lists and pins remain authoritative."""
@@ -134,7 +144,7 @@ class InspectTests(unittest.TestCase):
         c.balance.weights = {"codex": 1, "claude": 0}
         self.assertEqual(workflow.execution(self.config, "worker", None, "1")["native"], {"codex": "ab-worker"})
 
-    def test_balanced_native_refusal_explains_the_required_managed_launch(self):
+    def test_balanced_native_refusal_names_the_command_that_selects_the_launch(self):
         """The refusal must name balancing instead of falsely blaming the first candidate's provider."""
         self.config.workflow.balance = BalanceConfig("weighted", {"claude": 1, "codex": 1})
         self.config.workflow.worker.models = [model_entry({"provider": name, "model": name})
