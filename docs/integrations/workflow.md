@@ -114,8 +114,17 @@ Each role has its own ordered **candidate list** under **Workflow** in
 empty.
 
 - **The first available candidate runs**; the rest are fallbacks, used only
-  when a CLI is missing, a subscription window is exhausted, or (for
-  reviewers) a run hits an authentication, quota or timeout failure.
+  when a CLI or model is unavailable, subscription usage reaches the reserve,
+  or an allowed managed-run failure occurs. Workers fall back after a quota
+  failure only when the working tree is clean; a dirty tree or other worker
+  errors stop for reconciliation.
+  Reviewers may also fall back after authentication, quota or timeout failures.
+- **Usage reserve.** Global `workflow.reserve_percent` accepts whole numbers from
+  0 through 99 and defaults to 5. Skip a subscription candidate when any
+  applicable shared or model-specific window has that percentage or less
+  remaining and a future reset. Set 0 to skip only exhausted windows. The rule
+  applies with or without task tiers; session pins and external API candidates
+  bypass it. An all-excluded error names the list and reserve.
 - **An empty list means "do it yourself"** for workers and scouts: the
   coordinator does the work in its own session. An empty reviewer list means a
   fresh native subagent of the coordinator's session reviews — never the
@@ -269,6 +278,7 @@ expected. A cleanup failure never undoes the merge or Done.
 | `workflow.pause_push` | off | Publish and verify unfinished task branches on an explicit pause |
 | `workflow.cleanup_local_branches`, `cleanup_remote_branches` | off | Delete integrated task branches |
 | `workflow.use_tiers` | off | Let task tiers select model lists |
+| `workflow.reserve_percent` | 5 | Skip subscription usage at or below this percentage, 0–99 (global only) |
 | `workflow.language` | — | [Engineering language](../configuration.md#the-configuration-menu) of repository text, commits, PRs and review replies; also the tracker fallback. Empty uses English for engineering |
 | `workflow.tracker_language` | — | Tracker tasks, plans, comments, normalization, adoption and Plan sync; empty inherits `workflow.language`, then each task's language |
 | `workflow.timeout_seconds` | 3600 | Limit for each managed run |
@@ -284,7 +294,7 @@ expected. A cleanup failure never undoes the merge or Done.
 | `workflow.review.github_provider` | `auto` | `auto`, `local`, `codex` or `claude` |
 | `workflow.review.wait_seconds` | 3600 | How long to wait for a cloud reviewer |
 
-All workflow settings except `enabled`, `text_max_bytes` and `text_retention_days` can be overridden per project in
+All workflow settings except `enabled`, `reserve_percent`, `text_max_bytes` and `text_retention_days` can be overridden per project in
 `.agent-box.json`. Session options such as `--review`, `--rounds`, `--merge`
 and `--no-push` override them for one session; see
 [session options](../usage.md#session-options).

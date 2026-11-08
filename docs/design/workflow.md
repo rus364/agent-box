@@ -204,9 +204,17 @@ with existing-only branch switching. It never recreates lost work from base.
 ## Model routing
 
 - A candidate is unavailable when its CLI is missing or, for a subscription
-  model, a known usage window is exhausted with a future reset. A failed live
-  refresh keeps cached exhaustion evidence and exits nonzero; a failure without
-  such evidence excludes nothing. Provider APIs may lag regardless of cache.
+  model, any applicable shared or model-specific usage window has remaining
+  percentage at or below `workflow.reserve_percent` with a future reset.
+  This global setting accepts whole numbers from 0 through 99, defaults to 5, and
+  applies with or without task tiers; 0 skips only exhausted windows. Session
+  pins and external API candidates bypass the reserve. If all candidates are
+  excluded, the error names the list path and reserve. A failed live refresh
+  keeps cached usage evidence and exits nonzero; a failure without such evidence
+  excludes nothing. Provider APIs may lag regardless of cache.
+- A managed worker advances after unavailability, model unavailability or quota
+  failure only when the working tree is clean. A dirty tree or any other
+  failure stops for reconciliation before retrying.
 - A managed reviewer advances to the next candidate only after observed
   unavailability, authentication, quota or `timeout_seconds` in the same round.
   Unknown errors, unsupported settings and answers without a verdict stop the

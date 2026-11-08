@@ -997,6 +997,8 @@ class WorkflowConfig:
     #: Off by default: each role runs its own list regardless of the task tier.
     #: The tiers stay configured and labelled.
     use_tiers: bool = False
+    #: Global subscription headroom; pins and external API candidates bypass it.
+    reserve_percent: int = 5
     scout: ScoutConfig = field(default_factory=ScoutConfig)
     auto_push: bool = True
     #: Checkpoints can publish unfinished code in either delivery mode; explicit opt-in only.
@@ -1074,6 +1076,9 @@ class WorkflowConfig:
             value = getattr(self, name)
             if type(value) is not int or value < 1:
                 errors.append(f"workflow.{name} must be a positive integer")
+        value = self.reserve_percent
+        if type(value) is not int or not 0 <= value <= 99:
+            errors.append("workflow.reserve_percent must be a whole number from 0 through 99")
         for name in ("language", "tracker_language"):
             errors += language_problems(getattr(self, name), f"workflow.{name}")
         value = self.timeout_seconds
@@ -1154,7 +1159,7 @@ class WorkflowConfig:
         result.enabled = _bool(data, "enabled", False)
         result.merge_mode = _str(data, "merge_mode") or result.merge_mode
         result.behavior_version = data.get("behavior_version", result.behavior_version)
-        for name in ("text_max_bytes", "text_retention_days"):
+        for name in ("text_max_bytes", "text_retention_days", "reserve_percent"):
             setattr(result, name, data.get(name, getattr(result, name)))
         for key in ("use_tiers", "auto_push", "pause_push", "cleanup_local_branches", "cleanup_remote_branches"):
             setattr(result, key, _bool(data, key, getattr(result, key)))

@@ -24,7 +24,8 @@ def _fields(value, parts=()):
 
 PROJECT_FIELDS = {
     "workflow": {key: _fields(value, ("workflow", key)) for key, value in Config().workflow.to_dict().items()
-                 if key not in {"enabled", "text_max_bytes", "text_retention_days"}},
+                 # Usage headroom belongs to the user's subscriptions, not to a repository.
+                 if key not in {"enabled", "text_max_bytes", "text_retention_days", "reserve_percent"}},
     "box": {"tools": _fields(Config().box.tools.to_dict()), "browser": _fields(Config().box.browser.to_dict()), "k3s": _fields(Config().box.k3s.to_dict(), ("k3s",)),
             "podman": _fields(Config().box.podman.to_dict()), "persistent_cache": bool,
             "network": {"ports": list}},

@@ -146,6 +146,45 @@ class DelegateCommandTests(WorkflowCase):
         self.assertEqual(output["failures"][1]["category"], "model-unavailable")
         self.assertNotIn("diagnostic", output["failures"][1])
 
+    def test_worker_quota_failure_with_a_clean_tree_tries_the_next_candidate(self):
+        """A quota failure without edits can use the next candidate without risking unfinished work."""
+        self.config.workflow.worker.models.append(candidate("codex", "worker-fallback", "high"))
+        failure = provider_runner.ProviderFailure("Quota exhausted", "quota", stage="execution")
+        self.assertTrue(gw._worktree_clean(self.root))
+        with patch.object(workflow, "run", side_effect=[failure, ANSWER]) as run:
+            result = self.delegate("worker")
+        self.assertEqual([call.args[0]["model"] for call in run.call_args_list], ["worker-model", "worker-fallback"])
+        self.assertEqual(run.call_args_list[0].args[3], run.call_args_list[1].args[3])
+        self.assertEqual((result["route"]["model"], result["response"]), ("worker-fallback", ANSWER))
+        self.assertEqual(result["failures"][0]["category"], "quota")
+
+    def test_worker_quota_failure_with_edits_stops_without_running_a_fallback(self):
+        """Even a quota error can follow partial edits; another worker must not restart over those files."""
+        self.config.workflow.worker.models.append(candidate("codex", "worker-fallback", "high"))
+        changed = self.root / "change.py"
+
+        def provider(*args, **kwargs):
+            changed.write_text("unfinished = True\n")
+            raise provider_runner.ProviderFailure("Quota exhausted", "quota", stage="execution")
+
+        with patch.object(workflow, "run", side_effect=provider) as run, \
+             self.assertRaisesRegex(workflow.ProviderFailures, "Worker left changes before failure") as caught:
+            self.delegate("worker")
+        run.assert_called_once()
+        self.assertEqual(changed.read_text(), "unfinished = True\n")
+        self.assertEqual(caught.exception.failures[0]["category"], "quota")
+
+    def test_clean_workers_still_stop_on_failures_other_than_quota_or_unavailability(self):
+        """A clean tree alone does not authorize retrying authentication, settings or execution errors."""
+        self.config.workflow.worker.models.append(candidate("codex", "worker-fallback", "high"))
+        for category in ("authentication", "timeout", "provider-error", "unsupported", "invalid-report"):
+            failure = provider_runner.ProviderFailure("Worker failed", category, stage="execution")
+            with self.subTest(category=category), patch.object(workflow, "run", side_effect=failure) as run, \
+                 self.assertRaisesRegex(workflow.ProviderFailures, "reconcile files and task progress"):
+                self.delegate("worker")
+            run.assert_called_once()
+            self.assertTrue(gw._worktree_clean(self.root))
+
     def test_refusal_before_launch_still_names_its_reason_and_diagnostic(self):
         """Settings refused before a process starts still name why and where the private diagnostic is."""
         self.config.workflow.scout.models = [candidate("claude", "claude-opus-5", "high") | {"speed": "fast"}]

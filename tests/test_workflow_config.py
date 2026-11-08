@@ -8,7 +8,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
-from agent_box.config import Config
+from agent_box.config import Config, WorkflowConfig
 
 
 def show_paths(text):
@@ -42,6 +42,27 @@ class ScoutLimitValidationTests(unittest.TestCase):
                 errors = Config.from_dict({"workflow": {"scout": {"limit": value}}}).workflow.validate()
                 self.assertIn("workflow.scout.limit must be between 1 and 16", errors)
         self.assertEqual(Config.from_dict({"workflow": {"scout": {"limit": 16}}}).workflow.validate(), [])
+
+
+class ReserveValidationTests(unittest.TestCase):
+    def test_reserve_defaults_to_five_and_round_trips_whole_percentages(self):
+        """The default keeps subscription headroom, while zero restores the plain exhaustion rule."""
+        self.assertEqual(WorkflowConfig.from_dict({}).reserve_percent, 5)
+        self.assertEqual(shown(Config())["workflow.reserve_percent"], "5")
+        for value in (0, 1, 55, 99):
+            with self.subTest(value=value):
+                config = Config.from_dict({"workflow": {"reserve_percent": value}})
+                self.assertEqual(config.workflow.validate(), [])
+                self.assertEqual(Config.from_dict(config.to_dict()).workflow.reserve_percent, value)
+                self.assertEqual(shown(config)["workflow.reserve_percent"], str(value))
+
+    def test_invalid_reserves_are_rejected_without_becoming_defaults(self):
+        """Invalid persisted numbers or types must not silently change which subscription models may run."""
+        for value in (-1, 100, 5.5, 99.0, float("inf"), float("nan"),
+                      True, False, "5", None, [], {}):
+            with self.subTest(value=value):
+                for config in (WorkflowConfig(reserve_percent=value), WorkflowConfig.from_dict({"reserve_percent": value})):
+                    self.assertIn("workflow.reserve_percent must be a whole number from 0 through 99", config.validate())
 
 
 class ConfigShowTests(unittest.TestCase):
@@ -91,14 +112,14 @@ class ConfigShowTests(unittest.TestCase):
 
 class WorkflowConfigTests(unittest.TestCase):
     def test_role_models_survive_global_save_and_minimal_runtime(self):
-        """Saved candidate lists reach the container without host secrets."""
+        """Saved candidate lists and their reserve reach the container without host secrets."""
         from agent_box import runtime
         from agent_box.config import load_config, save_config
         models = [{"provider": "codex", "model": "gpt-5.6-luna", "effort": "high"},
                   {"provider": "claude", "model": "deepseek-v4-flash", "effort": "high", "api_provider": "deepseek"}]
         for tier in ("1", "3"):
             with self.subTest(tier=tier), tempfile.TemporaryDirectory() as directory:
-                config = Config.from_dict({"workflow": {"enabled": True,
+                config = Config.from_dict({"workflow": {"enabled": True, "reserve_percent": 12,
                     "worker": {"tiers": {tier: models[:1]}},
                     "scout": {"models": models}, "review": {"models": models[::-1]}}})
                 config.host.notifications.telegram_token = "host-secret"
@@ -231,7 +252,7 @@ class WorkflowConfigTests(unittest.TestCase):
         }
         result = Config.from_dict(data).to_dict()
         self.assertEqual(result["tracker"], data["tracker"])
-        for removed in ("routing", "weights", "tiers", "fallback", "reserve_percent", "smoothing_hours"):
+        for removed in ("routing", "weights", "tiers", "fallback", "smoothing_hours"):
             self.assertNotIn(removed, result["workflow"])
         self.assertNotIn("override", result["workflow"]["worker"])
         self.assertNotIn("tiers", result["workflow"]["scout"])

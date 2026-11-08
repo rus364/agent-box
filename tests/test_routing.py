@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from agent_box import launch_options, project_config, routing, workflow
 from agent_box.config import Config, WorkflowConfig, model_entry
+from agent_box.errors import AgentBoxError
 
 
 def candidate(provider, model, **fields):
@@ -23,7 +24,7 @@ class RoutingTests(unittest.TestCase):
              patch.object(workflow, "WORKFLOW_STATE", Path(directory)), \
              patch.object(workflow.shutil, "which", side_effect=lambda name: name), \
              patch.object(workflow, "usage_snapshot", return_value=exhausted) as usage, \
-             self.assertRaisesRegex(Exception, "exhausted"):
+             self.assertRaisesRegex(AgentBoxError, "workflow.scout.models.*5% usage reserve"):
             workflow.candidates(config, "scout", None)
         usage.assert_called_once_with("codex", no_cache=True)
 
@@ -76,12 +77,75 @@ class RoutingTests(unittest.TestCase):
         result = routing.select(c, "reviewer", None, usage, now=1000)
         self.assertEqual((result["provider"], result["fallbacks"]), ("codex", []))
 
-    def test_every_candidate_exhausted_is_an_error_not_a_silent_choice(self):
+    def test_reserve_skips_candidates_for_every_role_without_reordering_fallbacks(self):
+        """Launching at the reserve risks immediate quota failure; surviving candidates keep their preference order."""
+        for role in ("worker", "scout", "reviewer", "sync"):
+            for reserve in (5, 12):
+                c = WorkflowConfig(reserve_percent=reserve)
+                c.role(role).models = [candidate("codex", "gpt-5.6-luna"),
+                                       candidate("claude", "opus"), candidate("claude", "sonnet")]
+                for remaining in (1, reserve, reserve + 0.1):
+                    usage = {"codex": {"windows": [
+                        {"remaining": 90, "reset_at": 2000},
+                        {"remaining": remaining, "reset_at": 2000}]}}
+                    with self.subTest(role=role, reserve=reserve, remaining=remaining):
+                        result = routing.select(c, role, None, usage, now=1000)
+                        expected = ["opus", "sonnet"] if remaining <= reserve else ["gpt-5.6-luna", "opus", "sonnet"]
+                        self.assertEqual([result["model"], *[item["model"] for item in result["fallbacks"]]], expected)
+
+    def test_only_applicable_windows_with_future_resets_spend_the_reserve(self):
+        """A model-specific restriction must not exclude other models, and an elapsed reset cannot block a launch."""
         c = WorkflowConfig()
-        c.scout.models = [candidate("codex", "gpt-5.6-luna")]
-        usage = {"codex": {"windows": [{"seconds": 18000, "remaining": 0, "reset_at": 2000}]}}
-        with self.assertRaisesRegex(Exception, "exhausted"):
-            routing.select(c, "scout", None, usage, now=1000)
+        c.worker.models = [candidate("claude", "claude-opus-5"), candidate("claude", "claude-sonnet-5"),
+                           candidate("codex", "gpt-5.5")]
+        for models, reset, expected in (([], 2000, "gpt-5.5"), (["opus"], 2000, "claude-sonnet-5"),
+                                        (["haiku"], 2000, "claude-opus-5"),
+                                        (["opus"], 1000, "claude-opus-5"), ([], 999, "claude-opus-5")):
+            usage = {"claude": {"windows": [{"remaining": 80, "reset_at": 2000},
+                                            {"remaining": 1, "reset_at": reset, "models": models}]}}
+            with self.subTest(models=models, reset=reset):
+                self.assertEqual(routing.select(c, "worker", None, usage, now=1000)["model"], expected)
+
+    def test_zero_reserve_preserves_the_exhaustion_rule(self):
+        """Zero permits any positive remainder and excludes exhaustion only until its reset."""
+        c = WorkflowConfig(reserve_percent=0)
+        c.scout.models = [candidate("codex", "gpt-5.6-luna"), candidate("claude", "haiku")]
+        for remaining in (-1, 0, 0.1, 1, 5):
+            for reset in (999, 1000, 1001):
+                usage = {"codex": {"windows": [{"remaining": remaining, "reset_at": reset}]}}
+                with self.subTest(remaining=remaining, reset=reset):
+                    expected = "haiku" if remaining <= 0 and reset > 1000 else "gpt-5.6-luna"
+                    self.assertEqual(routing.select(c, "scout", None, usage, now=1000)["model"], expected)
+
+    def test_session_pins_bypass_the_reserve_even_when_exhausted(self):
+        """An explicit session model must not be replaced by a subscription headroom policy."""
+        c = WorkflowConfig(reserve_percent=99)
+        c.scout.models = [candidate("claude", "haiku")]
+        c.pins["scout"] = [candidate("codex", "gpt-5.6-luna")]
+        usage = {"codex": {"windows": [{"remaining": 0, "reset_at": 2000}]}}
+        result = routing.select(c, "scout", None, usage, now=1000)
+        self.assertEqual((result["model"], result["fallbacks"]), ("gpt-5.6-luna", []))
+
+    def test_external_api_candidates_do_not_spend_the_clis_subscription_reserve(self):
+        """A CLI subscription restriction cannot exclude a separately funded API candidate."""
+        c = WorkflowConfig(reserve_percent=99)
+        c.worker.models = [candidate("codex", "gpt-5.5"), candidate("codex", "v4", api_provider="deepseek")]
+        usage = {"codex": {"windows": [{"remaining": 0, "reset_at": 2000}]}}
+        result = routing.select(c, "worker", None, usage, now=1000)
+        self.assertEqual((result["model"], result["api_provider"], result["fallbacks"]), ("v4", "deepseek", []))
+
+    def test_every_candidate_below_reserve_is_an_error_naming_the_list_and_reserve(self):
+        """A depleted list cannot silently launch; its diagnostic must identify the setting and threshold to fix."""
+        for reserve in (0, 5, 12):
+            c = WorkflowConfig(reserve_percent=reserve, use_tiers=True)
+            c.scout.models = c.worker.tiers["2"] = [candidate("codex", "gpt-5.6-luna"), candidate("claude", "opus")]
+            usage = {provider: {"windows": [{"remaining": reserve, "reset_at": 2000}]}
+                     for provider in ("codex", "claude")}
+            for role, tier, path in (("scout", None, "workflow.scout.models"), ("worker", 2, "workflow.worker.tiers.2")):
+                with self.subTest(reserve=reserve, path=path), self.assertRaises(AgentBoxError) as caught:
+                    routing.select(c, role, tier, usage, now=1000)
+                self.assertIn(path, str(caught.exception))
+                self.assertIn(f"{reserve:g}% usage reserve", str(caught.exception))
 
     def test_the_reviewer_is_the_lists_first_candidate_whoever_wrote_the_code(self):
         """The list states the preference; reordering it around the writer's provider was removed."""

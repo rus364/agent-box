@@ -72,7 +72,7 @@ class ConfigMenuTests(unittest.TestCase):
             ('credentials',): ['git', 'github', 'gitlab', 'registries', 'kubernetes', 'cloud'],
             ('host',): ['notifications', 'personal_browser', 'claude_skill_links'],
             ('workflow',): ['enabled', 'behavior_version', 'merge_mode', 'auto_push', 'pause_push', 'cleanup_local_branches',
-                           'cleanup_remote_branches', 'language', 'tracker_language', 'use_tiers', 'worker', 'scout', 'review', 'sync', 'timeout_seconds', 'text_max_bytes', 'text_retention_days'],
+                           'cleanup_remote_branches', 'language', 'tracker_language', 'use_tiers', 'reserve_percent', 'worker', 'scout', 'review', 'sync', 'timeout_seconds', 'text_max_bytes', 'text_retention_days'],
             ('workflow', 'worker'): ['models', 'tiers'],
             ('workflow', 'scout'): ['limit', 'models'],
             ('workflow', 'sync'): ['policy', 'events', 'paths', 'scope', 'references', 'models', 'tiers'],
@@ -542,6 +542,29 @@ class ConfigMenuTests(unittest.TestCase):
         check(data)
         self.assertEqual(set(config_menu.ACTION_HELP), {"save", "cancel", "preset"})
 
+    def test_reserve_editor_saves_an_edited_percentage(self):
+        """The reserve must be editable from the Roles group without touching the original configuration."""
+        import curses
+        config = Config()
+        result, _ = self.edit(config, [*select("workflow"), "\n", *select("reserve_percent", ("workflow",)),
+                                       "\n", "\x15", *"7", "\n", "\x1b",
+                                       curses.KEY_END, curses.KEY_UP, "\n"])
+        self.assertEqual(result.config.workflow.reserve_percent, 7)
+        self.assertEqual(config.workflow.reserve_percent, 5)
+
+    def test_invalid_reserve_keeps_the_menu_open_without_saving(self):
+        """The menu must refuse out-of-range or nonfinite reserves before returning a save."""
+        import curses
+        for text in ("-1", "100"):
+            with self.subTest(text=text):
+                config = Config()
+                result, screen = self.edit(config, [*select("workflow"), "\n", *select("reserve_percent", ("workflow",)),
+                                                    "\n", "\x15", *text, "\n", "\x1b",
+                                                    curses.KEY_END, curses.KEY_UP, "\n", "\x1b"])
+                self.assertIsNone(result)
+                self.assertEqual(config.workflow.reserve_percent, 5)
+                self.assertIn("workflow.reserve_percent must be a whole number from 0 through 99", " ".join(screen.drawn))
+
     def test_editor_inserts_and_deletes_at_the_visible_cursor(self):
         import curses
         config = Config()
@@ -784,7 +807,7 @@ class ProjectMenuTests(unittest.TestCase):
         save = [curses.KEY_END, curses.KEY_UP, '\n']
         pinned, _ = self.edit(config, [*workflow, 'g', *save], project={})
         expected = config.workflow.to_dict()
-        for key in ('enabled', 'text_max_bytes', 'text_retention_days'):
+        for key in ('enabled', 'text_max_bytes', 'text_retention_days', 'reserve_percent'):
             del expected[key]
         self.assertEqual(pinned.project, {'workflow': expected})
         self.assertEqual(pinned.project['workflow']['review']['models'], [])

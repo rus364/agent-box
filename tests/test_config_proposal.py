@@ -77,6 +77,15 @@ class ConfigProposalTests(unittest.TestCase):
         self.apply.assert_called_once()
         self.assertFalse(self.proposal.exists())
 
+    def test_config_set_saves_a_global_reserve(self):
+        """The checked global proposal path must preserve a reserve through validation, save and reload."""
+        for value in (0, 7, 99):
+            with self.subTest(value=value):
+                self.command("set", "--global", f"workflow.reserve_percent={value}")
+                self.assertEqual(config_proposal.load(self.proposal)["set"]["workflow.reserve_percent"], value)
+                self.command("proposal", "apply", answer="y")
+                self.assertEqual(load_config().workflow.reserve_percent, value)
+
     def test_decline_discards_while_no_answer_or_no_terminal_changes_nothing(self):
         """Only an explicit yes writes; an unanswered prompt keeps the proposal for later."""
         before = self.global_file.read_text()
@@ -94,6 +103,9 @@ class ConfigProposalTests(unittest.TestCase):
         for args, message in ((('host.notifications.telegram_token="token-secret-value"',), "credential"),
                               (('box.env.forward=["NAME"]',), "environment"),
                               (('workflow.review.max_files="nine"',), "invalid type"),
+                              (('workflow.reserve_percent=true',), "invalid type"),
+                              (("workflow.reserve_percent=100",), "workflow.reserve_percent"),
+                              (("workflow.reserve_percent=7.5",), "whole number"),
                               (('workflow.scout.models=["codex:gpt-5.5"]',), r"models\.0 must be an object"),
                               (('workflow.worker.tiers.2=[{"provider": "codex", "model": 5}]',), r"tiers\.2\.0 must be an object"),
                               (('workflow.review.policy="sometimes"',), "must be one of"),

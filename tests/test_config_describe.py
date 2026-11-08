@@ -100,6 +100,14 @@ class ConfigDescribeTests(unittest.TestCase):
         self.assertEqual(provider["choices"], ["", "vikunja", "jira", "github"])
         self.assertFalse(any(path.startswith("tracker.connections.linear") for path in fields))
 
+    def test_reserve_is_described_as_a_global_integer(self):
+        """Configuration agents must offer whole percentages and never propose a per-project reserve."""
+        save_config(Config.from_dict({"workflow": {"reserve_percent": 8}}), self.global_file)
+        _, fields = self.describe("workflow.reserve_percent")
+        field = fields["workflow.reserve_percent"]
+        self.assertEqual((field["type"], field["default"], field["effective"], field["project_allowed"]),
+                         ("integer", 5, 8, False))
+
     def test_choices_are_the_menus_for_external_api_settings(self):
         """A value the configured API model rejects must not be offered as allowed."""
         config = rich_config()

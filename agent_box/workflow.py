@@ -1037,7 +1037,7 @@ def authors_missing(config, authors):
 def candidates(config, role, tier, authors=()):
     """The role's first available candidate with ordered fallbacks, bound to their APIs."""
     _, models = config.workflow.models_for(role, tier, authors)
-    # Every role skips a subscription candidate whose known window is exhausted;
+    # Every role reserves headroom in applicable subscription windows;
     # external API candidates have no subscription usage to read.
     subscribed = {spec["provider"] for spec in models if not spec.get("api_provider")}
     usage = {p: usage_snapshot(p, no_cache=True) for p in sorted(subscribed)}
@@ -1098,7 +1098,7 @@ def execute(config, selected, role, root, prompt, read_paths=(), on_completed=No
                 raise ProviderFailures("Reviewer failure does not establish provider unavailability; "
                                        "no provider fallback", failures) from None
             # A worker may have edited files before an error; never restart it blindly.
-            if role == "worker" and exc.category not in ("unavailable", "model-unavailable"):
+            if role == "worker" and exc.category not in ("unavailable", "model-unavailable", "quota"):
                 raise ProviderFailures(f"Worker failed ({exc.category}); reconcile files and task progress "
                                        "before retrying", failures) from None
             if role == "worker" and not gw._worktree_clean(root):

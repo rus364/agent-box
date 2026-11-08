@@ -20,7 +20,7 @@ def select(config, role, tier, usage=None, *, now=None, available=None, authors=
     ordered list per role there is nothing left to share out, and the list
     states the preference directly. Reviewers once ran the other provider than
     the writer first; the list now states that preference too. A candidate
-    whose subscription window is exhausted is skipped, not reordered.
+    whose subscription window is at or below the reserve is skipped, not reordered.
     ``authors`` reorders a reviewer list as ``models_for`` describes.
     """
     errors = config.validate()
@@ -37,12 +37,13 @@ def select(config, role, tier, usage=None, *, now=None, available=None, authors=
     if not allowed and models:
         raise AgentBoxError(f"No configured candidate in {path} has its CLI installed here")
     if not pinned:
-        # A pin names its model outright; a list skips a known exhausted subscription window.
+        # A pin names its model outright; lists preserve subscription headroom.
         usable = [spec for spec in allowed if spec.get("api_provider") or not any(
-            w["remaining"] <= 0 and w["reset_at"] > now
+            w["remaining"] <= config.reserve_percent and w["reset_at"] > now
             for w in applicable_windows(usage.get(spec["provider"], {}), spec["model"]))]
         if allowed and not usable:
-            raise AgentBoxError(f"Every candidate in {path} has an exhausted usage limit; wait for a reset or add a candidate")
+            raise AgentBoxError(f"Every candidate in {path} is at or below the {config.reserve_percent}% usage reserve; "
+                                "wait for a reset or add a candidate")
         allowed = usable
     if not allowed:
         raise AgentBoxError(f"No {role} candidate configured in {path}")
