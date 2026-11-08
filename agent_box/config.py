@@ -855,7 +855,7 @@ def candidate_label(spec):
 
 
 def model_list(data=None):
-    """Candidates in preference order; a role runs the first one available.
+    """Candidates in preference order; balancing may choose another vendor's opener.
 
     A malformed entry becomes an empty candidate that validation rejects at its
     index; dropping it would silently shorten the list, or empty it and let
@@ -978,6 +978,34 @@ class LanguagePolicy:
 
 
 @dataclass
+class BalanceConfig:
+    """Global subscription shares; off preserves each role's ordered preference."""
+    mode: str = "off"
+    #: Whole numbers: shares such as 3:1 need no fractions, and integer credits never drift.
+    weights: dict[str, int] = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data):
+        data = _mapping(data)
+        return cls(data.get("mode", "off"), data.get("weights", {}))
+
+    def validate(self, external_apis=None):
+        errors = []
+        if self.mode not in ("off", "weighted"):
+            errors.append("workflow.balance.mode must be off or weighted")
+        if not isinstance(self.weights, dict):
+            return [*errors, "workflow.balance.weights must be an object keyed by vendor"]
+        for name, weight in self.weights.items():
+            if external_apis is not None and name not in ("codex", "claude", *external_apis):
+                errors.append(f"workflow.balance.weights.{name}: unknown vendor; use codex, claude or an agents.external_apis name")
+            if type(weight) is not int or weight < 0:
+                errors.append(f"workflow.balance.weights.{name} must be a nonnegative whole number")
+        if not errors and self.mode == "weighted" and not any(weight > 0 for weight in self.weights.values()):
+            errors.append("workflow.balance.weights needs a positive weight in weighted mode")
+        return errors
+
+
+@dataclass
 class WorkflowConfig:
     """Optional workflow policy; only enabled integrations may publish or delegate.
 
@@ -999,6 +1027,7 @@ class WorkflowConfig:
     use_tiers: bool = False
     #: Global subscription headroom; pins and external API candidates bypass it.
     reserve_percent: int = 5
+    balance: BalanceConfig = field(default_factory=BalanceConfig)
     scout: ScoutConfig = field(default_factory=ScoutConfig)
     auto_push: bool = True
     #: Checkpoints can publish unfinished code in either delivery mode; explicit opt-in only.
@@ -1065,9 +1094,9 @@ class WorkflowConfig:
             models = sorted(models, key=lambda spec: vendor(spec) in authors)
         return path, models
 
-    def validate(self):
+    def validate(self, external_apis=None):
         import math
-        errors = []
+        errors = self.balance.validate(external_apis)
         if self.merge_mode not in ("github", "local"):
             errors.append("workflow.merge_mode must be github or local")
         if self.behavior_version not in ("v1", "v2", "v3"):
@@ -1165,6 +1194,7 @@ class WorkflowConfig:
             setattr(result, key, _bool(data, key, getattr(result, key)))
         result.timeout_seconds = _number(data, "timeout_seconds", result.timeout_seconds)
         result.scout = ScoutConfig.from_dict(data.get("scout"))
+        result.balance = BalanceConfig.from_dict(data.get("balance"))
         result.review = ReviewConfig.from_dict(data.get("review"))
         result.sync = PlanSyncConfig.from_dict(data.get("sync"))
         result.worker = WorkerConfig.from_dict(data.get("worker"))
@@ -1503,7 +1533,7 @@ def migrate_config(path: Path | None = None) -> bool:
     """Persist during explicit apply or the first launch of an updated package."""
     def validate(data):
         config = Config.from_dict(data)
-        errors = config.workflow.validate() + config.box.validate()
+        errors = config.workflow.validate(config.agents.external_apis) + config.box.validate()
         if errors:
             from .errors import AgentBoxError
             raise AgentBoxError(errors[0])
@@ -1571,7 +1601,7 @@ def effective_config(base=None, *, include_project=True) -> Config:
                     # A running namespace cannot follow later project edits.
                     base._network_policy = NetworkConfig.from_dict(rendered["box"]["network"])
                 # Only agent-box's own messages are shown: other exceptions may quote values.
-                errors = base.workflow.validate() + base.agents.codex.validate()
+                errors = base.workflow.validate(base.agents.external_apis) + base.agents.codex.validate()
             except AgentBoxError as exc:
                 errors = [str(exc)]
             except (ValueError, TypeError, AttributeError):

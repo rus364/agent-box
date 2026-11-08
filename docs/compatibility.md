@@ -53,6 +53,7 @@ Writers stamp the current version. Reads do not rewrite their source.
 | --- | --- |
 | Global `config.json` and repository `.agent-box.json` | Independent `version`; unsupported input is refused before saving or applying integrations |
 | Workflow evidence, review budgets and Plan sync records | Independent `format_version`; preserve ownership, scope, budgets and recovery state |
+| Workflow `balance.json` counters | `format_version: 1`; global role/tier credits, private atomic writes under a blocking lock; unreadable, malformed or unsupported formats are refused without overwrite |
 | Tracker import mappings, move journals and adoption receipts | Independent `format_version`; preserve external IDs and interrupted-operation recovery |
 | Temporary Vikunja board plans | `format_version: 1`; bind reviewed intent to a board snapshot; unsupported formats are refused |
 | Global configuration proposals | `format_version`; retain the explicit host confirmation boundary |

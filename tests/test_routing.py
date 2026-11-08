@@ -1,12 +1,13 @@
 """Selection runs a role's ordered candidates, whatever provider coordinates."""
+import json
 import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
-from agent_box import launch_options, project_config, routing, workflow
-from agent_box.config import Config, WorkflowConfig, model_entry
+from agent_box import launch_options, project_config, routing, workflow, workflow_state
+from agent_box.config import BalanceConfig, Config, WorkflowConfig, model_entry
 from agent_box.errors import AgentBoxError
 
 
@@ -159,6 +160,171 @@ class RoutingTests(unittest.TestCase):
         c = WorkflowConfig()
         with self.assertRaisesRegex(Exception, "workflow.review.models"):
             routing.select(c, "reviewer", None)
+
+
+class WeightedRoutingTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.path = Path(temporary.name) / "balance.json"
+        patched = patch.object(workflow_state, "WORKFLOW_STATE", self.path.parent)
+        patched.start()
+        self.addCleanup(patched.stop)
+        self.config = WorkflowConfig(balance=BalanceConfig("weighted", {"claude": 3, "codex": 1}))
+        for role in ("worker", "reviewer", "sync", "scout"):
+            self.config.role(role).models = [candidate("claude", "opus"), candidate("codex", "gpt"),
+                                           candidate("claude", "sonnet")]
+
+    def select(self, role="worker", tier=None, **kwargs):
+        return routing.select(self.config, role, tier, **kwargs)
+
+    def test_smooth_proportions_are_deterministic_without_files(self):
+        """Three-to-one shares repeat evenly; multiple models never multiply a vendor's allocation."""
+        credits = {}
+        def allocate(role, tier, weights):
+            return workflow_state.weighted_turn(weights, credits)
+        results = [self.select(balance=allocate)["provider"] for _ in range(24)]
+        self.assertEqual(results, ["claude", "claude", "codex", "claude"] * 6)
+        for start in range(len(results) - 3):
+            self.assertEqual(results[start:start + 4].count("claude"), 3)
+        self.assertFalse(self.path.exists())
+
+    def test_a_full_rotation_returns_credits_to_zero(self):
+        """Credits stay bounded, so persisted counters never grow with the number of launches."""
+        for weights in ({"a": 3, "b": 1}, {"a": 10**20, "b": 10**20}):
+            with self.subTest(weights=weights):
+                credits = {}
+                selected = [workflow_state.weighted_turn(weights, credits) for _ in range(8)]
+                expected = ["a", "a", "b", "a"] * 2 if weights["a"] != weights["b"] else ["a", "b"] * 4
+                self.assertEqual(selected, expected)
+                self.assertEqual(credits, {"a": 0, "b": 0})
+
+    def test_separate_selections_share_credits_only_for_the_same_role_and_tier(self):
+        """Launches resume the saved rotation while another role or effective tier starts its own."""
+        for role, tier in (("worker", None), ("worker", 1), ("worker", 2), ("reviewer", 1),
+                           ("sync", 1), ("scout", None)):
+            with self.subTest(role=role, tier=tier):
+                self.assertEqual([self.select(role, tier)["provider"] for _ in range(3)],
+                                 ["claude", "claude", "codex"])
+        self.assertEqual(set(json.loads(self.path.read_text())["keys"]),
+                         {"worker:none", "worker:1", "worker:2", "reviewer:1", "sync:1", "scout:none"})
+
+    def test_weight_changes_reset_credits_before_the_next_choice(self):
+        """Old subscription shares must not bias a newly configured rotation."""
+        self.select()
+        self.select()
+        self.config.balance.weights = {"claude": 4, "codex": 1}
+        self.assertEqual(self.select()["provider"], "claude")
+        self.assertEqual(json.loads(self.path.read_text())["keys"]["worker:none"],
+                         {"weights": {"claude": 4, "codex": 1}, "credits": {"claude": -1, "codex": 1}})
+
+    def test_eligible_set_changes_reset_credits_and_ties_follow_the_candidate_list(self):
+        """Removing a usable vendor starts a fresh rotation, and JSON key sorting must not break list-order ties."""
+        self.config.balance.weights = {"codex": 1, "deepseek": 1, "claude": 1}
+        self.config.worker.models.append(candidate("claude", "api", api_provider="deepseek"))
+        self.assertEqual(self.select()["provider"], "claude")
+        self.config.worker.models.pop()
+        self.assertEqual(self.select()["provider"], "claude")
+        self.assertEqual(self.select()["provider"], "codex")
+        self.config.worker.models = self.config.worker.models[1:] + self.config.worker.models[:1]
+        self.assertEqual(self.select()["provider"], "codex")
+
+    def test_only_the_winning_vendors_first_candidate_moves_ahead_of_ordered_fallbacks(self):
+        """Weights allocate vendors, then the existing list chooses a model and preserves every backup."""
+        self.config.worker.models = [candidate("claude", "unweighted", api_provider="free"),
+                                    candidate("codex", "gpt"), candidate("claude", "opus"),
+                                    candidate("codex", "backup"), candidate("claude", "sonnet")]
+        self.config.balance.weights["free"] = 0
+        result = self.select()
+        self.assertEqual(result["model"], "opus")
+        self.assertEqual([item["model"] for item in result["fallbacks"]], ["unweighted", "gpt", "backup", "sonnet"])
+        self.assertIn("Balanced by weights codex=1, claude=3; chose claude", result["reason"])
+        del self.config.balance.weights["free"]
+        self.assertEqual([self.select()["model"] for _ in range(3)], ["gpt", "opus", "opus"])
+
+    def test_external_vendor_identity_is_independent_of_the_launching_cli(self):
+        """Two APIs through one CLI still balance independently, while one API through both CLIs has one share."""
+        self.config.balance.weights = {"first": 1, "second": 1}
+        self.config.worker.models = [candidate("codex", "a", api_provider="first"),
+                                    candidate("claude", "b", api_provider="first"),
+                                    candidate("codex", "c", api_provider="second")]
+        self.assertEqual([self.select()["model"] for _ in range(4)], ["a", "c", "a", "c"])
+
+    def test_zero_or_one_eligible_vendor_keeps_list_order_and_never_touches_state(self):
+        """A lone weighted vendor is no balancing choice, even when an unweighted candidate precedes it."""
+        unused = Mock(side_effect=AssertionError("allocation reached"))
+        for weights in ({"claude": 0, "codex": 1}, {"unused": 1}):
+            self.config.balance.weights = weights
+            self.assertEqual(self.select(balance=unused)["model"], "opus")
+        unused.assert_not_called()
+        self.assertFalse(self.path.exists())
+
+    def test_cli_and_reserve_filters_remove_vendors_before_balancing(self):
+        """Missing or depleted subscriptions cannot win or advance a counter when only one vendor remains."""
+        self.select()
+        before = self.path.read_bytes()
+        usage = {"claude": {"windows": [{"remaining": 5, "reset_at": 2000}]}}
+        for options in ({"available": ["codex"]}, {"usage": usage, "now": 1000}):
+            with self.subTest(options=options):
+                self.assertEqual(self.select(**options)["provider"], "codex")
+                self.assertEqual(self.path.read_bytes(), before)
+        self.config.worker.models[0]["model"] = "opus-only"
+        usage["claude"]["windows"][0]["models"] = ["opus-only"]
+        self.assertEqual([self.select(usage=usage, now=1000)["model"] for _ in range(2)], ["gpt", "sonnet"])
+
+    def test_pins_and_off_mode_preserve_selection_without_reading_counters(self):
+        """Explicit pins and off mode must work even when balancing state is unreadable."""
+        self.path.write_text("unreadable counters")
+        self.config.pins["worker"] = [candidate("codex", "pinned")]
+        self.assertEqual(self.select()["model"], "pinned")
+        self.config.pins.clear()
+        self.config.balance.mode = "off"
+        expected = routing.select(WorkflowConfig.from_dict({"worker": self.config.to_dict()["worker"]}), "worker", None)
+        self.assertEqual(self.select(), expected)
+        self.assertEqual(self.path.read_text(), "unreadable counters")
+
+    def test_other_vendor_first_balances_independent_reviewers_and_keeps_authors_last(self):
+        """Even a heavily weighted author cannot displace the independently balanced group."""
+        self.config.review.other_vendor_first = True
+        self.config.balance.weights["deepseek"] = 100
+        self.config.review.models.insert(0, candidate("claude", "author", api_provider="deepseek"))
+        routes = [self.select("reviewer", authors=("deepseek",)) for _ in range(4)]
+        self.assertEqual([route["provider"] for route in routes], ["claude", "claude", "codex", "claude"])
+        self.assertTrue(all(route["fallbacks"][-1]["model"] == "author" for route in routes))
+        self.assertNotIn("deepseek", json.loads(self.path.read_text())["keys"]["reviewer:none"]["weights"])
+
+    def test_authors_balance_when_no_independent_candidate_is_usable(self):
+        """An exhausted independent subscription leaves the author group available for review."""
+        self.config.review.other_vendor_first = True
+        self.config.balance.weights["deepseek"] = 1
+        self.config.review.models = [candidate("claude", "other"), candidate("codex", "author1"),
+                                    candidate("codex", "author2", api_provider="deepseek")]
+        usage = {"claude": {"windows": [{"remaining": 0, "reset_at": 2000}]}}
+        routes = [self.select("reviewer", authors=("codex", "deepseek"), usage=usage, now=1000) for _ in range(4)]
+        self.assertEqual([route["model"] for route in routes], ["author1", "author2"] * 2)
+
+    def test_an_independent_group_with_fewer_than_two_shares_keeps_authors_last(self):
+        """Author shares cannot take a turn from a usable independent opener, even when it has no weight."""
+        self.config.review.other_vendor_first = True
+        self.config.review.models = [candidate("codex", "author1"), candidate("claude", "other"),
+                                    candidate("codex", "author2", api_provider="deepseek")]
+        self.config.balance.weights["deepseek"] = 100
+        for other_weight in (0, 3):
+            self.config.balance.weights["claude"] = other_weight
+            self.assertEqual(self.select("reviewer", authors=("codex", "deepseek"))["model"], "other")
+            self.assertFalse(self.path.exists())
+        self.config.pins["reviewer"] = [self.config.review.models[0]]
+        self.assertEqual(self.select("reviewer", authors=("codex", "deepseek"))["model"], "author1")
+        self.assertFalse(self.path.exists())
+
+    def test_managed_candidates_consume_the_same_persisted_rotation_for_all_roles(self):
+        """Delegates, reviews, sync and scout summaries share the managed selection boundary."""
+        with patch.object(workflow, "usage_snapshot", return_value={}), \
+             patch.object(workflow.shutil, "which", side_effect=lambda name: name):
+            for role in ("worker", "reviewer", "sync", "scout"):
+                with self.subTest(role=role):
+                    self.assertEqual([workflow.candidates(Config(workflow=self.config), role, None)["provider"]
+                                      for _ in range(4)], ["claude", "claude", "codex", "claude"])
 
 
 class TierSwitchTests(unittest.TestCase):

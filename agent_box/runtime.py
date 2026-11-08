@@ -1141,7 +1141,7 @@ def sync_tracker_runtime(config: Config, directory: Path | None = None, *, polic
                          if config.tracker.enabled},
         "global_tracker_urls": getattr(config, "_global_tracker_urls", {
             name: connection.url for name, connection in config.tracker.connections.items()}),
-        "workflow": config.workflow.to_dict(),
+        "workflow": rendered_workflow(config, external),
         # Claude's status line is drawn inside the box, where the saved file is not
         # mounted; whether agent-box owns the host's statusLine slot stays host-only.
         "agents": {
@@ -1316,10 +1316,24 @@ def tracker_host_args(config: Config) -> list[str]:
 
 
 
+def rendered_workflow(config: Config, external: dict) -> dict:
+    """The session's workflow, without weights of APIs the session cannot reach.
+
+    A disabled API is not rendered, so its name would fail the session's
+    vendor check; it cannot run there either, so its share is dropped rather
+    than rendering a placeholder API entry.
+    """
+    workflow = config.workflow.to_dict()
+    weights = workflow["balance"]["weights"]
+    workflow["balance"]["weights"] = {name: weight for name, weight in weights.items()
+                                      if name in ("codex", "claude") or name in external}
+    return workflow
+
+
 def tracker_warnings(config: Config) -> list[str]:
     from .external_config import validate_connections
     problems = validate_connections(config)
-    problems += config.workflow.validate() + config.agents.codex.validate() if config.workflow.enabled else []
+    problems += config.workflow.validate(config.agents.external_apis) + config.agents.codex.validate() if config.workflow.enabled else []
     if config.tracker.enabled:
         if not config.tracker.provider:
             problems.append("No tracker provider selected; choose one with agent-box config or in the project configuration")

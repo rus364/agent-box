@@ -113,7 +113,7 @@ Each role has its own ordered **candidate list** under **Workflow** in
 [external API provider](external-providers.md#workflow). The lists start
 empty.
 
-- **The first available candidate runs**; the rest are fallbacks, used only
+- **With balancing off, the first available candidate runs**; the rest are fallbacks, used only
   when a CLI or model is unavailable, subscription usage reaches the reserve,
   or an allowed managed-run failure occurs. Workers fall back after a quota
   failure only when the working tree is clean; a dirty tree or other worker
@@ -125,6 +125,20 @@ empty.
   remaining and a future reset. Set 0 to skip only exhausted windows. The rule
   applies with or without task tiers; session pins and external API candidates
   bypass it. An all-excluded error names the list and reserve.
+- **Vendor balancing.** Global `workflow.balance.mode` is `off` by default.
+  Set it to `weighted` and set `workflow.balance.weights`, for example
+  `{"claude": 3, "codex": 1}`, to spread managed launches in that proportion.
+  Keys are `codex`, `claude` or configured external API names; values must be
+  nonnegative whole numbers, with at least one positive weight in weighted
+  mode. Smooth weighted round-robin chooses among usable vendors, then runs
+  the winner's first usable model. All other usable models remain fallbacks in
+  list order, including vendors with zero or missing weights. With fewer than
+  two eligible vendors, list order stands and no turn is consumed.
+  Counters persist across processes and repositories per role and effective
+  tier; changed eligible weights reset that rotation. Route reasons name the
+  choice and weights. Inspection consumes no turn: a list with multiple positive
+  vendor shares runs managed in every session until native launch-time choice
+  is supported.
 - **An empty list means "do it yourself"** for workers and scouts: the
   coordinator does the work in its own session. An empty reviewer list means a
   fresh native subagent of the coordinator's session reviews — never the
@@ -135,13 +149,14 @@ empty.
   available.
 - **Session pins** override the lists for one session:
   `--worker`, `--scout`, `--sync`, `--reviewer` with
-  `PROVIDER[@API]:MODEL[:EFFORT]`.
+  `PROVIDER[@API]:MODEL[:EFFORT]`. Pins bypass balancing.
 - **Task tiers.** With `workflow.use_tiers` on, a task labelled
   `ab:tier:1`–`3` uses that tier's `tiers.N` list for its worker, Plan sync and
   reviewer, when the list is not empty. Scouts have no tiers.
 - **Another vendor reviews first.** `workflow.review.other_vendor_first` puts
   reviewers from a vendor other than the code's authors ahead of the authors'
-  own, keeping them as the last fallbacks.
+  own, keeping them as the last fallbacks. Balance within the usable non-author
+  group; the authors can open a balanced run only if no non-author remains usable.
 - **Speed.** Each candidate's speed is `inherit` (default), `standard` or
   `fast`. An explicit speed always runs as a managed process, since native
   subagents inherit the session's speed. Fast is accepted only for models known
@@ -279,6 +294,8 @@ expected. A cleanup failure never undoes the merge or Done.
 | `workflow.cleanup_local_branches`, `cleanup_remote_branches` | off | Delete integrated task branches |
 | `workflow.use_tiers` | off | Let task tiers select model lists |
 | `workflow.reserve_percent` | 5 | Skip subscription usage at or below this percentage, 0–99 (global only) |
+| `workflow.balance.mode` | `off` | `off` preserves list order; `weighted` spreads managed launches by vendor (global only) |
+| `workflow.balance.weights` | `{}` | Vendor → nonnegative whole weight; weighted mode needs a positive weight (global only) |
 | `workflow.language` | — | [Engineering language](../configuration.md#the-configuration-menu) of repository text, commits, PRs and review replies; also the tracker fallback. Empty uses English for engineering |
 | `workflow.tracker_language` | — | Tracker tasks, plans, comments, normalization, adoption and Plan sync; empty inherits `workflow.language`, then each task's language |
 | `workflow.timeout_seconds` | 3600 | Limit for each managed run |
@@ -294,7 +311,7 @@ expected. A cleanup failure never undoes the merge or Done.
 | `workflow.review.github_provider` | `auto` | `auto`, `local`, `codex` or `claude` |
 | `workflow.review.wait_seconds` | 3600 | How long to wait for a cloud reviewer |
 
-All workflow settings except `enabled`, `reserve_percent`, `text_max_bytes` and `text_retention_days` can be overridden per project in
+All workflow settings except `enabled`, `reserve_percent`, `balance`, `text_max_bytes` and `text_retention_days` can be overridden per project in
 `.agent-box.json`. Session options such as `--review`, `--rounds`, `--merge`
 and `--no-push` override them for one session; see
 [session options](../usage.md#session-options).

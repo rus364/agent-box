@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import time
 
-from .config import AGENT_PROVIDERS, TIERED_ROLES, TIERS
+from .config import AGENT_PROVIDERS, TIERED_ROLES, TIERS, vendor
 from .errors import AgentBoxError
+from .workflow_state import balance_vendor
 
 
 def applicable_windows(snapshot, model):
@@ -12,16 +13,22 @@ def applicable_windows(snapshot, model):
             if not window.get("models") or any(name in model for name in window["models"])]
 
 
-def select(config, role, tier, usage=None, *, now=None, available=None, authors=()):
-    """The first available candidate of the role's list, with the rest as ordered fallbacks.
+def eligible_weights(config, models):
+    """Positive vendor weights in first-candidate order, for a caller's eligible list."""
+    return {vendor(spec): config.balance.weights[vendor(spec)] for spec in models
+            if config.balance.weights.get(vendor(spec), 0) > 0}
 
-    ``tier`` is the effective task tier, and scouts have none. Weighted and
-    usage-scored provider shares were the rejected alternative: with one
-    ordered list per role there is nothing left to share out, and the list
-    states the preference directly. Reviewers once ran the other provider than
-    the writer first; the list now states that preference too. A candidate
-    whose subscription window is at or below the reserve is skipped, not reordered.
-    ``authors`` reorders a reviewer list as ``models_for`` describes.
+
+def select(config, role, tier, usage=None, *, now=None, available=None, authors=(), balance=balance_vendor):
+    """Choose a usable opener, retaining list order for all remaining fallbacks.
+
+    Static vendor weights describe subscriptions, independently of how many
+    models each has. Smooth round-robin avoids random streaks and usage-score
+    argmax herding on lagging data. Off keeps the first available candidate.
+    ``tier`` is effective (scouts have none); CLI and reserve filters run before
+    balancing. Pins bypass balancing, and reviewer authors stay last as
+    ``models_for`` describes. Only managed launch selection consumes a turn;
+    ``balance`` may supply an in-memory allocator for tests.
     """
     errors = config.validate()
     if errors:
@@ -48,6 +55,18 @@ def select(config, role, tier, usage=None, *, now=None, available=None, authors=
     if not allowed:
         raise AgentBoxError(f"No {role} candidate configured in {path}")
     reason = f"Pinned for this session by --{role}" if pinned else "First available candidate"
+    if not pinned and config.balance.mode == "weighted":
+        group = allowed
+        if role == "reviewer" and authors and config.review.other_vendor_first:
+            # Author weights cannot displace a usable independent reviewer.
+            group = [spec for spec in allowed if vendor(spec) not in authors] or allowed
+        weights = eligible_weights(config, group)
+        if len(weights) > 1:
+            winner = balance(role, tier, weights)
+            index = next(index for index, spec in enumerate(allowed) if vendor(spec) == winner)
+            allowed.insert(0, allowed.pop(index))
+            reason = "Balanced by weights " + ", ".join(f"{name}={weight}" for name, weight in weights.items())
+            reason += f"; chose {winner}"
     if not pinned and role == "reviewer" and authors and config.review.other_vendor_first:
         reason += f" from vendors other than {', '.join(authors)}, then theirs"
 

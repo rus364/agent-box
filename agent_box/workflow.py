@@ -37,11 +37,11 @@ from . import git_workflow as gw
 from .paths import WORKFLOW_STATE
 from .provider_runner import SEVERITIES, ProviderFailure, preflight, require_sync_coordinator, review_report, run, save_private
 from .repo_binding import Binding, repository_root, server_identity
-from .routing import select
+from .routing import eligible_weights, select
 from .tracker.core import TrackerError, claim, checkboxes, root_task, completion_reasons, blocking_reasons
 from .tracker.registry import make_adapter
 from .usage import usage_snapshot
-from .workflow_state import lock, scout_slot
+from .workflow_state import balance_vendor, lock, scout_slot
 from . import review_results
 
 INSTRUCTION_FILES = ("AGENTS.md", "CLAUDE.md")
@@ -1035,13 +1035,13 @@ def authors_missing(config, authors):
 
 
 def candidates(config, role, tier, authors=()):
-    """The role's first available candidate with ordered fallbacks, bound to their APIs."""
+    """Consume a managed launch choice, with ordered fallbacks bound to their APIs."""
     _, models = config.workflow.models_for(role, tier, authors)
     # Every role reserves headroom in applicable subscription windows;
     # external API candidates have no subscription usage to read.
     subscribed = {spec["provider"] for spec in models if not spec.get("api_provider")}
     usage = {p: usage_snapshot(p, no_cache=True) for p in sorted(subscribed)}
-    result = select(config.workflow, role, tier, usage, authors=authors,
+    result = select(config.workflow, role, tier, usage, authors=authors, balance=balance_vendor,
                     available=[p for p in ("codex", "claude") if shutil.which(p)])
     for candidate in [result, *result["fallbacks"]]:
         bind_api_route(candidate, config)
@@ -1766,7 +1766,9 @@ def execution(config, role, tier, task_id, authors=None):
     session pin has none. The session's provider is the coordinator's to
     know, so the route is named per provider. Sync always requires its own list.
     A reviewer order that needs the code's authors is not guessed: without
-    them inspect names the rerun instead of a route.
+    them inspect names the rerun instead of a route. Multiple positive vendor
+    weights require a managed launch until native launches can consume a
+    balancing turn; inspection never reads usage or allocation counters.
     """
     from .agent_profiles import profile_name
     from .speed import configuration_error, native_limitation
@@ -1780,16 +1782,20 @@ def execution(config, role, tier, task_id, authors=None):
                     "next": f"Rerun agent-box workflow inspect {task_id} {AUTHOR_FORM}"}
         named = " --author " + (" ".join(authors) or "unknown")
     first, native = models[0], {}
+    balanced = (config.workflow.balance.mode == "weighted" and not path.startswith("--")
+                and len(eligible_weights(config.workflow, models)) > 1)
     limitation = native_limitation(first["provider"], first.get("speed", "inherit"))
-    if (not path.startswith("--") and config.workflow.enabled and not first.get("api_provider")
+    if (not balanced and not path.startswith("--") and config.workflow.enabled and not first.get("api_provider")
             and not configuration_error(first["provider"], first)
             and not limitation
             and (role not in ("reviewer", "sync") or first["effort"] != "default")):
         native[first["provider"]] = profile_name(role, tier if ".tiers." in path else None)
     provider = session_provider()
     return {"mode": "delegate", "models": path, "native": native,
+            **({"balanced": "Weighted vendor choice requires a managed launch; native launch-time selection is unavailable"}
+               if balanced else {}),
             **({"native_limitation": limitation} if limitation else {}),
-            **({"for_this_session": "native" if provider in native else "managed"} if provider else {}),
+            **({"for_this_session": "native" if provider in native else "managed"} if provider or balanced else {}),
             "managed": (f"agent-box workflow review {task_id}{named}" if role == "reviewer" else
                         f"agent-box workflow sync {task_id} --output reference" if role == "sync" else
                         f"agent-box workflow delegate {task_id} --role {role} --brief FILE --output reference")}
@@ -1829,7 +1835,7 @@ def native_provider(route, provider):
     if not provider:
         raise AgentBoxError("Cannot tell this session's CLI; name it with --provider codex|claude")
     if provider not in route.get("native", {}):
-        reason = route.get("native_limitation") or f"{route['models']} does not open with a {provider} candidate"
+        reason = route.get("balanced") or route.get("native_limitation") or f"{route['models']} does not open with a {provider} candidate"
         raise AgentBoxError(f"The route is managed for this {provider} session ({reason}); run {route['managed']}")
     return provider
 
@@ -2102,7 +2108,7 @@ def dispatch(args):
         return describe(config, args.role)
     if not config.workflow.enabled:
         raise AgentBoxError("Enable workflow in agent-box config first")
-    errors = config.workflow.validate() + config.agents.codex.validate()
+    errors = config.workflow.validate(config.agents.external_apis) + config.agents.codex.validate()
     if errors:
         raise AgentBoxError("; ".join(errors))
     root = repository_root()

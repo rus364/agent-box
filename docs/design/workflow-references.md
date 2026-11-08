@@ -27,8 +27,9 @@ reused rather than introducing overlapping implementations.
 - [Claude GitHub Action usage](https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md)
   documents `claude_args` model/effort settings. Cloud mention interfaces are
   distinguished from exact local CLI model selection.
-- Model selection is a user-ordered candidate list per role, and per task tier when enabled; known
-  exhausted subscription windows skip a candidate.
+- Model selection uses ordered role/tier lists after CLI and usage-reserve filters.
+  Optional static vendor weights use smooth round-robin; remaining candidates
+  keep fallback order. Pins bypass balancing, and reviewer authors stay last.
 
 ## Workflow sources
 

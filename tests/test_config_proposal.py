@@ -98,6 +98,16 @@ class ConfigProposalTests(unittest.TestCase):
                 self.assertEqual(self.proposal.exists(), kept)
         self.apply.assert_not_called()
 
+    def test_config_set_saves_balancing_through_the_existing_global_proposal(self):
+        """Mode and free-keyed weights use the checked settings path and survive sparse save/reload."""
+        self.command("set", "--global", 'workflow.balance.mode="weighted"',
+                     'workflow.balance.weights={"claude": 3, "codex": 1}')
+        self.assertEqual(config_proposal.load(self.proposal)["set"], {
+            "workflow.balance.mode": "weighted", "workflow.balance.weights": {"claude": 3, "codex": 1}})
+        self.command("proposal", "apply", answer="y")
+        self.assertEqual(load_config().workflow.to_dict()["balance"], {
+            "mode": "weighted", "weights": {"claude": 3, "codex": 1}})
+
     def test_credentials_and_invalid_values_are_refused_before_a_proposal_exists(self):
         """An agent must not propose what it may not read, and a bad value must fail where the agent can fix it."""
         for args, message in ((('host.notifications.telegram_token="token-secret-value"',), "credential"),
@@ -106,6 +116,10 @@ class ConfigProposalTests(unittest.TestCase):
                               (('workflow.reserve_percent=true',), "invalid type"),
                               (("workflow.reserve_percent=100",), "workflow.reserve_percent"),
                               (("workflow.reserve_percent=7.5",), "whole number"),
+                              (('workflow.balance.mode="random"',), "must be one of"),
+                              (('workflow.balance.mode="weighted"',), "positive weight"),
+                              (('workflow.balance.weights={"unknown": 1}',), "unknown vendor"),
+                              (('workflow.balance.weights={"codex": true}',), "nonnegative whole number"),
                               (('workflow.scout.models=["codex:gpt-5.5"]',), r"models\.0 must be an object"),
                               (('workflow.worker.tiers.2=[{"provider": "codex", "model": 5}]',), r"tiers\.2\.0 must be an object"),
                               (('workflow.review.policy="sometimes"',), "must be one of"),

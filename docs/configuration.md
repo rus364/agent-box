@@ -201,7 +201,7 @@ keep those changes. Opening or cancelling the project menu saves nothing.
 
 A project may set:
 
-- `workflow`, except global-only `enabled`, `reserve_percent`, `text_max_bytes` and `text_retention_days` — including each role's
+- `workflow`, except global-only `enabled`, `reserve_percent`, `balance`, `text_max_bytes` and `text_retention_days` — including each role's
   candidate lists (`models`, and `tiers.N` for workers, Plan sync and
   reviewers), `use_tiers`, `language` and `tracker_language`;
 - `box.tools`, `box.k3s`, `box.podman` and `box.persistent_cache`;

@@ -22,6 +22,7 @@ CHOICES = {
     "agents.default": LAUNCH_AGENTS,
     "tracker.provider": ("", *TRACKER_PROVIDERS),
     "workflow.merge_mode": ("github", "local"),
+    "workflow.balance.mode": ("off", "weighted"),
     "workflow.sync.policy": ("off", "auto", "always"),
     "workflow.sync.scope": ("parent", "project"),
     "workflow.review.policy": ("off", "auto", "always"),
@@ -141,15 +142,18 @@ HELP = {
     "workflow.enabled": "Enable agent-box's tracked-task workflow. Enabling it does not itself expose provider or tracker credentials.",
     "workflow.use_tiers": "Let a task's tier 1-3 select worker, reviewer and Plan sync Models by tier. Off runs each role's own Models; tier lists and task tiers are kept. A project or --[no-]tiers may override it.",
     "workflow.reserve_percent": "Skip subscription candidates when any applicable usage window has this percentage or less remaining and a future reset. Whole number from 0 through 99, default 5; 0 skips only exhausted windows. Session pins and external API candidates bypass it. Global only.",
+    "workflow.balance": "Global vendor shares for managed launches. Off keeps list order; weighted uses smooth round-robin among available vendors, with counters per role and effective tier. Session pins bypass balancing.",
+    "workflow.balance.mode": "Off (default) runs the first available candidate. Weighted chooses among two or more usable vendors with positive weights; fewer keeps list order. Balanced roles run managed until native launch-time selection is supported.",
+    "workflow.balance.weights": "JSON object of vendor weights, for example {\"claude\": 3, \"codex\": 1}. Keys are codex, claude or configured external API names; values are nonnegative whole numbers. Weighted mode needs a positive weight. Missing or zero weights stay fallbacks during balancing. Global only.",
     "workflow.merge_mode": "Finish parent work through a GitHub pull request or a local fast-forward into origin's default branch.",
     "workflow.scout": "Read-only scouts the coordinator dispatches for bounded questions, and the models they run.",
     "workflow.scout.limit": "Maximum number of concurrent read-only scouts, from 1 through 16.",
-    "workflow.scout.models": "Scout candidates in preference order; the first available one runs and the rest are fallbacks. Empty: the coordinator researches itself in its own session. Scouts have no tiers. A candidate of the other CLI than the coordinator's runs as a managed CLI process.",
+    "workflow.scout.models": "Scout candidates in preference order; Balance may choose another vendor's opener. The rest stay fallbacks. Empty: the coordinator researches itself in its own session. Scouts have no tiers. A candidate of the other CLI than the coordinator's runs as a managed CLI process.",
     "workflow.auto_push": "Within the opt-in workflow, publish the parent task in GitHub mode or the accepted base after a local fast-forward. Turning this off keeps completion local.",
     "workflow.pause_push": "On explicit workflow pause, publish and verify unfinished task branches in either merge mode. Off preserves locally only; --push/--no-push overrides one pause. Never changes task lifecycle.",
     "workflow.timeout_seconds": "Maximum delegated agent runtime in seconds, from 30 through 86400.",
     "workflow.worker": "The models managed workers run when the coordinator delegates with workflow delegate.",
-    "workflow.worker.models": "Delegated worker candidates in preference order; the first available one runs and the rest are fallbacks. Empty: the coordinator implements in its own session. Used unless Use tiers is on and the task's tier has its own list. A candidate of the other CLI than the coordinator's runs as a managed CLI process.",
+    "workflow.worker.models": "Delegated worker candidates in preference order; Balance may choose another vendor's opener. The rest stay fallbacks. Empty: the coordinator implements in its own session. Used unless Use tiers is on and the task's tier has its own list. A candidate of the other CLI than the coordinator's runs as a managed CLI process.",
     "workflow.worker.tiers": "Optional worker candidates per task tier 1-3, used only when Use tiers is on. A nonempty tier list replaces Models for that tier; an empty one uses Models.",
     "workflow.sync": "Plan sync reads the repository and updates live tracker tasks; it never edits project files.",
     "workflow.sync.policy": "Off disables automatic runs. Always runs at every selected event; auto runs before work/after planning and after changes matching Paths. Manual sync works in every mode, independently of review.",
@@ -160,7 +164,7 @@ HELP = {
     "workflow.sync.models": "Independent ordered candidates with model, effort and speed. Empty: configure a model before sync; the coordinator never performs it instead.",
     "workflow.sync.tiers": "Optional candidates per source task tier, following Use tiers. Empty tier lists inherit Models.",
     "workflow.review": "Review thresholds, attempts, reviewer candidates and GitHub review.",
-    "workflow.review.models": "Reviewer candidates in preference order; the first available one runs, skipping a missing CLI or subscription usage at or below Reserve percent, and the rest are fallbacks. Used unless Use tiers is on and the task's tier has its own list; with no candidates a review inherits the active session.",
+    "workflow.review.models": "Reviewer candidates in preference order, skipping a missing CLI or subscription usage at or below Reserve percent. Balance may choose another vendor's opener; the rest stay fallbacks. Used unless Use tiers is on and the task's tier has its own list; with no candidates a review inherits the active session.",
     "workflow.review.tiers": "Optional reviewer candidates per task tier 1-3, used only when Use tiers is on. A nonempty tier list replaces Models for that tier; an empty one uses Models.",
     "workflow.review.other_vendor_first": "Run a reviewer from another vendor than the code's authors first, keeping list order within each group; the authors' own candidates stay as last fallbacks. A vendor is a candidate's external API name, else its CLI (codex, claude). The coordinator names the authors with --author on workflow inspect and review. It orders configured candidates only: with an empty list the session's own native reviewer runs. A --reviewer pin and a GitHub cloud provider are unaffected.",
     "workflow.review.policy": "Off skips workflow review. Auto triggers on file/line thresholds, sensitive paths, or the review label. Always requires review for every task and the complete parent diff. GitHub merge may still require independent approval.",
@@ -247,6 +251,10 @@ OPTION_HELP = {
     "workflow.merge_mode": {
         "github": "Parent work lands through a GitHub pull request; publishing needs GitHub integration.",
         "local": "Parent work fast-forwards into origin's default branch locally; no pull request.",
+    },
+    "workflow.balance.mode": {
+        "off": "Run the first available candidate in list order; no allocation counters are used.",
+        "weighted": "Spread managed launches by positive vendor weights with smooth round-robin, separately per role and tier.",
     },
     "workflow.sync.policy": {
         "off": "No automatic Plan sync; `workflow sync` still runs on demand.",
@@ -341,7 +349,7 @@ MENU_GROUPS = {
         ("Behavior", ("behavior_version",)),
         ("Delivery", ("merge_mode", "auto_push", "pause_push", "cleanup_local_branches", "cleanup_remote_branches")),
         ("Project text", ("language", "tracker_language")),
-        ("Roles", ("use_tiers", "reserve_percent", "worker", "scout", "review", "sync")),
+        ("Roles", ("use_tiers", "reserve_percent", "balance", "worker", "scout", "review", "sync")),
         ("Delegation", ("timeout_seconds", "text_max_bytes", "text_retention_days")),
     ),
     ("agents", "codex"): (
@@ -430,7 +438,7 @@ def label_for(key, path=()):
 
 def json_field(path):
     rel = external(path)
-    return (path in (('box', 'env', 'set'), ('box', 'k3s', 'registry_mirrors')) or rel is not None
+    return (path in (('box', 'env', 'set'), ('box', 'k3s', 'registry_mirrors'), ('workflow', 'balance', 'weights')) or rel is not None
             and (len(rel) == 3 and rel[1] in LAUNCH_AGENTS and rel[-1] in ('env', 'provider_options', 'config')
                  or len(rel) == 5 and rel[1] == 'models' and rel[-1] in ('env', 'metadata')))
 
@@ -507,7 +515,7 @@ def needed_tools(draft):
 
 
 def validate(config):
-    errors = (config.workflow.validate() + config.agents.codex.validate() + config.box.validate()
+    errors = (config.workflow.validate(config.agents.external_apis) + config.agents.codex.validate() + config.box.validate()
               + validate_connections(config))
     if config.agents.claude.telegram_channel:
         from .channel import missing_requirements, setup_instructions
@@ -1070,7 +1078,7 @@ def edit(config, *, project=None):
         while True:
             rows = [f"{number}. {candidate_label(spec)}" for number, spec in enumerate(models, 1)] + ["Add model"]
             details = [f"Candidate {number}: Enter to change its model, effort or speed, move it or remove it. " + help_for(path)
-                       for number in range(1, len(models) + 1)] + ["Append a candidate; the first available candidate runs. " + help_for(path)]
+                       for number in range(1, len(models) + 1)] + ["Append a candidate. " + help_for(path)]
             index = choose(screen, rows, title, min(index, len(rows) - 1), details=details)
             if index is None:
                 return changed
@@ -1423,7 +1431,7 @@ def edit(config, *, project=None):
                         if project_mode:
                             try:
                                 validate_project(overrides, Path(".agent-box.json"))
-                                errors = result.workflow.validate()
+                                errors = result.workflow.validate(result.agents.external_apis)
                             except AgentBoxError as exc:
                                 errors = [str(exc)]
                         else:

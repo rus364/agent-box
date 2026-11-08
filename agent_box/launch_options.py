@@ -279,7 +279,7 @@ def apply(config, overrides):
         api = models[0]["api_provider"]
         if api and not (api in config.agents.external_apis and config.agents.external_apis[api].enabled):
             raise AgentBoxError(f"--{role} names API provider {api}, which is not an enabled external provider")
-    errors = workflow.validate() if used else []
+    errors = workflow.validate(config.agents.external_apis) if used else []
     if errors:
         raise AgentBoxError(errors[0])
     config._launch = dict(overrides)

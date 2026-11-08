@@ -72,7 +72,7 @@ class ConfigMenuTests(unittest.TestCase):
             ('credentials',): ['git', 'github', 'gitlab', 'registries', 'kubernetes', 'cloud'],
             ('host',): ['notifications', 'personal_browser', 'claude_skill_links'],
             ('workflow',): ['enabled', 'behavior_version', 'merge_mode', 'auto_push', 'pause_push', 'cleanup_local_branches',
-                           'cleanup_remote_branches', 'language', 'tracker_language', 'use_tiers', 'reserve_percent', 'worker', 'scout', 'review', 'sync', 'timeout_seconds', 'text_max_bytes', 'text_retention_days'],
+                           'cleanup_remote_branches', 'language', 'tracker_language', 'use_tiers', 'reserve_percent', 'balance', 'worker', 'scout', 'review', 'sync', 'timeout_seconds', 'text_max_bytes', 'text_retention_days'],
             ('workflow', 'worker'): ['models', 'tiers'],
             ('workflow', 'scout'): ['limit', 'models'],
             ('workflow', 'sync'): ['policy', 'events', 'paths', 'scope', 'references', 'models', 'tiers'],
@@ -565,6 +565,32 @@ class ConfigMenuTests(unittest.TestCase):
                 self.assertEqual(config.workflow.reserve_percent, 5)
                 self.assertIn("workflow.reserve_percent must be a whole number from 0 through 99", " ".join(screen.drawn))
 
+    def test_balance_editor_selects_mode_and_saves_json_vendor_weights(self):
+        """The Roles menu must edit the map as one value, including names that are not preset fields."""
+        import curses
+        config = Config()
+        path = ("workflow", "balance")
+        result, _ = self.edit(config, [*select("workflow"), "\n", *select("balance", ("workflow",)), "\n",
+                                       *select("mode", path), " ", *select("weights", path), "\n", "\x15",
+                                       *'{"claude": 3, "codex": 1}', "\n", "\x1b", "\x1b",
+                                       curses.KEY_END, curses.KEY_UP, "\n"])
+        self.assertEqual(result.config.workflow.to_dict()["balance"], {
+            "mode": "weighted", "weights": {"claude": 3, "codex": 1}})
+        self.assertEqual(config.workflow.to_dict()["balance"], {"mode": "off", "weights": {}})
+
+    def test_invalid_balance_weights_keep_the_menu_open(self):
+        """Unknown vendors and invalid allocations cannot be saved through the JSON editor."""
+        import curses
+        path = ("workflow", "balance")
+        for value, expected in (('{"unknown": 1}', "unknown vendor"), ('{"codex": -1}', "nonnegative whole number"),
+                                ('{"codex": 0}', "positive weight")):
+            with self.subTest(value=value):
+                result, screen = self.edit(Config(), [*select("workflow"), "\n", *select("balance", ("workflow",)), "\n",
+                    *select("mode", path), " ", *select("weights", path), "\n", "\x15", *value, "\n",
+                    "\x1b", "\x1b", curses.KEY_END, curses.KEY_UP, "\n", "\x1b"])
+                self.assertIsNone(result)
+                self.assertIn(expected, " ".join(screen.drawn))
+
     def test_editor_inserts_and_deletes_at_the_visible_cursor(self):
         import curses
         config = Config()
@@ -807,7 +833,7 @@ class ProjectMenuTests(unittest.TestCase):
         save = [curses.KEY_END, curses.KEY_UP, '\n']
         pinned, _ = self.edit(config, [*workflow, 'g', *save], project={})
         expected = config.workflow.to_dict()
-        for key in ('enabled', 'text_max_bytes', 'text_retention_days', 'reserve_percent'):
+        for key in ('enabled', 'text_max_bytes', 'text_retention_days', 'reserve_percent', 'balance'):
             del expected[key]
         self.assertEqual(pinned.project, {'workflow': expected})
         self.assertEqual(pinned.project['workflow']['review']['models'], [])

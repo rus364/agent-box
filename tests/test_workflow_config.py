@@ -8,7 +8,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
-from agent_box.config import Config, WorkflowConfig
+from agent_box.config import BalanceConfig, Config, WorkflowConfig
 
 
 def show_paths(text):
@@ -65,6 +65,70 @@ class ReserveValidationTests(unittest.TestCase):
                     self.assertIn("workflow.reserve_percent must be a whole number from 0 through 99", config.validate())
 
 
+class BalanceValidationTests(unittest.TestCase):
+    def test_balancing_defaults_off_and_shows_round_tripped_weights(self):
+        """Existing configurations keep list order, and both new settings remain visible without CLI special cases."""
+        self.assertEqual(WorkflowConfig.from_dict({}).balance, BalanceConfig())
+        self.assertEqual(shown(Config())["workflow.balance.mode"], "off")
+        config = Config.from_dict({"agents": {"external_apis": {"api": {}}}, "workflow": {
+            "balance": {"mode": "weighted", "weights": {"claude": 3, "codex": 1, "api": 0}}}})
+        self.assertEqual(config.workflow.validate(config.agents.external_apis), [])
+        self.assertEqual(Config.from_dict(config.to_dict()).workflow.balance, config.workflow.balance)
+        rows = shown(config)
+        self.assertEqual(rows["workflow.balance.mode"], "weighted")
+        self.assertEqual(rows["workflow.balance.weights"], "claude=3, codex=1, api=0")
+
+    def test_bad_modes_weights_and_values_are_rejected_without_coercion(self):
+        """Malformed shares must not silently become a different allocation or default to off."""
+        cases = [({"mode": value}, "workflow.balance.mode") for value in ("random", "", None, 1, True, [])]
+        cases += [({"weights": value}, "workflow.balance.weights must be an object")
+                  for value in (None, [], 1, "3", True)]
+        cases += [({"weights": {"codex": value}}, "workflow.balance.weights.codex must be a nonnegative whole number")
+                  for value in (-1, 1.5, 2.0, float("inf"), float("nan"), True, False, "1", None, [], {})]
+        for data, message in cases:
+            with self.subTest(data=data):
+                for balance in (BalanceConfig(**data), BalanceConfig.from_dict(data)):
+                    self.assertIn(message, " ".join(WorkflowConfig(balance=balance).validate()))
+
+    def test_weighted_mode_requires_a_positive_weight_but_off_may_keep_zeroes(self):
+        """An empty allocation is invalid only when the user enables weighted scheduling."""
+        for weights in ({}, {"codex": 0}, {"claude": 0, "codex": 0}):
+            self.assertIn("positive weight", " ".join(BalanceConfig("weighted", weights).validate()))
+            self.assertEqual(BalanceConfig("off", weights).validate(), [])
+
+    def test_whole_config_validation_accepts_configured_vendor_names_and_rejects_unknowns(self):
+        """A typo or removed API must not silently lose its intended share, even while balancing is off."""
+        from agent_box import config_menu
+        for mode in ("off", "weighted"):
+            for name in ("codex", "claude", "configured", "unknown"):
+                config = Config.from_dict({"agents": {"external_apis": {"configured": {}}}, "workflow": {
+                    "balance": {"mode": mode, "weights": {name: 1}}}})
+                with self.subTest(mode=mode, name=name):
+                    errors = config_menu.validate(config)
+                    if name == "unknown":
+                        self.assertIn("workflow.balance.weights.unknown: unknown vendor", " ".join(errors))
+                    else:
+                        self.assertEqual(errors, [])
+
+    def test_a_disabled_apis_weight_is_dropped_from_the_session_without_its_credentials(self):
+        """The session cannot reach a disabled API, so its share is not rendered and the session still validates."""
+        from agent_box import runtime
+        from agent_box.config import effective_config
+        config = Config.from_dict({"agents": {"external_apis": {"api": {"api_key": "disabled-secret"}}},
+                                  "workflow": {"enabled": True, "balance": {
+                                      "mode": "weighted", "weights": {"claude": 3, "api": 1}}}})
+        with tempfile.TemporaryDirectory() as directory:
+            runtime.sync_tracker_runtime(config, Path(directory))
+            path = Path(directory) / "config.json"
+            raw = path.read_text()
+            self.assertNotIn("disabled-secret", raw)
+            self.assertNotIn("api", json.loads(raw)["agents"]["external_apis"])
+            with patch.dict(os.environ, {"AGENT_BOX_RUNTIME_CONFIG": str(path)}):
+                rendered = effective_config(include_project=False)
+            self.assertEqual(rendered.workflow.balance.weights, {"claude": 3})
+            self.assertEqual(rendered.workflow.validate(rendered.agents.external_apis), [])
+
+
 class ConfigShowTests(unittest.TestCase):
     def test_every_schema_setting_is_shown_without_per_field_code(self):
         """A setting added to the schema must appear; hand-written rows once dropped sensitive_paths."""
@@ -112,7 +176,7 @@ class ConfigShowTests(unittest.TestCase):
 
 class WorkflowConfigTests(unittest.TestCase):
     def test_role_models_survive_global_save_and_minimal_runtime(self):
-        """Saved candidate lists and their reserve reach the container without host secrets."""
+        """Candidate lists, reserve and balancing reach the container without host secrets."""
         from agent_box import runtime
         from agent_box.config import load_config, save_config
         models = [{"provider": "codex", "model": "gpt-5.6-luna", "effort": "high"},
@@ -120,6 +184,7 @@ class WorkflowConfigTests(unittest.TestCase):
         for tier in ("1", "3"):
             with self.subTest(tier=tier), tempfile.TemporaryDirectory() as directory:
                 config = Config.from_dict({"workflow": {"enabled": True, "reserve_percent": 12,
+                    "balance": {"mode": "weighted", "weights": {"claude": 3, "codex": 1}},
                     "worker": {"tiers": {tier: models[:1]}},
                     "scout": {"models": models}, "review": {"models": models[::-1]}}})
                 config.host.notifications.telegram_token = "host-secret"

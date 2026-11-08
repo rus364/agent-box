@@ -53,7 +53,7 @@ with existing-only branch switching. It never recreates lost work from base.
   delegation inherits the coordinator's workspace, `.git` and credentials, so
   neither backend gets private restrictions. Workers and scouts are only
   launched, never tracked.
-- `delegate` runs the role's first available candidate once as a fresh process
+- `delegate` runs the role's selected usable candidate once as a fresh process
   and prints its Markdown answer on stdout; the route, token usage and the path
   of a private copy of the answer follow on stderr as one JSON line. The prompt
   asks for `## Done`, `## Evidence` and `## Limitations`; nothing parses the
@@ -203,6 +203,12 @@ with existing-only branch switching. It never recreates lost work from base.
 
 ## Model routing
 
+- Global `workflow.balance.mode` is `off` by default; ordered selection stays
+  unchanged. `weighted` uses static vendor shares in `workflow.balance.weights`:
+  `codex`, `claude` or a configured external API name, each a nonnegative whole
+  number. A session drops weights of APIs it cannot reach. Unknown names and weighted mode without a positive weight are errors.
+  Weights describe subscriptions; usage-score argmax herds onto lagging data,
+  while random allocation produces streaks.
 - A candidate is unavailable when its CLI is missing or, for a subscription
   model, any applicable shared or model-specific usage window has remaining
   percentage at or below `workflow.reserve_percent` with a future reset.
@@ -212,6 +218,21 @@ with existing-only branch switching. It never recreates lost work from base.
   excluded, the error names the list path and reserve. A failed live refresh
   keeps cached usage evidence and exits nonzero; a failure without such evidence
   excludes nothing. Provider APIs may lag regardless of cache.
+- After filtering, two or more positive-weight vendors use smooth weighted
+  round-robin: add each weight to its credit, choose the largest credit (ties
+  follow the vendor's first candidate in the list), and subtract the total
+  weight from the winner. Its first usable model opens; every other usable
+  candidate remains a fallback in list order. Zero or missing weights never
+  open a balanced run; with fewer than two eligible vendors, list order stands
+  and no counter changes. Pins bypass balancing.
+- Credits persist per role and effective tier (`none` when untiered) in the
+  global `WORKFLOW_STATE/balance.json`, independently of tasks and repositories.
+  Changed eligible weights reset that key. A blocking global lock protects each
+  atomic private write; malformed, unreadable or unsupported formats are refused.
+  Credits use an equivalent exact integer scale to avoid float overflow/drift.
+  Only managed launch selection consumes turns. Inspection checks lists
+  statically: two positive vendor shares force a managed route for every session
+  until native launches can consume a balancing turn.
 - A managed worker advances after unavailability, model unavailability or quota
   failure only when the working tree is clean. A dirty tree or any other
   failure stops for reconciliation before retrying.
@@ -224,7 +245,8 @@ with existing-only branch switching. It never recreates lost work from base.
   the CLI. Workflow does not track commit authorship, so the coordinator names
   authors with `--author`; without it inspect reports `authors-required` and a
   managed review refuses. Pins, cloud reviewers and empty lists are not
-  reordered.
+  reordered. Balancing stays within the usable non-author group; only when
+  none remain can the author group open a balanced run. Authors stay last.
 - `config apply` installs native profiles with exact model and effort per CLI
   and role (`ab-scout`, `ab-worker`, `ab-sync`, `ab-reviewer`, and
   `ab-worker-N`, `ab-sync-N`, `ab-reviewer-N` for nonempty tiers), each from

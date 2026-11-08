@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from agent_box import git_workflow as gw, workflow, workflow_state
-from agent_box.config import Config
+from agent_box.config import BalanceConfig, Config, model_entry
 from agent_box.errors import AgentBoxError
 from agent_box.repo_binding import Binding
 from agent_box.tracker.core import Task, TrackerError
@@ -86,6 +86,52 @@ class InspectTests(unittest.TestCase):
                 self.assertEqual(result["review"]["budget"]["used"], 1)
                 self.assertIsNone(result["review"]["required"])
                 self.assertIn(next_step, result["next_step"])
+
+    def test_weighted_roles_are_managed_in_every_session_without_reading_usage_or_counters(self):
+        """Inspect cannot promise a native profile when the next managed turn may select another vendor."""
+        self.config.workflow.balance = BalanceConfig("weighted", {"claude": 3, "codex": 1})
+        for role in ("worker", "scout", "reviewer", "sync"):
+            self.config.workflow.role(role).models = [model_entry({"provider": name, "model": name})
+                                                      for name in ("claude", "codex")]
+        (workflow_state.WORKFLOW_STATE / "balance.json").write_text("unreadable counters")
+        for provider in ("codex", "claude", None):
+            with self.subTest(provider=provider), patch.object(workflow, "session_provider", return_value=provider), \
+                 patch.object(workflow, "usage_snapshot", side_effect=AssertionError("usage read")), \
+                 patch.object(workflow, "balance_vendor", side_effect=AssertionError("counter consumed")):
+                inspected = self.inspect_readonly()
+                routes = {**inspected["execution"], "sync": inspected["plan_sync"]["execution"]}
+                for role in ("worker", "scout", "reviewer", "sync"):
+                    self.assertEqual(routes[role]["native"], {})
+                    self.assertEqual(routes[role]["for_this_session"], "managed")
+                    self.assertIn("Weighted vendor choice", routes[role]["balanced"])
+
+    def test_static_balance_check_respects_vendor_identity_tiers_pins_and_disabled_mode(self):
+        """Only multiple positive vendor shares suppress a native route; tier lists and pins remain authoritative."""
+        c = self.config.workflow
+        c.balance = BalanceConfig("weighted", {"claude": 1, "codex": 1, "api": 1})
+        c.worker.models = [model_entry({"provider": "claude", "model": "one"}),
+                           model_entry({"provider": "claude", "model": "two", "api_provider": "api"})]
+        c.worker.tiers["1"] = [c.worker.models[0]]
+        self.assertIn("balanced", workflow.execution(self.config, "worker", None, "1"))
+        self.assertNotIn("balanced", workflow.execution(self.config, "worker", 1, "1"))
+        c.balance.weights["api"] = 0
+        self.assertEqual(workflow.execution(self.config, "worker", None, "1")["native"], {"claude": "ab-worker"})
+        c.balance.weights["api"] = 1
+        c.pins["worker"] = c.worker.models
+        self.assertNotIn("balanced", workflow.execution(self.config, "worker", None, "1"))
+        c.pins.clear()
+        c.balance.mode = "off"
+        self.assertEqual(workflow.execution(self.config, "worker", None, "1")["native"], {"claude": "ab-worker"})
+
+    def test_balanced_native_refusal_explains_the_required_managed_launch(self):
+        """The refusal must name balancing instead of falsely blaming the first candidate's provider."""
+        self.config.workflow.balance = BalanceConfig("weighted", {"claude": 1, "codex": 1})
+        self.config.workflow.worker.models = [model_entry({"provider": name, "model": name})
+                                              for name in ("claude", "codex")]
+        with patch.object(workflow, "session_provider", return_value="claude"):
+            route = workflow.execution(self.config, "worker", None, "1")
+            with self.assertRaisesRegex(AgentBoxError, "Weighted vendor choice.*run agent-box workflow delegate"):
+                workflow.native_provider(route, "claude")
 
     def test_next_step_names_only_the_step_the_recorded_state_calls_for(self):
         """One hint that always named validate and review outlived the evidence describing this head."""

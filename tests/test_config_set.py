@@ -80,6 +80,8 @@ class ConfigSetTests(unittest.TestCase):
         refused = {
             ("audio.enabled=true",): "is not a project field",
             ("workflow.review.max_files=\"five\"",): "invalid type",
+            ('workflow.balance.mode="weighted"',): "is not a project field",
+            ('workflow.balance.weights={"codex": 1}',): "is not a project field",
             ('tracker.connections.vikunja.token="token-secret-value"',): "PROJECT_CREDENTIALS_FORBIDDEN",
             ("statusline.command=curl-secret-value",): "must be JSON",
             ("workflow.review.policy=\"sometimes\"",): "",
