@@ -30,7 +30,7 @@ from types import SimpleNamespace
 
 from .atomicio import atomic_write_bytes, atomic_write_text
 from . import migrations
-from .config import effective_config, effective_config_source
+from .config import effective_config, effective_config_source, vendor
 from .delegation import bootstrap, delegate_prompt, render_handoff, review_language
 from .errors import AgentBoxError
 from . import git_workflow as gw
@@ -1766,8 +1766,8 @@ def execution(config, role, tier, task_id, authors=None):
     session pin has none. The session's provider is the coordinator's to
     know, so the route is named per provider. Sync always requires its own list.
     A reviewer order that needs the code's authors is not guessed: without
-    them inspect names the rerun instead of a route. Multiple positive vendor
-    weights require a managed launch until native launches can consume a
+    them inspect names the rerun instead of a route. Weights that can change
+    the opener require a managed launch until native launches can consume a
     balancing turn; inspection never reads usage or allocation counters.
     """
     from .agent_profiles import profile_name
@@ -1782,8 +1782,9 @@ def execution(config, role, tier, task_id, authors=None):
                     "next": f"Rerun agent-box workflow inspect {task_id} {AUTHOR_FORM}"}
         named = " --author " + (" ".join(authors) or "unknown")
     first, native = models[0], {}
-    balanced = (config.workflow.balance.mode == "weighted" and not path.startswith("--")
-                and len(eligible_weights(config.workflow, models)) > 1)
+    weights = eligible_weights(config.workflow, models) if config.workflow.balance.mode == "weighted" else {}
+    # A rotation, or a sole weighted vendor that does not open the list, changes the opener.
+    balanced = not path.startswith("--") and (len(weights) > 1 or bool(weights) and vendor(first) not in weights)
     limitation = native_limitation(first["provider"], first.get("speed", "inherit"))
     if (not balanced and not path.startswith("--") and config.workflow.enabled and not first.get("api_provider")
             and not configuration_error(first["provider"], first)

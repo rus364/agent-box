@@ -106,7 +106,7 @@ class InspectTests(unittest.TestCase):
                     self.assertIn("Weighted vendor choice", routes[role]["balanced"])
 
     def test_static_balance_check_respects_vendor_identity_tiers_pins_and_disabled_mode(self):
-        """Only multiple positive vendor shares suppress a native route; tier lists and pins remain authoritative."""
+        """Shares that rotate the opener suppress a native route; tier lists and pins remain authoritative."""
         c = self.config.workflow
         c.balance = BalanceConfig("weighted", {"claude": 1, "codex": 1, "api": 1})
         c.worker.models = [model_entry({"provider": "claude", "model": "one"}),
@@ -122,6 +122,17 @@ class InspectTests(unittest.TestCase):
         c.pins.clear()
         c.balance.mode = "off"
         self.assertEqual(workflow.execution(self.config, "worker", None, "1")["native"], {"claude": "ab-worker"})
+
+    def test_a_sole_weighted_vendor_behind_an_unweighted_opener_is_not_promised_natively(self):
+        """Selection opens with the weighted vendor, so inspect must not advertise the unweighted opener's profile."""
+        c = self.config.workflow
+        c.worker.models = [model_entry({"provider": "codex", "model": "one"}),
+                           model_entry({"provider": "claude", "model": "two"})]
+        c.balance = BalanceConfig("weighted", {"codex": 0, "claude": 1})
+        route = workflow.execution(self.config, "worker", None, "1")
+        self.assertEqual((route["native"], "balanced" in route), ({}, True))
+        c.balance.weights = {"codex": 1, "claude": 0}
+        self.assertEqual(workflow.execution(self.config, "worker", None, "1")["native"], {"codex": "ab-worker"})
 
     def test_balanced_native_refusal_explains_the_required_managed_launch(self):
         """The refusal must name balancing instead of falsely blaming the first candidate's provider."""
