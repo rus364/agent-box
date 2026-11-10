@@ -163,6 +163,17 @@ empty.
 - **Session pins** override the lists for one session:
   `--worker`, `--scout`, `--sync`, `--reviewer` with
   `PROVIDER[@API]:MODEL[:EFFORT]`. Pins bypass balancing.
+- **One delegate launch** can select its own model with
+  `workflow delegate TASK --role worker|scout --brief FILE --model PROVIDER[@API]:MODEL[:EFFORT]`.
+  For example, `agent-box workflow delegate TASK --role worker --brief brief.md --model codex:gpt-6.1-sol:high`.
+  This replaces the role's candidates for that call, overriding session pins
+  and task tiers, bypassing balancing and subscription reserve, with no
+  configured-model fallbacks. It also works when the configured list is empty.
+  Configuration and later launches stay unchanged. The choice always runs
+  managed: `--native` refuses with a managed command retaining the override,
+  because a per-call choice has no installed native profile. External API and
+  model-effort checks still apply. Oversized-text summaries retain their
+  separate configured scout route. Reviewer and Plan sync selection is unchanged.
 - **Task tiers.** With `workflow.use_tiers` on, a task labelled
   `ab:tier:1`–`3` uses that tier's `tiers.N` list for its worker, Plan sync and
   reviewer, when the list is not empty. Scouts have no tiers.

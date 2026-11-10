@@ -93,6 +93,9 @@ class CandidateTests(unittest.TestCase):
         self.assertEqual(words("--no-tmux workflow land 374 ")[1], ["inspect", "merge", "cleanup"])
         self.assertEqual(words("workflow delegate 374 --role ")[1], ["worker", "scout"])
         self.assertIn("--brief", words("workflow delegate 374 --role scout --")[1])
+        self.assertEqual(words("workflow delegate 374 --mo")[1], ["--model"])
+        self.assertEqual(words("workflow delegate 374 --model ")[1], [])
+        self.assertIn("--brief", words("workflow delegate 374 --model codex:gpt-6.1-sol:high --")[1])
         self.assertEqual(words("workflow validate 374 -- python3 ")[0], "files")
         self.assertIn("--help", words("workflow validate 374 --")[1])
 

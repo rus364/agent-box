@@ -105,6 +105,11 @@ enabled in `agent-box config`. Options that only a container can honour
 (mounts, KVM, credential forwarding) are refused with `--host` rather than
 ignored.
 
+To select a model for only one worker or scout, use
+`agent-box workflow delegate TASK --role worker --brief FILE --model codex:gpt-6.1-sol:high`.
+It accepts the same `SPEC`, overrides session pins for that call and runs
+managed without changing configuration; see [workflow routing](integrations/workflow.md#models-and-routing).
+
 ## Detach and reattach
 
 Interactive `claude`, `codex` and `shell` sessions run under tmux inside the

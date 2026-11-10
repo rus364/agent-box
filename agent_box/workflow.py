@@ -15,12 +15,14 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import copy
 import fnmatch
 import hashlib
 import json
 import os
 import re
 import secrets
+import shlex
 import shutil
 import stat
 import subprocess
@@ -34,6 +36,7 @@ from .config import effective_config, effective_config_source, vendor
 from .delegation import bootstrap, delegate_prompt, render_handoff, review_language
 from .errors import AgentBoxError
 from . import git_workflow as gw
+from .launch_options import SPEC, parse_spec
 from .paths import WORKFLOW_STATE
 from .provider_runner import SEVERITIES, ProviderFailure, preflight, require_sync_coordinator, review_report, run, save_private
 from .repo_binding import Binding, repository_root, server_identity
@@ -1596,6 +1599,8 @@ def parser():
             cmd.add_argument("--reason", required=True, help="The user's explicit acceptance of the current head, recorded by the coordinator")
         if name == "delegate":
             cmd.add_argument("--role", choices=("worker", "scout"), required=True)
+            cmd.add_argument("--model", metavar=SPEC,
+                             help="Use only this model for one managed launch, overriding session pins and task tiers; never saved")
             mode = cmd.add_mutually_exclusive_group()
             mode.add_argument("--native", action="store_true",
                               help="Prepare the same assignment as generated file pages for the configured native profile")
@@ -1917,7 +1922,18 @@ def delegate(args, root, adapter, config):
         if gw.current_branch(root) != branch:
             raise AgentBoxError(f"Switch to task branch {branch} before delegating a worker")
     tier = config.workflow.effective_tier(task.tier) if args.role == "worker" else None
-    path, models = config.workflow.models_for(args.role, tier)
+    launch_config, selected = config, None
+    if args.model is not None:
+        # Keep this pin out of subsequent launches and the configured text-summary scout route.
+        launch_config = copy.deepcopy(config)
+        launch_config.workflow.pins[args.role] = parse_spec("--model", args.model)
+        if args.native:
+            command = shlex.join(["agent-box", "workflow", "delegate", args.task, "--role", args.role,
+                                  "--brief", args.brief, "--model", args.model, "--managed", "--output", args.output])
+            raise AgentBoxError(f"--model selects one managed launch and has no installed native profile; run {command}")
+        # Validate the explicit choice before an oversized brief can trigger a summary model call.
+        selected = candidates(launch_config, args.role, tier)
+    path, models = launch_config.workflow.models_for(args.role, tier)
     if not models:
         raise AgentBoxError(f"{path} is empty, so the coordinator does this {args.role} work itself in its own "
                             f"session; configure candidates there to delegate it")
@@ -1938,8 +1954,8 @@ def delegate(args, root, adapter, config):
         native_provider(route, args.provider)
         require_native_reserve(config.workflow, route, models[0])
     else:
-        selected = candidates(config, args.role, tier)
-        route = None if args.managed else balanced_native_route(config, args.role, tier, task.id, selected)
+        selected = selected or candidates(launch_config, args.role, tier)
+        route = None if args.managed else balanced_native_route(launch_config, args.role, tier, task.id, selected)
     if route:
         artifact = text_delivery.publish(prompt, config)
         return {"task": task.id, "role": args.role, "route": route, "input": artifact,

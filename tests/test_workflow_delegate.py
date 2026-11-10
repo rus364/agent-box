@@ -7,8 +7,10 @@ replacement: pick the role's first available candidate, run it once in a fresh
 managed process, return its answer, and keep nothing that later commands check.
 """
 import contextlib
+import copy
 import io
 import json
+import shlex
 import stat
 import tempfile
 import unittest
@@ -38,6 +40,160 @@ class DelegateCommandTests(WorkflowCase):
 
     def delegate(self, role, brief=None):
         return self.run_workflow("delegate", "1", "--role", role, "--brief", str(brief or self.review_brief))
+
+    def test_one_launch_model_runs_workers_and_scouts_managed_even_with_empty_lists(self):
+        """An explicit choice supplies the candidate without requiring saved models or an installed native profile."""
+        for role in ("worker", "scout"):
+            self.config.workflow.role(role).models = []
+            for spec, provider, model, effort in (("codex:gpt-6.1-sol:high", "codex", "gpt-6.1-sol", "high"),
+                                                 ("claude:opus:low", "claude", "opus", "low"),
+                                                 ("codex:model:variant", "codex", "model:variant", "default")):
+                with self.subTest(role=role, spec=spec), routing_session(provider), \
+                        patch.object(workflow, "run", return_value=ANSWER) as run:
+                    result = self.run_workflow("delegate", "1", "--role", role, "--brief", str(self.review_brief),
+                                               "--model", spec)
+                self.assertEqual(result["response"], ANSWER)
+                self.assertNotIn("launch", result)
+                run.assert_called_once()
+                selected = run.call_args.args[0]
+                self.assertEqual((selected["provider"], selected["model"], selected["effort"], selected["speed"]),
+                                 (provider, model, effort, "inherit"))
+                self.assertEqual(selected["fallbacks"], [])
+
+    def test_one_launch_model_overrides_tiers_and_session_pins_without_changing_later_launches(self):
+        """A one-call pin must not leak into the original object or displace the next call's saved or session route."""
+        self.config.workflow.worker.tiers["1"] = [candidate("claude", "tier-worker", "medium")]
+        for role in ("worker", "scout"):
+            for pinned in (False, True):
+                self.config.workflow.pins = {role: [candidate("claude", "session-model", "low")]} if pinned else {}
+                before = copy.deepcopy(self.config)
+                with self.subTest(role=role, pinned=pinned), patch("agent_box.config.save_config") as save, \
+                        patch.object(workflow, "run", return_value=ANSWER) as run:
+                    result = self.run_workflow("delegate", "1", "--role", role, "--brief", str(self.review_brief),
+                                               "--model", "codex:gpt-6.1-sol:high", "--managed")
+                    self.assertEqual(result["route"]["model"], "gpt-6.1-sol")
+                    self.assertEqual(self.config, before)
+                    regular = self.delegate(role)
+                    self.assertEqual(regular["route"]["model"], "session-model" if pinned else
+                                     "tier-worker" if role == "worker" else "scout-model")
+                    self.assertEqual(run.call_count, 2)
+                    self.assertEqual(self.config, before)
+                    save.assert_not_called()
+
+    def test_one_launch_model_bypasses_balancing_and_exhausted_subscription_reserve(self):
+        """An explicit pin must run its sole candidate even when ordinary routing would choose another vendor."""
+        self.config.workflow.balance = BalanceConfig("weighted", {"claude": 1, "codex": 1})
+        exhausted = {"windows": [{"remaining": 0, "reset_at": 4102444800}]}
+        for role in ("worker", "scout"):
+            self.config.workflow.role(role).models = [candidate("claude", "ordinary", "high"),
+                                                     candidate("codex", "gpt-6.1-sol", "high")]
+            with self.subTest(role=role), routing_session("codex"), \
+                    patch.object(workflow, "usage_snapshot", return_value=exhausted), \
+                    patch.object(workflow, "balance_vendor", side_effect=AssertionError("balance turn consumed")), \
+                    patch.object(workflow, "run", return_value=ANSWER) as run:
+                result = self.run_workflow("delegate", "1", "--role", role, "--brief", str(self.review_brief),
+                                           "--model", "codex:gpt-6.1-sol:high")
+            self.assertEqual(result["route"]["model"], "gpt-6.1-sol")
+            self.assertNotIn("launch", result)
+            run.assert_called_once()
+
+    def test_one_launch_model_failure_never_uses_configured_fallbacks(self):
+        """Unavailable models and quota failures must not silently replace an explicitly requested model."""
+        for role in ("worker", "scout"):
+            for category in ("model-unavailable", "quota"):
+                failure = provider_runner.ProviderFailure("Requested model failed", category)
+                with self.subTest(role=role, category=category), \
+                        patch.object(workflow, "run", side_effect=[failure, ANSWER]) as run, \
+                        self.assertRaises(workflow.ProviderFailures) as caught:
+                    self.run_workflow("delegate", "1", "--role", role, "--brief", str(self.review_brief),
+                                      "--model", "codex:requested:high")
+                run.assert_called_once()
+                self.assertEqual(run.call_args.args[0]["model"], "requested")
+                self.assertEqual([item["category"] for item in caught.exception.failures], [category])
+
+    def test_one_launch_model_missing_cli_does_not_select_an_installed_fallback(self):
+        """An available configured provider cannot satisfy a request for another CLI."""
+        with patch.object(workflow.shutil, "which", side_effect=lambda name: name if name == "claude" else None), \
+                patch.object(workflow, "run") as run, self.assertRaisesRegex(AgentBoxError, "CLI installed"):
+            self.run_workflow("delegate", "1", "--role", "worker", "--brief", str(self.review_brief),
+                              "--model", "codex:requested:high")
+        run.assert_not_called()
+
+    def test_one_launch_native_refusal_preserves_a_shell_safe_managed_retry(self):
+        """Unknown sessions and matching native profiles both need a retry retaining the exact spec and brief path."""
+        brief = Path(self.directory.name) / "brief ' $(touch unused).md"
+        brief.write_text(self.review_brief.read_text())
+        for role in ("worker", "scout"):
+            for provider, spec in (("codex", "codex:gpt-6.1-sol:high"),
+                                   (None, "codex:model'$(printf unused);:high")):
+                self.config.workflow.role(role).models = [candidate("codex", "gpt-6.1-sol", "high")]
+                with self.subTest(role=role, provider=provider), routing_session(provider), \
+                        patch.object(workflow, "run") as run, patch.object(text_delivery, "publish") as publish, \
+                        self.assertRaisesRegex(AgentBoxError, "no installed native profile; run ") as caught:
+                    self.run_workflow("delegate", "1", "--role", role, "--brief", str(brief),
+                                      "--model", spec, "--native", "--output", "reference")
+                run.assert_not_called()
+                publish.assert_not_called()
+                retry = shlex.split(str(caught.exception).split("; run ", 1)[1])
+                self.assertEqual(retry, ["agent-box", "workflow", "delegate", "1", "--role", role,
+                                        "--brief", str(brief), "--model", spec, "--managed", "--output", "reference"])
+                with patch.object(workflow, "run", return_value=ANSWER):
+                    self.assertEqual(self.run_workflow(*retry[2:])["response"], ANSWER)
+
+    def test_invalid_one_launch_spec_is_refused_before_summary_or_delegate_calls(self):
+        """Malformed choices must be rejected by the existing parser before any model can consume the brief."""
+        for spec in ("", "codex", "codex:", "other:model", "codex@:model", "claude@bad/name:model", "codex: "):
+            with self.subTest(spec=spec), patch.object(workflow, "run") as run, \
+                    patch("agent_box.text_summary.compact", side_effect=AssertionError("summary reached")), \
+                    self.assertRaises(AgentBoxError):
+                self.run_workflow("delegate", "1", "--role", "scout", "--brief", str(self.review_brief), "--model", spec)
+            run.assert_not_called()
+
+    def test_one_launch_external_model_keeps_its_api_and_effort(self):
+        """A CLI/model match must not replace an explicit external API with the subscription route."""
+        self.config.agents.external_apis = external_config().agents.external_apis
+        for role, provider in (("worker", "codex"), ("scout", "claude")):
+            with self.subTest(role=role), routing_session(provider), patch.object(workflow, "run", return_value=ANSWER) as run:
+                result = self.run_workflow("delegate", "1", "--role", role, "--brief", str(self.review_brief),
+                                           "--model", f"{provider}@deepseek:external-small:high")
+            self.assertEqual((result["route"]["provider"], result["route"]["api_provider"], result["route"]["effort"]),
+                             (provider, "deepseek", "high"))
+            self.assertTrue(result["route"]["api_fingerprint"])
+            self.assertEqual(run.call_args.args[0]["fallbacks"], [])
+
+    def test_invalid_one_launch_external_api_is_refused_before_any_model_call(self):
+        """Missing credentials, endpoints and unsupported efforts must fail before summarizing or starting work."""
+        for provider in ("codex", "claude"):
+            for invalid in ("missing", "disabled", "key", "url", "effort"):
+                self.config.agents.external_apis = external_config().agents.external_apis
+                api = self.config.agents.external_apis["deepseek"]
+                if invalid == "missing":
+                    self.config.agents.external_apis.clear()
+                elif invalid == "disabled":
+                    api.enabled = False
+                elif invalid == "key":
+                    api.api_key = ""
+                elif invalid == "url":
+                    getattr(api, provider).url = ""
+                else:
+                    getattr(api, provider).models["external-small"]["supported_efforts"] = ["low"]
+                with self.subTest(provider=provider, invalid=invalid), patch.object(workflow, "run") as run, \
+                        patch("agent_box.text_summary.compact", side_effect=AssertionError("summary reached")), \
+                        self.assertRaisesRegex(AgentBoxError, "missing or disabled|requires an API key|not supported"):
+                    self.run_workflow("delegate", "1", "--role", "scout", "--brief", str(self.review_brief),
+                                      "--model", f"{provider}@deepseek:external-small:high")
+                run.assert_not_called()
+
+    def test_one_launch_scout_override_does_not_change_the_text_summary_route(self):
+        """Summarizing an oversized brief is separate work and retains the configured scout candidates."""
+        self.config.workflow.text_max_bytes = 20000
+        self.review_brief.write_text("large supplemental note\n" * 1000)
+        with patch.object(workflow, "run", side_effect=["Compact assignment notes.", ANSWER]) as run:
+            result = self.run_workflow("delegate", "1", "--role", "scout", "--brief", str(self.review_brief),
+                                       "--model", "claude:requested:high")
+        self.assertEqual([call.args[0]["model"] for call in run.call_args_list], ["scout-model", "requested"])
+        self.assertEqual(result["assignment_summary"]["route"]["model"], "scout-model")
+        self.assertEqual(result["response"], ANSWER)
 
     def test_balanced_delegates_consume_one_turn_for_each_native_or_managed_launch(self):
         """A native turn must advance the same rotation so the next run returns to the other CLI."""
