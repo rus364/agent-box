@@ -1600,7 +1600,7 @@ def parser():
         if name == "delegate":
             cmd.add_argument("--role", choices=("worker", "scout"), required=True)
             cmd.add_argument("--model", metavar=SPEC,
-                             help="Use only this model for one managed launch, overriding session pins and task tiers; never saved")
+                             help="Use only this model for one launch, overriding session pins and task tiers; native only when this session's installed profile runs exactly that model; never saved")
             mode = cmd.add_mutually_exclusive_group()
             mode.add_argument("--native", action="store_true",
                               help="Prepare the same assignment as generated file pages for the configured native profile")
@@ -1895,6 +1895,28 @@ def balanced_native_route(config, role, tier, task_id, selected, authors=None):
     return None
 
 
+def model_native_route(config, role, tier, selected, managed, provider=None):
+    """Hand an explicit --model to the session's installed profile when it runs exactly that model.
+
+    Profiles are rendered from the saved lists, so the one-call pin is set
+    aside to find the profile; the choice still bypasses balancing and reserve.
+    Refusing every --model natively made a coordinator launch a managed copy
+    of the very model its own subagent profile already runs.
+    """
+    detected = session_provider()
+    if provider and detected and provider != detected:
+        raise AgentBoxError(f"--provider {provider} differs from this {detected} session")
+    if (provider or detected) != selected["provider"]:
+        return None
+    saved = copy.deepcopy(config)
+    saved.workflow.pins.pop(role, None)
+    profile = native_profile(saved, role, tier, selected)
+    if not profile:
+        return None
+    return {"mode": "delegate", "models": "--model", **selected,
+            "native": {selected["provider"]: profile}, "for_this_session": "native", "managed": managed}
+
+
 def scout_diagnostics(config):
     return {"scout_limit": config.workflow.scout.limit,
             "scout_slots": "Managed scouts started by workflow delegate share these repository slots; "
@@ -1927,12 +1949,15 @@ def delegate(args, root, adapter, config):
         # Keep this pin out of subsequent launches and the configured text-summary scout route.
         launch_config = copy.deepcopy(config)
         launch_config.workflow.pins[args.role] = parse_spec("--model", args.model)
-        if args.native:
-            command = shlex.join(["agent-box", "workflow", "delegate", args.task, "--role", args.role,
-                                  "--brief", args.brief, "--model", args.model, "--managed", "--output", args.output])
-            raise AgentBoxError(f"--model selects one managed launch and has no installed native profile; run {command}")
+        managed = shlex.join(["agent-box", "workflow", "delegate", args.task, "--role", args.role,
+                              "--brief", args.brief, "--model", args.model, "--managed", "--output", args.output])
         # Validate the explicit choice before an oversized brief can trigger a summary model call.
         selected = candidates(launch_config, args.role, tier)
+        model_route = None if args.managed else model_native_route(
+            config, args.role, tier, selected, managed, args.provider)
+        if args.native and not model_route:
+            raise AgentBoxError(f"--model {args.model} matches no installed native profile of this session "
+                                f"for the {args.role}; run {managed}")
     path, models = launch_config.workflow.models_for(args.role, tier)
     if not models:
         raise AgentBoxError(f"{path} is empty, so the coordinator does this {args.role} work itself in its own "
@@ -1949,7 +1974,9 @@ def delegate(args, root, adapter, config):
                              behavior_version=config.workflow.behavior_version)
     text_delivery.check_size(len(prompt.encode("utf-8")), config.workflow, f"{args.role} assignment")
     text_delivery.prepare(config)
-    if args.native:
+    if args.model is not None:
+        route = model_route
+    elif args.native:
         route = execution(config, args.role, tier, task.id)
         native_provider(route, args.provider)
         require_native_reserve(config.workflow, route, models[0])

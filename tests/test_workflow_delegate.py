@@ -91,8 +91,12 @@ class DelegateCommandTests(WorkflowCase):
                     patch.object(workflow, "usage_snapshot", return_value=exhausted), \
                     patch.object(workflow, "balance_vendor", side_effect=AssertionError("balance turn consumed")), \
                     patch.object(workflow, "run", return_value=ANSWER) as run:
-                result = self.run_workflow("delegate", "1", "--role", role, "--brief", str(self.review_brief),
+                opened = self.run_workflow("delegate", "1", "--role", role, "--brief", str(self.review_brief),
                                            "--model", "codex:gpt-6.1-sol:high")
+                run.assert_not_called()
+                result = self.run_workflow("delegate", "1", "--role", role, "--brief", str(self.review_brief),
+                                           "--model", "codex:gpt-6.1-sol:high", "--managed")
+            self.assertEqual((opened["launch"], opened["route"]["model"]), ("native", "gpt-6.1-sol"))
             self.assertEqual(result["route"]["model"], "gpt-6.1-sol")
             self.assertNotIn("launch", result)
             run.assert_called_once()
@@ -119,17 +123,50 @@ class DelegateCommandTests(WorkflowCase):
                               "--model", "codex:requested:high")
         run.assert_not_called()
 
+    def test_one_launch_model_uses_the_session_profile_only_when_it_runs_exactly_that_model(self):
+        """A coordinator must spawn its own subagent instead of a managed copy of the same model, and nothing else.
+
+        The profile is rendered from the saved list, so it matches even as a
+        fallback candidate or under a session pin; another model, effort, CLI
+        or an unknown session would make the profile run something not chosen.
+        """
+        for role in ("worker", "scout"):
+            self.config.workflow.role(role).models = [candidate("codex", "first", "high"),
+                                                     candidate("claude", "claude-opus-5-5", "high")]
+            for session, spec, pinned, native in (("claude", "claude:claude-opus-5-5:high", False, True),
+                                                  ("claude", "claude:claude-opus-5-5:high", True, True),
+                                                  ("claude", "claude:claude-opus-5-5:low", False, False),
+                                                  ("claude", "claude:other:high", False, False),
+                                                  ("codex", "claude:claude-opus-5-5:high", False, False),
+                                                  (None, "claude:claude-opus-5-5:high", False, False)):
+                self.config.workflow.pins = {role: [candidate("codex", "session-model", "low")]} if pinned else {}
+                command = ("delegate", "1", "--role", role, "--brief", str(self.review_brief), "--model", spec)
+                with self.subTest(role=role, session=session, spec=spec, pinned=pinned), routing_session(session), \
+                        patch.object(workflow, "run", return_value=ANSWER) as run:
+                    result = self.run_workflow(*command)
+                    self.assertEqual(result.get("launch"), "native" if native else None)
+                    self.assertEqual(run.call_count, 0 if native else 1)
+                    if native:
+                        self.assertEqual(result["profile"], f"ab-{role}")
+                        self.assertEqual(result["route"]["model"], "claude-opus-5-5")
+                        self.assertIn(result["input"]["path"], result["message"])
+                        self.assertEqual(self.run_workflow(*command, "--native")["profile"], f"ab-{role}")
+                        managed = self.run_workflow(*command, "--managed")
+                        self.assertEqual((managed["route"]["model"], managed["response"]), ("claude-opus-5-5", ANSWER))
+                        self.assertEqual(run.call_count, 1)
+        self.config.workflow.pins = {}
+
     def test_one_launch_native_refusal_preserves_a_shell_safe_managed_retry(self):
-        """Unknown sessions and matching native profiles both need a retry retaining the exact spec and brief path."""
+        """Unknown sessions and unmatched profiles both need a retry retaining the exact spec and brief path."""
         brief = Path(self.directory.name) / "brief ' $(touch unused).md"
         brief.write_text(self.review_brief.read_text())
         for role in ("worker", "scout"):
-            for provider, spec in (("codex", "codex:gpt-6.1-sol:high"),
+            for provider, spec in (("codex", "codex:gpt-6.1-sol:low"),
                                    (None, "codex:model'$(printf unused);:high")):
                 self.config.workflow.role(role).models = [candidate("codex", "gpt-6.1-sol", "high")]
                 with self.subTest(role=role, provider=provider), routing_session(provider), \
                         patch.object(workflow, "run") as run, patch.object(text_delivery, "publish") as publish, \
-                        self.assertRaisesRegex(AgentBoxError, "no installed native profile; run ") as caught:
+                        self.assertRaisesRegex(AgentBoxError, "matches no installed native profile .*; run ") as caught:
                     self.run_workflow("delegate", "1", "--role", role, "--brief", str(brief),
                                       "--model", spec, "--native", "--output", "reference")
                 run.assert_not_called()
