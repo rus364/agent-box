@@ -301,7 +301,7 @@ class ClipboardRoutingTests(IsolatedRuntimeTest):
 
 class ClipboardPtyTests(unittest.TestCase):
     @contextmanager
-    def proxy(self, child, *, terminal_closes=False, input_eof=False):
+    def proxy(self, child, *, terminal_closes=False, input_eof=False, terminal_stderr=False):
         """Two real PTYs exercise termios and process cleanup without Podman or a desktop."""
         master, slave = os.openpty()
         attributes = termios.tcgetattr(slave)
@@ -321,7 +321,8 @@ assert len(os.listdir("/proc/self/fd")) == before
 raise SystemExit(result)
 '''
         process = subprocess.Popen([sys.executable, "-c", script, child, str(input_eof)], stdin=slave, stdout=slave,
-                                   stderr=subprocess.PIPE, preexec_fn=clipboard._child_terminal)
+                                   stderr=slave if terminal_stderr else subprocess.PIPE,
+                                   preexec_fn=clipboard._child_terminal)
         try:
             yield process, master, slave
         finally:
@@ -329,7 +330,8 @@ raise SystemExit(result)
             if not terminal_closes:
                 self.assertEqual(termios.tcgetattr(slave), attributes)
                 self.assertEqual(fcntl.fcntl(slave, fcntl.F_GETFL), flags)
-            process.stderr.close()
+            if process.stderr is not None:
+                process.stderr.close()
             os.close(slave)
             if not terminal_closes:
                 os.close(master)
@@ -342,6 +344,30 @@ raise SystemExit(result)
                 result.extend(os.read(master, 65536))
         self.assertIn(marker, result)
         return bytes(result)
+
+    def test_redirected_stderr_stays_separate_from_interactive_stdout(self):
+        """Automatic proxying must preserve stderr redirection and its non-TTY identity."""
+        child = '''
+import os
+os.write(2, b"STDERR:" + str(os.isatty(2)).encode())
+os.write(1, b"STDOUT:" + str(os.isatty(0) and os.isatty(1)).encode() + b":DONE")
+'''
+        with self.proxy(child) as (process, master, _slave):
+            output = self.receive(master, b":DONE")
+            self.assertEqual(process.wait(timeout=3), 0)
+            self.assertEqual(process.stderr.read(), b"STDERR:False")
+            self.assertEqual(output, b"STDOUT:True:DONE")
+
+    def test_terminal_stderr_shares_the_child_pty(self):
+        """Interactive diagnostics must retain the same terminal as child stdout."""
+        child = '''
+import os
+os.write(1, b"STDOUT:")
+os.write(2, b"STDERR:" + str(os.isatty(2) and os.ttyname(2) == os.ttyname(1)).encode() + b":DONE")
+'''
+        with self.proxy(child, terminal_stderr=True) as (process, master, _slave):
+            self.assertEqual(self.receive(master, b":DONE"), b"STDOUT:STDERR:True:DONE")
+            self.assertEqual(process.wait(timeout=3), 0)
 
     def test_native_pty_paste_resize_exit_and_terminal_restoration(self):
         """Image framing, ordinary bytes and resize must survive both terminal layers."""

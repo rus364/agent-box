@@ -28,7 +28,8 @@ formats need a source application that also offers PNG.
   prints a diagnostic only when Ctrl+V is pressed and forwards the original key.
   Starting or attaching a session does not probe the clipboard. The session
   continues; ordinary text paste remains the terminal's and CLI's responsibility.
-- Shell sessions, batch commands, pipes and redirects do not use the bridge.
+- Shell sessions, batch commands and redirected stdin or stdout do not use the
+  bridge. Redirected stderr keeps its destination while the bridge remains active.
   Nested launches inside a box do not add a bridge. `--host` uses each CLI's
   native clipboard support.
 - The clipboard belongs to the desktop running the host launcher. SSH sessions

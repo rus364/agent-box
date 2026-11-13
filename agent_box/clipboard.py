@@ -254,7 +254,9 @@ class TerminalProxy:
         try:
             termios.tcsetattr(slave, termios.TCSANOW, termios.tcgetattr(self.input))
             fcntl.ioctl(slave, termios.TIOCSWINSZ, fcntl.ioctl(self.input, termios.TIOCGWINSZ, b"\0" * 8))
-            self.process = subprocess.Popen(command, stdin=slave, stdout=slave, stderr=slave,
+            # Popen inherits fd 2 when redirected; only terminal stderr joins the PTY.
+            self.process = subprocess.Popen(command, stdin=slave, stdout=slave,
+                                            stderr=slave if os.isatty(2) else None,
                                             env=env, preexec_fn=_child_terminal)
         finally:
             os.close(slave)
