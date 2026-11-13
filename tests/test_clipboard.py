@@ -301,7 +301,8 @@ class ClipboardRoutingTests(IsolatedRuntimeTest):
 
 class ClipboardPtyTests(unittest.TestCase):
     @contextmanager
-    def proxy(self, child, *, terminal_closes=False, input_eof=False, terminal_stderr=False):
+    def proxy(self, child, *, terminal_closes=False, input_eof=False, terminal_stderr=False,
+              stderr=subprocess.PIPE):
         """Two real PTYs exercise termios and process cleanup without Podman or a desktop."""
         master, slave = os.openpty()
         attributes = termios.tcgetattr(slave)
@@ -321,7 +322,7 @@ assert len(os.listdir("/proc/self/fd")) == before
 raise SystemExit(result)
 '''
         process = subprocess.Popen([sys.executable, "-c", script, child, str(input_eof)], stdin=slave, stdout=slave,
-                                   stderr=slave if terminal_stderr else subprocess.PIPE,
+                                   stderr=slave if terminal_stderr else stderr,
                                    preexec_fn=clipboard._child_terminal)
         try:
             yield process, master, slave
@@ -368,6 +369,27 @@ os.write(2, b"STDERR:" + str(os.isatty(2) and os.ttyname(2) == os.ttyname(1)).en
         with self.proxy(child, terminal_stderr=True) as (process, master, _slave):
             self.assertEqual(self.receive(master, b":DONE"), b"STDOUT:STDERR:True:DONE")
             self.assertEqual(process.wait(timeout=3), 0)
+
+    def test_stderr_redirected_to_another_terminal_retains_its_destination(self):
+        """A distinct terminal is a deliberate stderr destination, not proxy stdout."""
+        error_master, error_slave = os.openpty()
+        identity = os.fstat(error_slave)
+        child = '''
+import os
+identity = os.fstat(2)
+os.write(2, b"STDERR:" + str(os.isatty(2)).encode() + b":" +
+         repr((identity.st_dev, identity.st_ino)).encode() + b":DONE")
+os.write(1, b"STDOUT:" + str(os.isatty(0) and os.isatty(1)).encode() + b":DONE")
+'''
+        try:
+            with self.proxy(child, stderr=error_slave) as (process, master, _slave):
+                self.assertEqual(self.receive(master, b"STDOUT:True:DONE"), b"STDOUT:True:DONE")
+                self.assertEqual(process.wait(timeout=3), 0)
+                expected = b"STDERR:True:" + repr((identity.st_dev, identity.st_ino)).encode() + b":DONE"
+                self.assertEqual(self.receive(error_master, b":DONE"), expected)
+        finally:
+            os.close(error_slave)
+            os.close(error_master)
 
     def test_native_pty_paste_resize_exit_and_terminal_restoration(self):
         """Image framing, ordinary bytes and resize must survive both terminal layers."""

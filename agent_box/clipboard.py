@@ -254,9 +254,10 @@ class TerminalProxy:
         try:
             termios.tcsetattr(slave, termios.TCSANOW, termios.tcgetattr(self.input))
             fcntl.ioctl(slave, termios.TIOCSWINSZ, fcntl.ioctl(self.input, termios.TIOCGWINSZ, b"\0" * 8))
-            # Popen inherits fd 2 when redirected; only terminal stderr joins the PTY.
+            # A separate stderr terminal must keep its destination, just like a pipe or file.
+            shared_stderr = os.isatty(2) and os.path.samestat(os.fstat(2), os.fstat(self.output))
             self.process = subprocess.Popen(command, stdin=slave, stdout=slave,
-                                            stderr=slave if os.isatty(2) else None,
+                                            stderr=slave if shared_stderr else None,
                                             env=env, preexec_fn=_child_terminal)
         finally:
             os.close(slave)
