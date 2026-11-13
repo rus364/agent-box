@@ -233,6 +233,27 @@ class AttachAndStopTests(unittest.TestCase):
             with self.assertRaises(AgentBoxError):
                 runtime.attach_main([])
 
+    def test_attach_reads_current_host_clipboard_opt_in_only_for_agent_sessions(self):
+        """Turning off the host bridge takes effect on reattach without rewriting the box."""
+        for session, enabled, expected in (("codex-9", True, True), ("claude-9", True, True),
+                                            ("codex-9", False, False), ("shell-9", True, False)):
+            config = runtime.Config()
+            config.host.clipboard_images = enabled
+            process = mock.Mock(wait=mock.Mock(return_value=0))
+            @contextlib.contextmanager
+            def launcher(container):
+                self.assertEqual(container, self.name if expected else "")
+                yield mock.Mock(return_value=process)
+            with self.subTest(session=session, enabled=enabled), \
+                 mock.patch.object(runtime, "inside_box", return_value=False), \
+                 mock.patch.object(runtime, "load_config", return_value=config), \
+                 mock.patch.object(runtime, "inspect_workspace_container", return_value={"State": {"Status": "running"}}), \
+                 mock.patch.object(runtime, "tmux_sessions", return_value=[session]), \
+                 mock.patch.object(runtime, "cleanup_workspace_container_if_idle"), \
+                 mock.patch.object(runtime.links, "reattach"), \
+                 mock.patch.object(runtime.clipboard, "launcher", side_effect=launcher):
+                self.assertEqual(runtime.attach_main([]), 0)
+
     def test_attach_needs_a_terminal(self):
         with mock.patch.object(runtime.sys, "stdout", mock.Mock(isatty=mock.Mock(return_value=False))):
             with self.assertRaises(AgentBoxError):

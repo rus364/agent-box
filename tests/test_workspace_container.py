@@ -839,6 +839,16 @@ class WorkspaceContainerLifecycleTests(unittest.TestCase):
             with self.assertRaisesRegex(AgentBoxError, "incompatible container-level configuration"):
                 runtime.ensure_workspace_container(with_audio)
 
+    def test_clipboard_opt_in_adds_no_mount_environment_or_container_identity(self):
+        """Host gestures must not grant a box access to a display or clipboard endpoint."""
+        before = runtime.workspace_container_spec(self.workspace, [], self.script_dir, self.config)
+        self.config.host.clipboard_images = True
+        after = runtime.workspace_container_spec(self.workspace, [], self.script_dir, self.config)
+        self.assertEqual(before.base_config_hash, after.base_config_hash)
+        access = ("--mount=", "--env=", "--volume=", "--device=")
+        self.assertEqual([arg for arg in before.create_argv if arg.startswith(access)],
+                         [arg for arg in after.create_argv if arg.startswith(access)])
+
     def test_image_change_is_a_running_base_configuration_mismatch(self):
         with mock.patch.object(runtime, "IMAGE", "localhost/agent-box:old"):
             old_spec = runtime.workspace_container_spec(self.workspace, [], self.script_dir, self.config)
@@ -928,6 +938,57 @@ class WorkspaceContainerLifecycleTests(unittest.TestCase):
              mock.patch.object(runtime, "cleanup_workspace_container_if_idle"):
             self.assertEqual(runtime.launch_in_workspace_container(self.spec, self.workspace, ["mutating-command"], []), 125)
         popen.assert_called_once()
+
+    def test_clipboard_proxy_preserves_admission_barrier_and_closes_on_failure(self):
+        """The PTY relay starts after workload admission and is owned on every exit path."""
+        from contextlib import contextmanager
+        for fail in (False, True):
+            events, held = [], []
+            process = mock.Mock()
+            process.poll.return_value = None
+            def wait():
+                self.assertFalse(held)
+                events.append("wait")
+                return 0
+            process.wait.side_effect = wait
+            @contextmanager
+            def lock(_workspace):
+                held.append(True)
+                try:
+                    yield
+                finally:
+                    held.pop()
+            def start(*args, **kwargs):
+                self.assertTrue(held)
+                events.append("start")
+                return process
+            @contextmanager
+            def launcher(name):
+                self.assertEqual(name, self.spec.name)
+                try:
+                    yield start
+                finally:
+                    events.append("close")
+            def ready(_name):
+                self.assertTrue(held)
+                events.append("ready")
+                if fail:
+                    raise OSError("admission failed")
+                return events.count("ready") == 2
+            with self.subTest(fail=fail), \
+                 mock.patch.object(runtime, "workspace_transition_lock", side_effect=lock), \
+                 mock.patch.object(runtime, "ensure_workspace_container"), \
+                 mock.patch.object(runtime.clipboard, "launcher", side_effect=launcher), \
+                 mock.patch.object(runtime, "container_has_workloads", side_effect=ready), \
+                 mock.patch.object(runtime, "cleanup_workspace_container_if_idle"):
+                if fail:
+                    with self.assertRaisesRegex(OSError, "admission failed"):
+                        runtime.launch_in_workspace_container(self.spec, self.workspace, ["codex"], [], clipboard_images=True)
+                    self.assertEqual(events, ["start", "ready", "close"])
+                else:
+                    self.assertEqual(runtime.launch_in_workspace_container(
+                        self.spec, self.workspace, ["codex"], [], clipboard_images=True), 0)
+                    self.assertEqual(events, ["start", "ready", "ready", "wait", "close"])
 
 
 if __name__ == "__main__":

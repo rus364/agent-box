@@ -32,7 +32,7 @@ from pathlib import Path
 import tomllib
 import urllib.parse
 
-from . import personal_browser
+from . import personal_browser, clipboard
 from . import channel as channel_module
 from . import claude_settings
 from . import notify as notify_module
@@ -2863,43 +2863,44 @@ def cleanup_workspace_container_if_idle(name: str) -> None:
 
 def launch_in_workspace_container(
     spec: WorkspaceContainerSpec, workspace: Workspace, command: list[str], extra_env: list[str],
-    process_env: dict[str, str] | None = None,
+    process_env: dict[str, str] | None = None, *, clipboard_images: bool = False,
 ) -> int:
     """Start one exec under the transition lock, then clean up after it exits."""
-    with workspace_transition_lock(workspace):
-        host_k3s.verify(spec.creation_config, spec.runtime_state.root)
-        if not spec.admitted_id:
-            confirm_k3s(spec)
-        ensure_workspace_container(spec)
-        host_k3s.record_box(spec.creation_config, spec.runtime_state.root)
-        if spec.admitted_id and spec.creation_config.box.links.enabled:
-            try:
-                links.reattach(spec.runtime_state.root.name, spec.name)
-            except (OSError, ValueError, subprocess.SubprocessError) as exc:
-                raise AgentBoxError(str(exc)) from exc
-        elif not spec.admitted_id and spec.creation_config.box.links.enabled:
-            try:
-                links.ensure(spec.runtime_state.root.name, spec.name, spec.creation_config.box.links,
-                             host_network=spec.creation_config.box.network.mode == "host")
-            except (OSError, ValueError, subprocess.SubprocessError) as exc:
-                raise AgentBoxError(str(exc)) from exc
-        # Only now does the box match this launch: a launch refused for
-        # mounting differently must not rewrite a running box's logins.
-        for problem in [*registries.sync(spec.creation_config, spec.runtime_state.root.name),
-                        *kubeconfigs.sync(spec.creation_config, spec.runtime_state.root.name,
-                                          k3s_config=k3s.kubeconfig_path(k3s_state_dir(spec.runtime_state))
-                                          if spec.creation_config.box.k3s.enabled else None),
-                        *cloud.sync(spec.creation_config, spec.runtime_state.root.name)]:
-            warn(problem)
-        process = subprocess.Popen(exec_argv(spec.name, workspace, command, extra_env), env=process_env)
-        # The keeper takes this same advisory lock before it makes its final
-        # idle-to-exit decision. Holding it until a real non-keeper process is
-        # visible makes admission and shutdown mutually exclusive.
-        while process.poll() is None:
-            if container_has_workloads(spec.name) is True:
-                break
-            time.sleep(0.01)
-    rc = process.wait()
+    with clipboard.launcher(spec.name if clipboard_images else "") as start:
+        with workspace_transition_lock(workspace):
+            host_k3s.verify(spec.creation_config, spec.runtime_state.root)
+            if not spec.admitted_id:
+                confirm_k3s(spec)
+            ensure_workspace_container(spec)
+            host_k3s.record_box(spec.creation_config, spec.runtime_state.root)
+            if spec.admitted_id and spec.creation_config.box.links.enabled:
+                try:
+                    links.reattach(spec.runtime_state.root.name, spec.name)
+                except (OSError, ValueError, subprocess.SubprocessError) as exc:
+                    raise AgentBoxError(str(exc)) from exc
+            elif not spec.admitted_id and spec.creation_config.box.links.enabled:
+                try:
+                    links.ensure(spec.runtime_state.root.name, spec.name, spec.creation_config.box.links,
+                                 host_network=spec.creation_config.box.network.mode == "host")
+                except (OSError, ValueError, subprocess.SubprocessError) as exc:
+                    raise AgentBoxError(str(exc)) from exc
+            # Only now does the box match this launch: a launch refused for
+            # mounting differently must not rewrite a running box's logins.
+            for problem in [*registries.sync(spec.creation_config, spec.runtime_state.root.name),
+                            *kubeconfigs.sync(spec.creation_config, spec.runtime_state.root.name,
+                                              k3s_config=k3s.kubeconfig_path(k3s_state_dir(spec.runtime_state))
+                                              if spec.creation_config.box.k3s.enabled else None),
+                            *cloud.sync(spec.creation_config, spec.runtime_state.root.name)]:
+                warn(problem)
+            process = start(exec_argv(spec.name, workspace, command, extra_env), env=process_env)
+            # The keeper takes this same advisory lock before it makes its final
+            # idle-to-exit decision. Holding it until a real non-keeper process is
+            # visible makes admission and shutdown mutually exclusive.
+            while process.poll() is None:
+                if container_has_workloads(spec.name) is True:
+                    break
+                time.sleep(0.01)
+        rc = process.wait()
     try:
         with workspace_transition_lock(workspace):
             cleanup_workspace_container_if_idle(spec.name)
@@ -3373,7 +3374,10 @@ def runtime_main(
         if session is not None:
             announce_existing_sessions(spec.name)
             command = session.wrap(command)
-        rc = launch_in_workspace_container(spec, workspace, command, invocation, process_env)
+        bridge = (config.host.clipboard_images and not inside_box()
+                  and remote_control_invocation(agent, rest))
+        rc = launch_in_workspace_container(spec, workspace, command, invocation, process_env,
+                                           **({"clipboard_images": True} if bridge else {}))
         if session is not None:
             rc = session.finish(spec.name, rc)
     except BaseException as exc:
@@ -3439,15 +3443,18 @@ def attach_main(args: list[str], workspace_root: str = "") -> int:
     # terminal that client is a ghost: conmon keeps its pty open, so it never
     # reads EOF and would otherwise keep the session to itself forever.
     command = tmux_argv("attach-session", "-d", "-t", session)
-    with workspace_transition_lock(workspace):
-        try:
-            links.reattach(workspace_runtime_state(workspace).root.name, name)
-        except (OSError, ValueError, subprocess.SubprocessError) as exc:
-            raise AgentBoxError(str(exc)) from exc
-        # The box is holding a live tmux server, so unlike a first launch
-        # there is no idle window here for the keeper to shut down.
-        process = subprocess.Popen(exec_argv(name, workspace, command, []))
-    rc = process.wait()
+    bridge = (not inside_box() and session.startswith(("claude-", "codex-"))
+              and load_config().host.clipboard_images)
+    with clipboard.launcher(name if bridge else "") as start:
+        with workspace_transition_lock(workspace):
+            try:
+                links.reattach(workspace_runtime_state(workspace).root.name, name)
+            except (OSError, ValueError, subprocess.SubprocessError) as exc:
+                raise AgentBoxError(str(exc)) from exc
+            # The box is holding a live tmux server, so unlike a first launch
+            # there is no idle window here for the keeper to shut down.
+            process = start(exec_argv(name, workspace, command, []))
+        rc = process.wait()
     try:
         with workspace_transition_lock(workspace):
             cleanup_workspace_container_if_idle(name)

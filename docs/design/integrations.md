@@ -4,6 +4,29 @@ For contributors. How individual integrations are wired, the evidence behind
 their limits, and how to develop and test agent-box itself. User behaviour is
 on the [integration pages](../integrations/README.md).
 
+## Clipboard images
+
+`clipboard.launcher` substitutes a host PTY for interactive Podman exec only
+after the global opt-in. Exec creation and workload readiness remain inside the
+workspace transition lock; the relay runs after admission. Attach uses the same
+relay. The disabled route yields the original `subprocess.Popen`; host mode and
+non-interactive commands never enter the relay.
+
+Only host stdin can trigger a read. `InputFilter` tracks bracketed paste across
+reads and idle flushes, so pasted control characters cannot request clipboard
+data. A gesture starts a bounded PNG reader, then streams bytes over a separate
+non-TTY `podman exec -i` into a locked, private container store. No socket or
+display mount gives container code access to the host clipboard. Store limits
+cover all clients, and detach cannot invalidate a pending image. The sender
+supplies the small storage script so existing immutable runtimes need no edits.
+
+Delivery uses each CLI's normal bracketed-path input. Codex's
+[`handle_paste_image_path`](https://github.com/openai/codex/blob/rust-v0.168.0/codex-rs/tui/src/bottom_pane/chat_composer.rs)
+loads dimensions and attaches the image. Isolated installed-CLI probes also
+recognized a synthetic PNG in Codex 0.168.0 and Claude Code 2.1.322. This proves
+composer recognition, not desktop/Podman integration or provider delivery.
+The [user page](../integrations/clipboard.md) records that acceptance boundary.
+
 ## Credential copies
 
 Git, `gh` and `glab` configuration, registry logins, kubeconfigs and cloud CLI

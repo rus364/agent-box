@@ -16,6 +16,7 @@ what it exposes and what it costs.
 | [Web links and CLI callbacks](links.md) | host access off | Display CLI links; optionally route localhost callbacks through the host and SSH/Coder |
 | [k3s cluster](k3s.md) | off | A per-project Kubernetes cluster in a rootless sidecar next to the box |
 | [Host audio](audio.md) | off | The host microphone and speakers in the box, e.g. for Claude Code `/voice` |
+| [Clipboard images](clipboard.md) | off | Explicit Ctrl+V PNG paste into container Codex and Claude terminals |
 | [Telegram](telegram.md) | off | Anthropic's official channel for control, plus one-way notifications |
 | [Remote Control](remote-control.md) | off | Native Claude/Codex remote access for new interactive sessions |
 | [Git and GitHub](git.md) | identity on, credentials off | What of your Git and GitHub setup reaches a session |
