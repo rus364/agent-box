@@ -1,11 +1,10 @@
 # Clipboard images
 
-Enable **Host → Clipboard images** in `agent-box config` to paste
-PNG images into interactive container Codex and Claude sessions with **Ctrl+V**.
-The global setting is `host.clipboard_images`; it defaults to `false` and cannot
-be enabled by a project or inherited through a session snapshot. No launch flag
-or container rebuild is required. New launches and `agent-box attach` read the
-host choice; an already attached terminal keeps its launch-time choice.
+Paste PNG images into interactive container Codex and Claude sessions with
+**Ctrl+V**. The bridge is built in: no setting, enable step, launch flag or
+container rebuild is required. New launches and `agent-box attach` use it
+automatically; an already attached terminal needs reattaching to use updated
+host launcher behavior.
 
 The host needs `wl-paste` (the `wl-clipboard` package) on Wayland, or `xclip` on
 X11. agent-box does not install them. Copy an image, focus the agent's prompt and
@@ -18,19 +17,20 @@ formats need a source application that also offers PNG.
 
 - Interactive Codex and Claude launches, including external API sessions, work
   with tmux or `--no-tmux`. Reattaching a `codex-*` or `claude-*` session enables
-  the bridge according to the current global choice. Use it while the agent's
-  prompt has focus, rather than a shell, editor or tmux scroll mode.
+  the bridge automatically. Use it while the agent's prompt has focus, rather
+  than a shell, editor or tmux scroll mode.
 - Raw Ctrl+V, CSI-u Ctrl+V and xterm modifyOtherKeys Ctrl+V are recognized.
   Ctrl+V inside bracketed text paste is forwarded as text, including split paste
   delimiters. Other keys pass through. A terminal binding that consumes Ctrl+V
   must be changed in that terminal before the bridge can receive it. Extremely
   delayed enhanced key sequences are forwarded rather than intercepted.
 - A missing tool, unavailable desktop, non-PNG clipboard, timeout or full store
-  prints a diagnostic and forwards the original key. The session continues;
-  ordinary text paste remains the terminal's and CLI's responsibility.
+  prints a diagnostic only when Ctrl+V is pressed and forwards the original key.
+  Starting or attaching a session does not probe the clipboard. The session
+  continues; ordinary text paste remains the terminal's and CLI's responsibility.
 - Shell sessions, batch commands, pipes and redirects do not use the bridge.
-  With the setting off, launch and attach retain their direct Podman path.
-  `--host` uses each CLI's native clipboard support regardless of this setting.
+  Nested launches inside a box do not add a bridge. `--host` uses each CLI's
+  native clipboard support.
 - The clipboard belongs to the desktop running the host launcher. SSH sessions
   are refused even with forwarded display variables; headless hosts have no
   desktop clipboard. A browser, phone or Remote Control client cannot invoke
@@ -73,6 +73,7 @@ not make it detachable.
 Synthetic, isolated input probes with Codex 0.168.0 and Claude Code 2.1.322
 recognized a bracketed PNG path as `[Image #1]`, without submitting a prompt or
 reading a real clipboard. Tests cover transfer bounds, private storage,
-configuration, launch/attach routing and native PTY input, resize and cleanup.
+the absence of a configuration switch, automatic launch/attach routing and
+native PTY input, resize and cleanup.
 Desktop clipboard → Podman → provider delivery still needs live acceptance in
 the intended environment; image support also depends on the selected model.

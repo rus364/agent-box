@@ -2863,10 +2863,11 @@ def cleanup_workspace_container_if_idle(name: str) -> None:
 
 def launch_in_workspace_container(
     spec: WorkspaceContainerSpec, workspace: Workspace, command: list[str], extra_env: list[str],
-    process_env: dict[str, str] | None = None, *, clipboard_images: bool = False,
+    process_env: dict[str, str] | None = None, *, clipboard_input: bool = False,
 ) -> int:
     """Start one exec under the transition lock, then clean up after it exits."""
-    with clipboard.launcher(spec.name if clipboard_images else "") as start:
+    # Per-invocation terminal eligibility, never a saved configuration choice.
+    with clipboard.launcher(spec.name if clipboard_input else "") as start:
         with workspace_transition_lock(workspace):
             host_k3s.verify(spec.creation_config, spec.runtime_state.root)
             if not spec.admitted_id:
@@ -3374,10 +3375,9 @@ def runtime_main(
         if session is not None:
             announce_existing_sessions(spec.name)
             command = session.wrap(command)
-        bridge = (config.host.clipboard_images and not inside_box()
-                  and remote_control_invocation(agent, rest))
+        bridge = not inside_box() and remote_control_invocation(agent, rest)
         rc = launch_in_workspace_container(spec, workspace, command, invocation, process_env,
-                                           **({"clipboard_images": True} if bridge else {}))
+                                           **({"clipboard_input": True} if bridge else {}))
         if session is not None:
             rc = session.finish(spec.name, rc)
     except BaseException as exc:
@@ -3443,8 +3443,7 @@ def attach_main(args: list[str], workspace_root: str = "") -> int:
     # terminal that client is a ghost: conmon keeps its pty open, so it never
     # reads EOF and would otherwise keep the session to itself forever.
     command = tmux_argv("attach-session", "-d", "-t", session)
-    bridge = (not inside_box() and session.startswith(("claude-", "codex-"))
-              and load_config().host.clipboard_images)
+    bridge = not inside_box() and session.startswith(("claude-", "codex-"))
     with clipboard.launcher(name if bridge else "") as start:
         with workspace_transition_lock(workspace):
             try:

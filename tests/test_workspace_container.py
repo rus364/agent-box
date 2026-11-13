@@ -839,16 +839,6 @@ class WorkspaceContainerLifecycleTests(unittest.TestCase):
             with self.assertRaisesRegex(AgentBoxError, "incompatible container-level configuration"):
                 runtime.ensure_workspace_container(with_audio)
 
-    def test_clipboard_opt_in_adds_no_mount_environment_or_container_identity(self):
-        """Host gestures must not grant a box access to a display or clipboard endpoint."""
-        before = runtime.workspace_container_spec(self.workspace, [], self.script_dir, self.config)
-        self.config.host.clipboard_images = True
-        after = runtime.workspace_container_spec(self.workspace, [], self.script_dir, self.config)
-        self.assertEqual(before.base_config_hash, after.base_config_hash)
-        access = ("--mount=", "--env=", "--volume=", "--device=")
-        self.assertEqual([arg for arg in before.create_argv if arg.startswith(access)],
-                         [arg for arg in after.create_argv if arg.startswith(access)])
-
     def test_image_change_is_a_running_base_configuration_mismatch(self):
         with mock.patch.object(runtime, "IMAGE", "localhost/agent-box:old"):
             old_spec = runtime.workspace_container_spec(self.workspace, [], self.script_dir, self.config)
@@ -983,11 +973,11 @@ class WorkspaceContainerLifecycleTests(unittest.TestCase):
                  mock.patch.object(runtime, "cleanup_workspace_container_if_idle"):
                 if fail:
                     with self.assertRaisesRegex(OSError, "admission failed"):
-                        runtime.launch_in_workspace_container(self.spec, self.workspace, ["codex"], [], clipboard_images=True)
+                        runtime.launch_in_workspace_container(self.spec, self.workspace, ["codex"], [], clipboard_input=True)
                     self.assertEqual(events, ["start", "ready", "close"])
                 else:
                     self.assertEqual(runtime.launch_in_workspace_container(
-                        self.spec, self.workspace, ["codex"], [], clipboard_images=True), 0)
+                        self.spec, self.workspace, ["codex"], [], clipboard_input=True), 0)
                     self.assertEqual(events, ["start", "ready", "ready", "wait", "close"])
 
 

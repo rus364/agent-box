@@ -1,4 +1,8 @@
-"""Explicit terminal gestures bridge PNG bytes, never a clipboard capability."""
+"""Built-in terminal paste bridges PNG bytes only after an explicit host key.
+
+This needs no access opt-in because container code gains no clipboard endpoint;
+the user's Ctrl+V is the only authority to read and transfer an image.
+"""
 from __future__ import annotations
 
 import errno
@@ -363,7 +367,7 @@ class TerminalProxy:
 
 @contextmanager
 def launcher(container=""):
-    """The disabled route is exactly the existing subprocess launch."""
+    """Ineligible invocations keep the original subprocess launch."""
     if not container:
         yield subprocess.Popen
         return

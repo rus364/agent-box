@@ -16,10 +16,11 @@ from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from unittest import mock
 
-from agent_box import clipboard, config, project_config, runtime
+from agent_box import clipboard, config, config_menu, project_config, runtime
 from agent_box.errors import AgentBoxError
 from agent_box.launch_options import LaunchOptions
 from agent_box.workspace import Workspace
+from test_external_config import external_config
 from test_runtime import IsolatedRuntimeTest
 
 PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aX1sAAAAASUVORK5CYII=")
@@ -84,13 +85,23 @@ class ClipboardTransferTests(unittest.TestCase):
         self.assertEqual(exchange.call_args.args[0], ["xclip", "-selection", "clipboard", "-out", "-target", "image/png"])
 
     def test_ssh_headless_and_missing_tools_do_not_read_clipboard(self):
-        for environment in ({}, {"DISPLAY": ":1", "SSH_CONNECTION": "remote"},
-                            {"WAYLAND_DISPLAY": "wayland-0", "SSH_TTY": "/dev/pts/2"}, {"DISPLAY": ":1"}):
+        """Unavailable desktops report only on Ctrl+V and preserve the original key."""
+        for environment, message in (({}, "needs a Wayland or X11 desktop"),
+                ({"DISPLAY": ":1", "SSH_CONNECTION": "remote"}, "SSH clipboard access is disabled"),
+                ({"WAYLAND_DISPLAY": "wayland-0", "SSH_TTY": "/dev/pts/2"}, "SSH clipboard access is disabled"),
+                ({"DISPLAY": ":1"}, "needs xclip installed on the host"),
+                ({"WAYLAND_DISPLAY": "wayland-0"}, "needs wl-paste installed on the host")):
             with self.subTest(environment=environment), mock.patch.dict(os.environ, environment, clear=True), \
-                 mock.patch.object(clipboard.shutil, "which", return_value=None), \
+                 mock.patch.object(clipboard.shutil, "which", return_value=None) as which, \
                  mock.patch.object(clipboard, "exchange") as exchange:
-                with self.assertRaises(clipboard.ClipboardError):
-                    clipboard.read_image()
+                diagnostic = mock.Mock()
+                parser = clipboard.InputFilter(clipboard.read_image, diagnostic)
+                self.assertEqual(parser.feed(b"ordinary input"), b"ordinary input")
+                which.assert_not_called()
+                diagnostic.assert_not_called()
+                self.assertEqual(parser.feed(b"\x16"), b"\x16")
+                diagnostic.assert_called_once()
+                self.assertIn(message, diagnostic.call_args.args[0])
                 exchange.assert_not_called()
 
     def test_non_png_and_excessive_dimensions_are_not_transferred(self):
@@ -214,15 +225,18 @@ class ClipboardStoreTests(unittest.TestCase):
 
 
 class ClipboardConfigurationTests(unittest.TestCase):
-    def test_host_opt_in_roundtrips_without_granting_project_or_snapshot_access(self):
-        """A repository and nested session must never acquire a desktop capability."""
+    def test_clipboard_has_no_saved_setting_menu_or_session_capability(self):
+        """Explicit terminal input needs neither a global choice nor a project grant."""
         settings = config.Config()
-        self.assertFalse(settings.host.clipboard_images)
-        settings.host.clipboard_images = True
+        self.assertFalse(hasattr(settings.host, "clipboard_images"))
+        self.assertNotIn("clipboard_images", settings.host.to_dict())
+        self.assertNotIn("clipboard_images", config_menu.menu_keys(settings.host.to_dict(), ("host",)))
+        self.assertNotIn("host.clipboard_images", config_menu.HELP)
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "config.json"
             config.save_config(settings, path)
-            self.assertTrue(config.load_config(path).host.clipboard_images)
+            self.assertNotIn("clipboard_images", path.read_text())
+            self.assertFalse(hasattr(config.load_config(path).host, "clipboard_images"))
             with self.assertRaises(AgentBoxError):
                 project_config.validate({"host": {"clipboard_images": True}}, path)
             runtime.sync_tracker_runtime(settings, Path(temp) / "snapshot", policy=True)
@@ -230,41 +244,59 @@ class ClipboardConfigurationTests(unittest.TestCase):
             self.assertNotIn("host", snapshot)
             self.assertNotIn("clipboard_images", json.dumps(snapshot))
 
-    def test_disabled_launcher_is_the_original_popen_and_opens_no_pty(self):
+    def test_ineligible_launcher_is_the_original_popen_and_opens_no_pty(self):
+        """Shells and noninteractive commands retain their direct process behavior."""
         with mock.patch.object(clipboard, "TerminalProxy") as proxy:
             with clipboard.launcher() as start:
                 self.assertIs(start, subprocess.Popen)
             proxy.assert_not_called()
 
+    def test_eligible_launcher_does_not_probe_the_desktop_on_start(self):
+        """Automatic routing must not require a clipboard tool until the user pastes."""
+        with mock.patch.object(clipboard, "TerminalProxy") as proxy, \
+             mock.patch.object(clipboard, "read_image") as read, \
+             mock.patch.object(clipboard.shutil, "which") as which:
+            with clipboard.launcher("box") as start:
+                start(["podman", "exec", "box", "codex"])
+            proxy.assert_called_once_with("box")
+            proxy.return_value.close.assert_called_once_with()
+            read.assert_not_called()
+            which.assert_not_called()
+
 
 class ClipboardRoutingTests(IsolatedRuntimeTest):
-    def test_launch_routes_only_opted_in_interactive_agents_including_no_tmux(self):
+    def test_launch_automatically_bridges_interactive_agents_including_no_tmux(self):
         """The bridge is invocation policy, independent of the detachable wrapper."""
         root = Path(self._state_tmp.name) / "project"
         root.mkdir()
         workspace = Workspace(root, root)
-        cases = [(["codex"], True, True), (["claude"], True, True), (["codex"], False, False),
-                 (["codex", "exec", "hi"], True, False), (["claude", "-p", "hi"], True, False),
-                 (["claude", "--background"], True, False), (["shell"], True, False)]
-        for args, enabled, expected in cases:
-            for tmux, terminal in ((False, True), (True, True), (False, False)):
-                with self.subTest(args=args, enabled=enabled, tmux=tmux, terminal=terminal), ExitStack() as stack:
-                    settings = config.Config()
-                    settings.host.clipboard_images = enabled
+        cases = [(["codex"], True, ""), (["claude"], True, ""),
+                 (["codex", "exec", "hi"], False, ""), (["claude", "-p", "hi"], False, ""),
+                 (["claude", "--background"], False, ""), (["shell"], False, ""),
+                 (["codex", "--model", "external-small"], True, "deepseek"),
+                 (["claude", "--model", "external-small"], True, "deepseek")]
+        for args, expected, api in cases:
+            for tmux, stdin, stdout, nested in ((False, True, True, False), (True, True, True, False),
+                    (False, False, True, False), (False, True, False, False), (True, True, True, True)):
+                with self.subTest(args=args, api=api, tmux=tmux, stdin=stdin, stdout=stdout, nested=nested), ExitStack() as stack:
+                    settings = external_config() if api else config.Config()
                     for name, value in (("resolve_workspace", workspace), ("load_config", settings),
                                         ("ensure_workspace_image", "sha256:test"), ("claude_channel_args", ([], [])),
-                                        ("codex_command", ["codex"]), ("tmux_enabled", tmux)):
+                                        ("codex_command", ["codex"]), ("tmux_enabled", tmux), ("inside_box", nested),
+                                        ("nested_launch_options", (LaunchOptions(tmux=tmux), [])),
+                                        ("withhold_from_nested_box", [])):
                         stack.enter_context(mock.patch.object(runtime, name, return_value=value))
                     for name in ("ensure_state_dirs", "ensure_refresh_token", "announce_existing_sessions"):
                         stack.enter_context(mock.patch.object(runtime, name))
                     stack.enter_context(mock.patch.object(runtime.host_podman, "require"))
-                    stack.enter_context(mock.patch.object(runtime.sys.stdin, "isatty", return_value=terminal))
-                    stack.enter_context(mock.patch.object(runtime.sys.stdout, "isatty", return_value=terminal))
+                    stack.enter_context(mock.patch.object(runtime.sys.stdin, "isatty", return_value=stdin))
+                    stack.enter_context(mock.patch.object(runtime.sys.stdout, "isatty", return_value=stdout))
                     stack.enter_context(mock.patch.object(runtime.TmuxSession, "finish", return_value=0))
                     launch = stack.enter_context(mock.patch.object(runtime, "launch_in_workspace_container", return_value=0))
                     with self.assertRaises(SystemExit):
-                        runtime.runtime_main(args, runtime.PACKAGE_ROOT, LaunchOptions(tmux=tmux))
-                    self.assertEqual(launch.call_args.kwargs.get("clipboard_images", False), expected and terminal)
+                        runtime.runtime_main(args, runtime.PACKAGE_ROOT, LaunchOptions(tmux=tmux), api_provider=api)
+                    self.assertEqual(launch.call_args.kwargs.get("clipboard_input", False),
+                                     expected and stdin and stdout and not nested)
 
 
 class ClipboardPtyTests(unittest.TestCase):

@@ -41,7 +41,7 @@ HELP = {
     "agents": "Which agent starts, how Claude and Codex run, and which provider APIs and host variables they may use.",
     "box": "What the workspace box is built with, the k3s cluster and nested Podman storage beside it, sound, and its environment.",
     "credentials": "Host identity and credentials the box's own tools may use. Everything that exposes a credential is off by default.",
-    "host": "Host-owned notifications, clipboard images, personal desktop browser access and Claude skill links. Global only.",
+    "host": "Host-owned notifications, personal desktop browser access and Claude skill links. Global only.",
     "workflow.language": ("Engineering language, such as English or Deutsch: code comments, docstrings, documentation, commits, "
                  "pull requests and review replies. Also the tracker fallback unless Tracker language overrides it. "
                  "Empty keeps English for engineering and each task's language for the tracker. "
@@ -103,7 +103,6 @@ HELP = {
     "host.personal_browser.browser": "Choose the installed desktop browser. Auto prefers Google Chrome, then Chromium. Snap/Flatpak and remote/headless desktops are unsupported.",
     "host.personal_browser.profile": "Optional profile directory name, e.g. Default or Profile 2 (from Profile Path at chrome://version). Empty uses the browser's last-used profile. The host reads profile-selection and extension-registration metadata only; no profile data is copied or mounted.",
     "host.claude_skill_links": "Link agent-box's managed shared skills into Claude's skill directory when applying configuration.",
-    "host.clipboard_images": "Paste host PNG images with Ctrl+V in container Codex/Claude terminals, including attach and --no-tmux. Local Wayland needs wl-paste; X11 needs xclip. No text clipboard or display socket is exposed. Up to 16 MiB per image, 128 MiB/32 images per box; retained until the box is removed with default mounts. Global only; disabled over SSH. Host mode uses native clipboard support.",
     "box.tools": "Tool groups baked into the workspace image. Each group changes box identity and may make the image larger; a changed selection takes effect after the image is rebuilt.",
     "box.k3s": "Shared per-project k3s in rootless Podman for host and container sessions. Both inherit the active project choice and use one managed kubeconfig. Host mode needs local Podman and kubectl.",
     "box.k3s.enabled": "Run the cluster and select its managed kubeconfig in host and container sessions. The agent becomes cluster-admin; privileged pods reach only the sidecar, never host files. kubectl comes from the kubernetes group in boxes; install it on the host for --host. Changes need a stopped project.",
@@ -195,7 +194,7 @@ LABELS = {
     "default": "Default agent", "statusline": "Status line",
     "claude": "Claude", "codex": "Codex", "github": "GitHub", "gitlab": "GitLab", "git": "Git",
     "claude_usage": "Claude usage", "codex_usage": "Codex usage", "custom_usage": "Custom usage",
-    "command": "Custom command", "k3s": "k3s cluster", "links": "Web links", "claude_skill_links": "Claude skill links", "personal_browser": "Personal browser", "clipboard_images": "Clipboard images",
+    "command": "Custom command", "k3s": "k3s cluster", "links": "Web links", "claude_skill_links": "Claude skill links", "personal_browser": "Personal browser",
     "env": "Environment", "host_env": "Provider environment", "tools": "Image tools",
     "registries": "Container registries", "hosts": "Registry hosts", "helm_repositories": "Helm repositories",
     "url": "URL", "token": "Access token", "effort": "Reasoning effort",
@@ -343,7 +342,7 @@ MENU_GROUPS = {
         ("", ("git", "github", "gitlab", "registries", "kubernetes", "cloud")),
     ),
     ("host",): (
-        ("", ("notifications", "personal_browser", "clipboard_images", "claude_skill_links")),
+        ("", ("notifications", "personal_browser", "claude_skill_links")),
     ),
     ("workflow",): (
         ("Workflow", ("enabled",)),

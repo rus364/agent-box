@@ -83,10 +83,10 @@ over the global and project configuration and travel in the session snapshot,
 so nested launches inside the session inherit them; `agent-box config show`
 inside the session names them.
 
-To paste clipboard images into container agents, enable **Host →
-Clipboard images** in `agent-box config`, then use Ctrl+V at the prompt.
-This host-only opt-in also works with `--no-tmux`; see
-[clipboard images](integrations/clipboard.md) for dependencies and limits.
+Paste clipboard PNG images into interactive container agents with Ctrl+V at
+the prompt. This built-in feature also works with `--no-tmux` and needs no
+setting; see [clipboard images](integrations/clipboard.md) for host dependencies
+and limits.
 
 ```bash
 agent-box --reviewer claude:opus:high --review always codex
@@ -128,9 +128,9 @@ agent-box attach                 # the only session; with several, lists them to
 agent-box attach claude-31337    # a named session
 ```
 
-The optional [clipboard image bridge](integrations/clipboard.md) reads the
-current host setting on attach. Previously pasted images stay in the box across
-detach, until that container is removed.
+The [clipboard image bridge](integrations/clipboard.md) works automatically
+when attaching to Codex or Claude sessions from a host terminal. Previously
+pasted images stay in the box across detach, until that container is removed.
 
 A detached session keeps its box alive. Only real terminals are wrapped:
 pipes, redirects and CI write straight to stdout. In the box, a batch command
@@ -198,8 +198,8 @@ local Podman and runs in a separate container; disabled host browsing needs no
 Podman. The [k3s cluster](integrations/k3s.md) uses the same enabled setting and managed
 kubeconfig in both modes; host use requires local rootless Podman and kubectl.
 
-Host clipboard input stays native to each CLI; `host.clipboard_images` affects
-only container terminals.
+Host clipboard input stays native to each CLI; the automatic image bridge
+serves container terminals.
 
 Interactive host sessions run under your installed `tmux` and `bash`, with
 agent-box's own configuration and one private tmux server per project. They

@@ -1420,12 +1420,10 @@ class HostConfig:
     #: sessions see them as well.
     claude_skill_links: bool = True
     personal_browser: PersonalBrowserConfig = field(default_factory=PersonalBrowserConfig)
-    #: Only a local terminal gesture may read a host PNG; never rendered into sessions.
-    clipboard_images: bool = False
+
     def to_dict(self) -> dict[str, Any]:
         return {"notifications": self.notifications.to_dict(),
                 "personal_browser": self.personal_browser.to_dict(),
-                "clipboard_images": self.clipboard_images,
                 "claude_skill_links": self.claude_skill_links}
 
     @classmethod
@@ -1433,7 +1431,6 @@ class HostConfig:
         data = _mapping(data)
         return cls(notifications=NotificationsConfig.from_dict(data.get("notifications")),
                    personal_browser=PersonalBrowserConfig.from_dict(data.get("personal_browser")),
-                   clipboard_images=_bool(data, "clipboard_images", False),
                    claude_skill_links=_bool(data, "claude_skill_links", True))
 
 

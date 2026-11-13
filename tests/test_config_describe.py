@@ -63,6 +63,7 @@ class ConfigDescribeTests(unittest.TestCase):
             self.assertTrue(all(field["help"] for field in fields.values()))
         self.assertIn("agents.external_apis.deepseek.models.v4-pro.codex.metadata", fields)
         self.assertIn("host.claude_skill_links", fields)
+        self.assertNotIn("host.clipboard_images", fields)
         self.assertEqual(fields["tracker.project"]["help"], config_menu.help_for(("tracker", "project")))
         # Only names the user chooses share generic help; a new fixed field needs its own.
         with self.assertRaises(KeyError):

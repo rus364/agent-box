@@ -118,12 +118,10 @@ alone. The interactive menu refuses in a box.
 
 ## Defaults
 
-**Clipboard images.** **Host → Clipboard images** controls
-`host.clipboard_images` (off). It enables explicit Ctrl+V PNG transfer to
-interactive container Codex/Claude launches and attaches, including
-`--no-tmux`. It is global only and absent from rendered session snapshots;
-projects and nested launches cannot enable host clipboard access. See
-[dependencies, bounds and cleanup](integrations/clipboard.md).
+**Clipboard images.** Interactive container Codex/Claude terminals support
+Ctrl+V PNG paste automatically, including attach and `--no-tmux`. There is no
+configuration switch; only an explicit host key reads an image. See
+[host dependencies, bounds and cleanup](integrations/clipboard.md).
 
 **Container permissions.** Under **Agents → Claude** and **Agents → Codex**,
 **Bypass permissions (container)** sits near Remote Control. Both

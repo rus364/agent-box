@@ -213,10 +213,12 @@ class AttachAndStopTests(unittest.TestCase):
              mock.patch.object(runtime, "tmux_sessions", return_value=["claude-9"]), \
              mock.patch.object(runtime, "cleanup_workspace_container_if_idle"), \
              mock.patch.object(runtime.links, "reattach", side_effect=lambda *a: events.append("refresh")) as refresh, \
-             mock.patch.object(runtime.subprocess, "Popen") as popen:
+             mock.patch.object(runtime.clipboard, "launcher") as launcher:
+            popen = launcher.return_value.__enter__.return_value
             popen.return_value = mock.Mock(wait=mock.Mock(return_value=0))
             popen.side_effect = lambda *a, **k: (events.append("attach"), popen.return_value)[1]
             self.assertEqual(runtime.attach_main([]), 0)
+        launcher.assert_called_once_with(self.name)
         self.assertEqual(events, ["refresh", "attach"])
         refresh.assert_called_once_with(runtime.workspace_runtime_state(self.workspace).root.name, self.name)
         argv = popen.call_args[0][0]
@@ -233,20 +235,18 @@ class AttachAndStopTests(unittest.TestCase):
             with self.assertRaises(AgentBoxError):
                 runtime.attach_main([])
 
-    def test_attach_reads_current_host_clipboard_opt_in_only_for_agent_sessions(self):
-        """Turning off the host bridge takes effect on reattach without rewriting the box."""
-        for session, enabled, expected in (("codex-9", True, True), ("claude-9", True, True),
-                                            ("codex-9", False, False), ("shell-9", True, False)):
-            config = runtime.Config()
-            config.host.clipboard_images = enabled
+    def test_attach_automatically_bridges_agent_sessions_only_from_the_host(self):
+        """Reattach needs no saved setting and cannot grant a nested box desktop access."""
+        for session, nested, expected in (("codex-9", False, True), ("claude-9", False, True),
+                ("shell-9", False, False), ("codex-9", True, False), ("claude-9", True, False)):
             process = mock.Mock(wait=mock.Mock(return_value=0))
             @contextlib.contextmanager
             def launcher(container):
                 self.assertEqual(container, self.name if expected else "")
                 yield mock.Mock(return_value=process)
-            with self.subTest(session=session, enabled=enabled), \
-                 mock.patch.object(runtime, "inside_box", return_value=False), \
-                 mock.patch.object(runtime, "load_config", return_value=config), \
+            with self.subTest(session=session, nested=nested), \
+                 mock.patch.object(runtime, "inside_box", return_value=nested), \
+                 mock.patch.object(runtime, "load_config", return_value=runtime.Config()), \
                  mock.patch.object(runtime, "inspect_workspace_container", return_value={"State": {"Status": "running"}}), \
                  mock.patch.object(runtime, "tmux_sessions", return_value=[session]), \
                  mock.patch.object(runtime, "cleanup_workspace_container_if_idle"), \

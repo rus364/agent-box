@@ -6,11 +6,16 @@ on the [integration pages](../integrations/README.md).
 
 ## Clipboard images
 
-`clipboard.launcher` substitutes a host PTY for interactive Podman exec only
-after the global opt-in. Exec creation and workload readiness remain inside the
-workspace transition lock; the relay runs after admission. Attach uses the same
-relay. The disabled route yields the original `subprocess.Popen`; host mode and
-non-interactive commands never enter the relay.
+`clipboard.launcher` automatically substitutes a host PTY for interactive
+container Codex and Claude input, including `--no-tmux` and attach. This is an
+explicit exception to the general off-by-default access policy: only a host
+Ctrl+V authorizes a bounded PNG transfer, without granting ambient clipboard access.
+There is no saved setting or container-callable clipboard capability. The
+internal `clipboard_input` argument records invocation eligibility only.
+Exec creation and workload readiness remain inside the workspace transition
+lock; the relay runs after admission. Ineligible invocations yield the original
+`subprocess.Popen`; host mode, nested launches, shells and non-interactive
+commands do not gain a relay.
 
 Only host stdin can trigger a read. `InputFilter` tracks bracketed paste across
 reads and idle flushes, so pasted control characters cannot request clipboard

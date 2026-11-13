@@ -1,10 +1,11 @@
-# Optional integrations
+# Integrations
 
-Each integration is independent of the others, and everything that exposes a
+Each optional integration is independent of the others, and everything that exposes a
 credential or widens what an agent can reach starts off; only Git identity and
 Claude skill links are on by default. agent-box works as a plain workspace
 runtime with none of them enabled. Each page describes what you can turn on,
-what it exposes and what it costs.
+what it exposes and what it costs. Clipboard image paste is built in and reads
+only after an explicit Ctrl+V.
 
 | Integration | Default | What it is |
 | --- | --- | --- |
@@ -16,7 +17,7 @@ what it exposes and what it costs.
 | [Web links and CLI callbacks](links.md) | host access off | Display CLI links; optionally route localhost callbacks through the host and SSH/Coder |
 | [k3s cluster](k3s.md) | off | A per-project Kubernetes cluster in a rootless sidecar next to the box |
 | [Host audio](audio.md) | off | The host microphone and speakers in the box, e.g. for Claude Code `/voice` |
-| [Clipboard images](clipboard.md) | off | Explicit Ctrl+V PNG paste into container Codex and Claude terminals |
+| [Clipboard images](clipboard.md) | built in | Explicit Ctrl+V PNG paste into container Codex and Claude terminals |
 | [Telegram](telegram.md) | off | Anthropic's official channel for control, plus one-way notifications |
 | [Remote Control](remote-control.md) | off | Native Claude/Codex remote access for new interactive sessions |
 | [Git and GitHub](git.md) | identity on, credentials off | What of your Git and GitHub setup reaches a session |
@@ -25,7 +26,7 @@ what it exposes and what it costs.
 | [Cloud CLI profiles](cloud-profiles.md) | off | Chosen Yandex Cloud CLI profiles, with their sign-in |
 | [Nested Podman](../nested-podman.md) | off | Rootless Podman inside the box, for builds and containers |
 
-All of them are set in `agent-box config` and applied by it, or later by
+Configurable integrations are set in `agent-box config` and applied by it, or later by
 `agent-box config apply`. Package updates refresh configured integrations on the
 next host launch; unchanged launches do not reapply them. The settings listed
 under [project configuration](../configuration.md#project-configuration)
