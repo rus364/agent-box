@@ -86,6 +86,36 @@ class PlanSyncTests(WorkflowCase):
         self.assertEqual(result["backend"], "managed")
         self.assertEqual(run.call_count, 1)
 
+    def test_unbalanced_reserve_fallback_of_the_session_cli_syncs_on_its_native_profile(self):
+        """A reserve-skipped Codex opener must hand the Claude fallback to the profile that runs exactly that model."""
+        self.config.workflow.sync.models = [candidate("codex", "opener", "high"), candidate("claude", "opus", "high"),
+                                            candidate("codex", "later", "high")]
+        usage = {"codex": {"windows": [{"remaining": 0, "reset_at": 4102444800}]}}
+        with routing_session("claude"), \
+                patch.object(workflow, "usage_snapshot", side_effect=lambda provider, **_: usage.get(provider, {})), \
+                patch.object(workflow, "run") as run:
+            self.assertEqual(workflow.execution(self.config, "sync", 1, "1")["for_this_session"], "managed")
+            opened = self.run_workflow("sync", "1")
+            self.report.write_text("Sync: UNCHANGED\n")
+            recorded = self.run_workflow("sync", "1", "--result", str(self.report))
+        run.assert_not_called()
+        self.assertEqual((opened["status"], opened["launch"], opened["profile"]), ("NATIVE", "native", "ab-sync"))
+        self.assertEqual((opened["route"]["model"], opened["route"]["native"]), ("opus", {"claude": "ab-sync"}))
+        self.assertEqual((recorded["status"], recorded["backend"]), ("UNCHANGED", "native"))
+
+    def test_unbalanced_reserve_fallback_sync_stays_managed_when_the_session_profile_runs_another_model(self):
+        """The profile pins the CLI's first model; a later one chosen past its reserve must run as selected."""
+        exhausted = {"windows": [{"remaining": 0, "reset_at": 4102444800}]}
+        self.config.workflow.sync.models = [candidate("codex", "opener", "high"), candidate("claude", "opus", "high"),
+                                            candidate("claude", "sonnet", "high")]
+        usage = {"codex": exhausted, "claude": {"windows": [{**exhausted["windows"][0], "models": ["opus"]}]}}
+        with routing_session("claude"), \
+                patch.object(workflow, "usage_snapshot", side_effect=lambda provider, **_: usage.get(provider, {})), \
+                patch.object(workflow, "run", return_value="Sync: UNCHANGED\n") as run:
+            result = self.run_workflow("sync", "1")
+        self.assertEqual((result["route"]["model"], result["backend"], result["status"]), ("sonnet", "managed", "UNCHANGED"))
+        run.assert_called_once()
+
     def test_managed_retry_records_a_sole_weighted_sync_after_required_reconciliation(self):
         """A failed native spawn can run managed only after recovery, preserving the original automatic event."""
         self.config.workflow.balance = BalanceConfig("weighted", {"claude": 1})
@@ -212,7 +242,7 @@ class PlanSyncTests(WorkflowCase):
                     self.report.write_text(report)
                     result = self.run_workflow("sync", "1", "--result", str(self.report))
                 else:
-                    result = self.run_workflow("sync", "1")
+                    result = self.run_workflow("sync", "1", "--managed")
                 self.assertEqual(execute.call_count, 0 if native else 1)
                 self.assertEqual(result["status"], "ERROR")
                 self.assertEqual(result["report"], report)
@@ -235,7 +265,7 @@ class PlanSyncTests(WorkflowCase):
                 patch.object(workflow, "execute", return_value={
                     "report": "No drift.\nSync: UNCHANGED\n", "route": {"model": "gpt-sync"},
                     "diagnostics": {"usage": None}}) as execute:
-            result = self.run_workflow("sync", "1")
+            result = self.run_workflow("sync", "1", "--managed")
         self.assertEqual(result["status"], "UNCHANGED")
         self.assertEqual(choose.call_args.args[1], "sync")
         self.assertNotIn(self.task.description, execute.call_args.args[4])
@@ -245,7 +275,7 @@ class PlanSyncTests(WorkflowCase):
         with patch.object(workflow, "resolve", REAL_RESOLVE), patch.object(workflow, "candidates", return_value={}), \
                 patch.object(workflow, "execute", return_value={
                     "report": "Sync: UNCHANGED\n", "route": {}, "diagnostics": {"usage": None}}) as execute:
-            self.run_workflow("sync", task_id)
+            self.run_workflow("sync", task_id, "--managed")
         return execute.call_args.args[4]
 
     def test_subtask_assignment_names_its_parent_branch_instead_of_the_default_branch(self):
@@ -590,7 +620,7 @@ class PlanSyncTests(WorkflowCase):
                     self.run_workflow("sync", "1", "--native")
                     self.report.write_text(report)
                 with self.assertRaisesRegex(AgentBoxError, "Invalid Plan sync report.*original report retained"):
-                    self.run_workflow("sync", "1", *(["--result", str(self.report)] if native else []))
+                    self.run_workflow("sync", "1", *(["--result", str(self.report)] if native else ["--managed"]))
                 saved = plan_sync.last_result(self.root, self.task)
                 self.assertEqual((saved["status"], saved["report"]), ("ERROR", report))
                 self.assertIn("missing standalone Sync line", saved["reason"])
@@ -617,7 +647,7 @@ class PlanSyncTests(WorkflowCase):
         with patch.object(workflow, "candidates", return_value={}), \
                 patch.object(workflow, "execute", side_effect=AgentBoxError("lost response")):
             with self.assertRaisesRegex(AgentBoxError, "writes may have completed"):
-                self.run_workflow("sync", "1")
+                self.run_workflow("sync", "1", "--managed")
         self.assertEqual(plan_sync.last_result(self.root, self.task)["status"], "ERROR")
 
     def test_stale_native_result_cannot_close_a_changed_source(self):

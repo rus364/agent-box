@@ -179,13 +179,13 @@ class GeneratedPromptTests(WorkflowCase):
     def sync_prompt(self):
         with patch.object(workflow, "execute", return_value={"report": "Sync: UNCHANGED\n", "route": {},
                                                            "diagnostics": {"usage": None}}) as execute:
-            self.run_workflow("sync", "1")
+            self.run_workflow("sync", "1", "--managed")
         return execute.call_args.args[4]
 
     def worker_prompt(self):
         with patch.object(workflow, "execute", return_value={"report": "## Done\n", "route": {}, "failures": [],
                                                            "diagnostics": {"usage": None}}) as execute:
-            self.run_workflow("delegate", "1", "--role", "worker", "--brief", str(self.review_brief))
+            self.run_workflow("delegate", "1", "--role", "worker", "--brief", str(self.review_brief), "--managed")
         return execute.call_args.args[4]
 
     def test_plan_sync_names_the_working_language_and_an_empty_value_names_none(self):
@@ -254,7 +254,7 @@ class GeneratedPromptTests(WorkflowCase):
         workflow.gw.git(self.root, "add", ".")
         workflow.gw.git(self.root, "commit", "-qm", "change")
         with patch.object(workflow, "run", side_effect=managed_runner(provider)):
-            self.run_workflow("review", "1")
+            self.run_workflow("review", "1", "--managed")
         self.assertIn("Working language: Français.", seen["prompt"])
 
     def test_adoption_audit_notes_name_the_working_language_and_empty_keeps_todays_notes(self):

@@ -1655,7 +1655,7 @@ def parser():
             "resume": "Resume existing task branches; refuse lost work instead of recreating it from the base",
             "sync": "Synchronize live tracker tasks with a separate agent; repository is read-only",
             "inspect": "Read branch, acceptance availability, review budget and next step; works before begin or with uncommitted files",
-            "delegate": "Run a worker or scout and print its Markdown answer, or return a native handoff for a balanced pick; "
+            "delegate": "Run a worker or scout and print its Markdown answer, or return a native handoff when the session's profile runs the pick; "
                         "records nothing. A worker needs the task branch",
             "review": "Apply review policy to the clean task scope and run a required review on the first available "
                       "reviewer candidate; --native writes the input for a native reviewer, --result records its answer",
@@ -1890,7 +1890,9 @@ def execution(config, role, tier, task_id, authors=None):
     A reviewer order that needs the code's authors is not guessed: without
     them inspect names the rerun instead of a route. Weights that can change
     the opener defer native versus managed to launch; inspection never reads
-    usage or allocation counters.
+    usage or allocation counters, so a route reported managed here can still
+    hand a reserve fallback to the session's profile at launch
+    (launch_native_route).
     """
     from .speed import native_limitation
     path, models = config.workflow.models_for(role, tier, authors or ())
@@ -1975,19 +1977,24 @@ def require_native_reserve(config, route, candidate):
                             f"{config.reserve_percent}% usage reserve; run {route['managed']}")
 
 
-def balanced_native_route(config, role, tier, task_id, selected, authors=None):
-    """Use the consumed pick natively only when the session's profile matches it.
+def launch_native_route(config, role, tier, task_id, selected, authors=None):
+    """Hand the launch-time pick to the session's profile when it runs exactly that candidate.
 
-    Reserve filtering can select a later model of the same CLI; spawning its
-    first-model profile would discard the selection and bypass that reserve.
+    Balancing and reserve filtering both choose at launch, so a pick of the
+    session CLI may run natively on any route. Limiting this to balanced routes
+    ran a reserve fallback as a managed copy of the model the session's own
+    profile runs. The exact match stays: reserve filtering can also select a
+    later model of the same CLI, and spawning the first-model profile would
+    discard that selection and bypass the reserve.
     """
-    route = execution(config, role, tier, task_id, authors)
-    if not route.get("balanced") or session_provider() != selected["provider"]:
+    if session_provider() != selected["provider"]:
         return None
     profile = native_profile(config, role, tier, selected)
-    if profile:
-        return {**route, **selected, "native": {selected["provider"]: profile}, "for_this_session": "native"}
-    return None
+    if not profile:
+        return None
+    route = execution(config, role, tier, task_id, authors)
+    route.pop("native_limitation", None)
+    return {**route, **selected, "native": {selected["provider"]: profile}, "for_this_session": "native"}
 
 
 def model_native_route(config, role, tier, selected, managed, provider=None):
@@ -2077,7 +2084,7 @@ def delegate(args, root, adapter, config):
         require_native_reserve(config.workflow, route, models[0])
     else:
         selected = selected or candidates(launch_config, args.role, tier)
-        route = None if args.managed else balanced_native_route(launch_config, args.role, tier, task.id, selected)
+        route = None if args.managed else launch_native_route(launch_config, args.role, tier, task.id, selected)
     if route:
         artifact = text_delivery.publish(prompt, config)
         return {"task": task.id, "role": args.role, "route": route, "input": artifact,
@@ -2195,7 +2202,7 @@ def review(args, root, binding, adapter, config, task, parent, tasks, base, fing
                             f"rerun workflow review {task.id} {AUTHOR_FORM}")
     require_review_budget(task, read_review_budget(root, binding, task, limit))
     selected = candidates(config, "reviewer", tier, authors=authors or ())
-    route = None if args.managed else balanced_native_route(config, "reviewer", tier, task.id, selected, authors)
+    route = None if args.managed else launch_native_route(config, "reviewer", tier, task.id, selected, authors)
     if route:
         expected = {key: selected[key] for key in ("provider", "model", "effort")}
         expected.update(profile=route["native"][selected["provider"]], managed=route["managed"])

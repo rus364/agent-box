@@ -38,8 +38,8 @@ class DelegateCommandTests(WorkflowCase):
         usage.start()
         self.addCleanup(usage.stop)
 
-    def delegate(self, role, brief=None):
-        return self.run_workflow("delegate", "1", "--role", role, "--brief", str(brief or self.review_brief))
+    def delegate(self, role, *flags, brief=None):
+        return self.run_workflow("delegate", "1", "--role", role, "--brief", str(brief or self.review_brief), *flags)
 
     def test_one_launch_model_runs_workers_and_scouts_managed_even_with_empty_lists(self):
         """An explicit choice supplies the candidate without requiring saved models or an installed native profile."""
@@ -73,7 +73,7 @@ class DelegateCommandTests(WorkflowCase):
                                                "--model", "codex:gpt-6.1-sol:high", "--managed")
                     self.assertEqual(result["route"]["model"], "gpt-6.1-sol")
                     self.assertEqual(self.config, before)
-                    regular = self.delegate(role)
+                    regular = self.delegate(role, "--managed")
                     self.assertEqual(regular["route"]["model"], "session-model" if pinned else
                                      "tier-worker" if role == "worker" else "scout-model")
                     self.assertEqual(run.call_count, 2)
@@ -281,9 +281,11 @@ class DelegateCommandTests(WorkflowCase):
                 self.assertEqual((fallback["route"]["model"], fallback["response"]), ("first", ANSWER))
 
     def test_managed_flag_keeps_unbalanced_delegates_managed(self):
-        """An explicit managed retry remains valid when weighting is disabled and the opener has a native profile."""
+        """The plain command hands an unbalanced opener of the session CLI to its profile; a managed retry still runs it."""
         for role, provider in (("worker", "claude"), ("scout", "codex")):
             with self.subTest(role=role), routing_session(provider), patch.object(workflow, "run", return_value=ANSWER) as run:
+                self.assertEqual(self.delegate(role)["launch"], "native")
+                run.assert_not_called()
                 result = self.run_workflow("delegate", "1", "--role", role, "--brief", str(self.review_brief), "--managed")
             self.assertEqual(result["route"]["provider"], provider)
             self.assertEqual(result["response"], ANSWER)
@@ -331,6 +333,56 @@ class DelegateCommandTests(WorkflowCase):
             self.assertEqual(result["route"]["model"], "reserve")
             self.assertEqual(run.call_count, 1)
             self.assertNotIn("launch", result)
+
+    def test_unbalanced_reserve_fallback_of_the_session_cli_runs_on_its_native_profile(self):
+        """A reserve-skipped opener of the other CLI must not turn the session's own profile model into a managed run.
+
+        Inspection names only the opener's CLI natively, so it reports managed;
+        the plain command sees the launch-time pick. Running it as a managed
+        `claude -p` duplicated the model the installed profile already runs.
+        """
+        usage = {"codex": {"windows": [{"remaining": 0, "reset_at": 4102444800}]}}
+        for role in ("worker", "scout"):
+            self.config.workflow.role(role).models = [candidate("codex", "opener", "high"),
+                                                     candidate("claude", "opus", "high"),
+                                                     candidate("codex", "later", "high")]
+            with self.subTest(role=role), routing_session("claude"), \
+                    patch.object(workflow, "usage_snapshot", side_effect=lambda provider, **_: usage.get(provider, {})), \
+                    patch.object(workflow, "run", return_value=ANSWER) as run:
+                self.assertEqual(workflow.execution(self.config, role, None, "1")["for_this_session"], "managed")
+                opened = self.delegate(role)
+                run.assert_not_called()
+                forced = self.delegate(role, "--managed")
+            self.assertEqual((opened["launch"], opened["profile"]), ("native", f"ab-{role}"))
+            self.assertEqual((opened["route"]["model"], opened["route"]["native"], opened["route"]["for_this_session"]),
+                             ("opus", {"claude": f"ab-{role}"}, "native"))
+            self.assertIn(opened["input"]["path"], opened["message"])
+            self.assertEqual((forced["route"]["model"], forced["response"]), ("opus", ANSWER))
+            run.assert_called_once()
+
+    def test_unbalanced_reserve_fallback_stays_managed_unless_the_session_profile_runs_it(self):
+        """A profile runs its CLI's first candidate; any other pick or session would run what was not selected.
+
+        A later same-CLI model chosen past an exhausted profile model, a pick of
+        the other CLI and an unknown session all keep the selection managed.
+        """
+        exhausted = {"windows": [{"remaining": 0, "reset_at": 4102444800}]}
+        for role in ("worker", "scout"):
+            self.config.workflow.role(role).models = [candidate("codex", "opener", "high"),
+                                                     candidate("claude", "opus", "high"),
+                                                     candidate("claude", "sonnet", "high")]
+            for session, usage, expected in (
+                    ("claude", {"codex": exhausted, "claude": {"windows": [{**exhausted["windows"][0], "models": ["opus"]}]}},
+                     "sonnet"),
+                    ("codex", {"codex": exhausted}, "opus"),
+                    (None, {"codex": exhausted}, "opus")):
+                with self.subTest(role=role, session=session), routing_session(session), \
+                        patch.object(workflow, "usage_snapshot", side_effect=lambda provider, **_: usage.get(provider, {})), \
+                        patch.object(workflow, "run", return_value=ANSWER) as run:
+                    result = self.delegate(role)
+                self.assertNotIn("launch", result)
+                self.assertEqual((result["route"]["model"], result["response"]), (expected, ANSWER))
+                run.assert_called_once()
 
     def test_balanced_external_pick_cannot_use_a_same_model_native_profile(self):
         """Matching model, effort and CLI must not discard an explicitly selected external API identity."""
@@ -408,7 +460,7 @@ class DelegateCommandTests(WorkflowCase):
             with self.subTest(expected=expected), \
                  patch.object(workflow, "usage_snapshot", side_effect=lambda provider, **_: usage.get(provider, {})), \
                  patch.object(workflow, "run", return_value=ANSWER) as run:
-                result = self.delegate("scout")
+                result = self.delegate("scout", "--managed")
             self.assertEqual(run.call_args.args[0]["model"], expected)
             self.assertEqual(run.call_args.args[1], "scout")
             self.assertEqual(result["route"]["model"], expected)
@@ -419,9 +471,9 @@ class DelegateCommandTests(WorkflowCase):
         for use_tiers, expected in ((False, "worker-model"), (True, "worker-tier1")):
             self.config.workflow.use_tiers = use_tiers
             with self.subTest(use_tiers=use_tiers), patch.object(workflow, "run", return_value=ANSWER) as run:
-                self.delegate("worker")
+                self.delegate("worker", "--managed")
                 self.assertEqual(run.call_args.args[0]["model"], expected)
-                self.delegate("scout")
+                self.delegate("scout", "--managed")
                 self.assertEqual((run.call_args.args[0]["model"], run.call_args.args[0]["tier"]), ("scout-model", None))
 
     def test_worker_answer_is_returned_as_markdown_and_saved_privately(self):
@@ -434,7 +486,7 @@ class DelegateCommandTests(WorkflowCase):
             return ANSWER
 
         with patch.object(workflow, "run", side_effect=provider):
-            result = self.delegate("worker")
+            result = self.delegate("worker", "--managed")
         self.assertEqual(result["response"], ANSWER)
         saved = Path(result["response_path"])
         self.assertEqual(saved.read_text(), ANSWER)
@@ -486,7 +538,7 @@ class DelegateCommandTests(WorkflowCase):
             return ANSWER
 
         with patch.object(workflow, "run", side_effect=provider):
-            self.assertEqual(self.delegate("worker")["response"], ANSWER)
+            self.assertEqual(self.delegate("worker", "--managed")["response"], ANSWER)
         self.task.children = []
         gw.git(self.root, "add", ".")
         gw.git(self.root, "commit", "-m", "coordinator commits the worker's edit")
@@ -516,7 +568,7 @@ class DelegateCommandTests(WorkflowCase):
         failure = provider_runner.ProviderFailure("Quota exhausted", "quota", stage="execution")
         self.assertTrue(gw._worktree_clean(self.root))
         with patch.object(workflow, "run", side_effect=[failure, ANSWER]) as run:
-            result = self.delegate("worker")
+            result = self.delegate("worker", "--managed")
         self.assertEqual([call.args[0]["model"] for call in run.call_args_list], ["worker-model", "worker-fallback"])
         self.assertEqual(run.call_args_list[0].args[3], run.call_args_list[1].args[3])
         self.assertEqual((result["route"]["model"], result["response"]), ("worker-fallback", ANSWER))
@@ -533,7 +585,7 @@ class DelegateCommandTests(WorkflowCase):
 
         with patch.object(workflow, "run", side_effect=provider) as run, \
              self.assertRaisesRegex(workflow.ProviderFailures, "Worker left changes before failure") as caught:
-            self.delegate("worker")
+            self.delegate("worker", "--managed")
         run.assert_called_once()
         self.assertEqual(changed.read_text(), "unfinished = True\n")
         self.assertEqual(caught.exception.failures[0]["category"], "quota")
@@ -545,7 +597,7 @@ class DelegateCommandTests(WorkflowCase):
             failure = provider_runner.ProviderFailure("Worker failed", category, stage="execution")
             with self.subTest(category=category), patch.object(workflow, "run", side_effect=failure) as run, \
                  self.assertRaisesRegex(workflow.ProviderFailures, "reconcile files and task progress"):
-                self.delegate("worker")
+                self.delegate("worker", "--managed")
             run.assert_called_once()
             self.assertTrue(gw._worktree_clean(self.root))
 
@@ -744,6 +796,17 @@ class DelegateContractTests(unittest.TestCase):
         for role in ("worker", "scout", "reviewer"):
             with self.subTest(role=role):
                 self.assertNotIn("wait_agent", delegation.profile_instructions(role))
+
+    def test_coordinator_skill_waits_for_a_managed_run_by_its_completion_notification(self):
+        """A coordinator polling `pgrep -f` for its background delegate matched its own poller and never finished."""
+        skill = (Path(workflow.__file__).parent / "skills/ab-work/SKILL.md").read_text()
+        rule = next(line for line in skill.splitlines() if "For a managed run" in line)
+        for required in ("one background command", "completion notification", "Never poll processes by command line",
+                         "`pgrep -f`", "sleep loops"):
+            self.assertIn(required, rule)
+        for role in ("worker", "scout", "reviewer"):
+            with self.subTest(role=role):
+                self.assertNotIn("pgrep", delegation.profile_instructions(role))
 
     def test_no_execution_backend_carries_a_private_tracker_restriction(self):
         """Symmetry is the point: an env-gated guard would apply to one path only."""

@@ -334,7 +334,7 @@ another API therefore runs as a separate managed `codex exec` or `claude -p`
 process, and a built-in candidate called from an external session uses one with
 the original API environment restored. Configured candidates for
 `workflow delegate`, `workflow review` and `workflow sync` run managed from
-external sessions, including balanced picks of the session's own CLI.
+external sessions, including launch-time picks of the session's own CLI.
 A changed endpoint, a deleted or disabled connection or a missing key fails
 before anything runs. An empty reviewer list still allows a fresh native
 reviewer on the coordinator's own API.

@@ -71,12 +71,18 @@ with existing-only branch switching. It never recreates lost work from base.
   per-repository slot locks that a finished or killed process releases; the
   coordinator counts its native scouts itself.
 - When weights can change the list opener, inspection reports `balanced: true`
-  and, for a detected CLI, `for_this_session: balanced`. Its `managed` command
-  selects once, then returns a `launch: native` handoff only if the pick matches
-  that CLI's profile (model, effort, inherited speed and built-in API); otherwise
-  it runs managed. Review and sync also require non-default effort. The handoff
-  names `profile`, `message` and, for review/sync, `result_command`. Unknown
-  sessions run managed; explicit `--native` is refused with the plain command.
+  and, for a detected CLI, `for_this_session: balanced`; explicit `--native` is
+  then refused with the plain command.
+- The plain `managed` command (no `--native`, no `--managed`) of a delegate,
+  review or sync selects once, after reserve filtering and any balancing, then
+  returns a `launch: native` handoff on any route when the pick belongs to the
+  detected session CLI and matches its profile exactly (model, effort,
+  inherited speed, built-in API, no `ext` session); otherwise it runs managed.
+  Review and sync also require non-default effort. A reserve fallback can
+  therefore run natively although static inspection reported `managed`. The
+  handoff names `profile`, `message` and, for review/sync, `result_command`; it
+  has no automatic fallback, so a spawn failing before work starts is rerun
+  with `--managed`. Unknown sessions and `--managed` run managed.
 - With workflow enabled, interactive `agent-box codex` and `--host codex`
   launches derive Codex's native capacity from the effective scout limit:
   V1 receives that many subagent slots and V2 one more for the coordinator (a
@@ -229,8 +235,9 @@ with existing-only branch switching. It never recreates lost work from base.
   excluded, the error names the list path and reserve. Explicit `--native` on a
   configured list checks the opener before creating a handoff, round or sync
   record, without consuming a balance turn. If excluded, it refuses with the
-  reserve and managed command, which selects a usable fallback or reports that
-  all are excluded. An empty reviewer list has no candidate to filter. A failed
+  reserve and managed command, which selects a usable fallback, handed off
+  natively when the session's profile runs it exactly, or reports that all are
+  excluded. An empty reviewer list has no candidate to filter. A failed
   live refresh keeps cached usage evidence and exits nonzero; a failure without
   such evidence excludes nothing. Provider APIs may lag regardless of cache.
 - After filtering, two or more positive-weight vendors use smooth weighted
@@ -271,7 +278,7 @@ with existing-only branch switching. It never recreates lost work from base.
   are removed while unedited. A profile is a convenience, not proof of the live
   tool's capabilities. Sessions launched through `ext` cannot use these native
   profiles: children inherit the external API, while managed runs restore the
-  built-in environment. This also applies to balanced picks of the session CLI.
+  built-in environment. This also applies to launch-time picks of the session CLI.
   Effort `default` omits the override; it is not a literal provider value.
 
 ## Local landing

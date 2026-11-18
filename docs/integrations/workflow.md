@@ -149,6 +149,18 @@ empty.
   creating a handoff or pending review/sync run and names the managed command
   to select a fallback. This check consumes no balancing turn. An empty reviewer
   list has no candidate to check.
+- **Native handoff at launch.** The plain managed command (`workflow delegate`,
+  `workflow review` or `workflow sync` without `--native` or `--managed`)
+  selects after reserve filtering and any balancing. When the pick belongs to
+  the session's detected CLI and its installed profile runs exactly that
+  candidate (model, effort, speed, built-in API), it returns a `launch: native`
+  handoff (`profile`, `message`, and a review/sync `result_command`) instead of
+  running, on any route; a reserve fallback can do so even though inspection
+  reported `managed`. Otherwise, and for an undetected session or one launched
+  through `ext`, it runs managed. A handoff has no automatic fallback: if native
+  spawning fails before work starts, rerun with `--managed` to select again and
+  run the pick and fallbacks managed, following review failure-budget and sync
+  reconciliation rules.
 - **Vendor balancing.** Global `workflow.balance.mode` is `off` by default.
   Set it to `weighted` and set `workflow.balance.weights`, for example
   `{"claude": 3, "codex": 1}`, to spread launches in that proportion.
@@ -163,14 +175,9 @@ empty.
   choice and weights. Inspection consumes no turn: multiple positive-weight vendors,
   or a sole weighted vendor behind the list opener, report `balanced: true` and
   `for_this_session: balanced` when the session CLI is detected. Run the `managed`
-  command without `--native`: selection consumes the turn, then returns a
-  `launch: native` handoff (`profile`, `message`, and a review/sync `result_command`)
-  if the pick exactly matches the session CLI's native-capable profile; otherwise
-  it runs managed. An undetected session or one launched through `ext` runs
-  managed; explicit `--native` is refused for balanced routes.
-  If native spawning fails before work starts, rerun with `--managed` to select
-  again and run the pick and fallbacks managed, following review failure-budget
-  and sync reconciliation rules.
+  command without `--native`: selection consumes the turn and may return a
+  native handoff as described above; explicit `--native` is refused for
+  balanced routes.
 - **An empty list means "do it yourself"** for workers and scouts: the
   coordinator does the work in its own session. An empty reviewer list means a
   fresh native subagent of the coordinator's session reviews — never the
@@ -192,7 +199,7 @@ empty.
   Configuration and later launches stay unchanged. When the coordinator's
   CLI has an installed profile for the role that runs exactly that model,
   effort and speed, the call returns a native handoff for that profile, as a
-  balanced launch does; `--managed` forces a managed run. Otherwise it runs
+  plain launch does; `--managed` forces a managed run. Otherwise it runs
   managed, and `--native` refuses with a managed command retaining the
   override. External API and
   model-effort checks still apply. Oversized-text summaries retain their

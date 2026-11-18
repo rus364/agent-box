@@ -21,7 +21,7 @@ class ReviewResultTests(unittest.TestCase):
     native_result = fixtures.WorkflowCase.native_result
 
     def review(self):
-        return self.run_workflow("review", "1", "--brief", str(self.review_brief))
+        return self.run_workflow("review", "1", "--brief", str(self.review_brief), "--managed")
 
     def response(self, verdict="PASS"):
         finding = "\n- [HIGH] file:1 — private finding\n" if verdict == "NEEDS_WORK" else ""

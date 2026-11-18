@@ -139,7 +139,7 @@ class WorkflowTextDeliveryTests(WorkflowCase):
         self.config.workflow.scout.models = []
         with patch.object(workflow, "run", return_value=answer(report)):
             with self.assertRaisesRegex(AgentBoxError, "TEXT_LIMIT_EXCEEDED.*reviewer report"):
-                self.run_workflow("review", "1")
+                self.run_workflow("review", "1", "--managed")
         state = workflow.read_review_state(self.root, BINDING, self.task)
         self.assertEqual(state["used"], 1)
         self.assertEqual(state["results"][-1]["status"], "saved")
@@ -235,7 +235,7 @@ class WorkflowTextDeliveryTests(WorkflowCase):
                     self.run_workflow("sync", "1", "--result", str(self.report))
                 report = answer() if command[0] == "review" else "Done\nSync: UNCHANGED\n"
                 with patch.object(workflow, "run", return_value=report) as run:
-                    self.run_workflow(*command)
+                    self.run_workflow(*command, "--managed")
                 run.assert_called_once()
                 self.assertNotIn(marker, run.call_args.args[3])
 
@@ -289,7 +289,7 @@ class WorkflowTextDeliveryTests(WorkflowCase):
             return answer()
 
         with patch.object(workflow, "run", side_effect=managed_runner(provider)) as run:
-            self.assertEqual(self.run_workflow("review", "1")["verdict"], "PASS")
+            self.assertEqual(self.run_workflow("review", "1", "--managed")["verdict"], "PASS")
             run.assert_called_once()
 
     def test_a_parent_whose_subtask_texts_exceed_the_limit_still_gets_exact_required_reading(self):
@@ -327,7 +327,7 @@ class WorkflowTextDeliveryTests(WorkflowCase):
             return answer()
 
         with patch.object(workflow, "run", side_effect=managed_runner(provider)) as run:
-            self.assertEqual(self.run_workflow("review", "1")["verdict"], "PASS")
+            self.assertEqual(self.run_workflow("review", "1", "--managed")["verdict"], "PASS")
             run.assert_called_once()
 
     def test_mandatory_nested_instruction_imports_refuse_inline_routes_before_paid_work(self):
@@ -385,7 +385,7 @@ class WorkflowTextDeliveryTests(WorkflowCase):
         with patch.object(workflow, "bind_delegation_input", side_effect=bind_then_tamper), \
                 patch.object(workflow, "run") as run:
             with self.assertRaisesRegex(AgentBoxError, "required reading changed"):
-                self.run_workflow("review", "1")
+                self.run_workflow("review", "1", "--managed")
             run.assert_not_called()
         opened = self.native_round()
         tamper(Path(payload_of(delivered_bytes(opened["input"]).decode())["required_reading"]["path"]))
@@ -448,7 +448,7 @@ class WorkflowTextDeliveryTests(WorkflowCase):
             self.assertEqual(prompt, native_prompt)
             return "Done"
         with patch.object(workflow, "run", side_effect=managed) as run:
-            self.run_workflow("delegate", "1", "--role", "worker", "--brief", str(self.review_brief))
+            self.run_workflow("delegate", "1", "--role", "worker", "--brief", str(self.review_brief), "--managed")
         self.assertEqual(run.call_count, 2)
         self.assertTrue(all(not path.exists() for path in paths))
         self.assertEqual(self.review_brief.read_text(), source)
@@ -459,7 +459,7 @@ class WorkflowTextDeliveryTests(WorkflowCase):
         report = "Verdict: NEEDS_WORK\n" + finding + "\n" + "x" * 70000
         summary = "Verdict: NEEDS_WORK\n" + finding + "\nConfirmed by source inspection."
         with patch.object(workflow, "run", side_effect=[answer(report), summary]) as run:
-            result = self.run_workflow("review", "1")
+            result = self.run_workflow("review", "1", "--managed")
         self.assertEqual(run.call_count, 2)
         self.assertEqual(result["verdict"], "NEEDS_WORK")
         self.assertIn(finding, result["report"])
@@ -470,7 +470,7 @@ class WorkflowTextDeliveryTests(WorkflowCase):
         self.assertEqual(repeated["report"], result["report"])
         raw_sync = "x" * 70000 + "\nSync: UPDATED\n"
         with patch.object(workflow, "run", side_effect=[raw_sync, "Saved corrections.\nSync: UPDATED\n"]):
-            result = self.run_workflow("sync", "1")
+            result = self.run_workflow("sync", "1", "--managed")
         self.assertEqual(plan_sync.last_result(self.root, self.task)["report"], raw_sync)
         self.assertIn("Scout summary", result["report"])
         self.assertNotIn("report_delivery", result)

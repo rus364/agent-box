@@ -159,7 +159,7 @@ class BehaviorDeliveryTests(WorkflowCase):
                     self.assertNotIn(f"Workflow behavior: {version} (coordinator)", prepared)
                     with patch.object(workflow, "execute", return_value={"report": "Done", "route": {},
                             "failures": [], "diagnostics": {"usage": None}}) as execute:
-                        self.command("delegate", "1", "--role", role, "--brief", str(self.review_brief))
+                        self.command("delegate", "1", "--role", role, "--brief", str(self.review_brief), "--managed")
                     self.assertEqual(execute.call_args.args[4], prepared)
 
     def test_native_and_managed_review_and_sync_cli_use_project_overrides(self):
@@ -206,7 +206,7 @@ class BehaviorDeliveryTests(WorkflowCase):
                 self.config.workflow.behavior_version = version
                 with patch.object(workflow, "execute", return_value={"report": "## Done\n", "route": {},
                         "failures": [], "diagnostics": {"usage": None}}) as execute:
-                    self.run_workflow("delegate", "1", "--role", role, "--brief", str(brief))
+                    self.run_workflow("delegate", "1", "--role", role, "--brief", str(brief), "--managed")
                 prompt = execute.call_args.args[4]
                 self.assertIn(f"Workflow behavior: {version} ({role})", prompt)
                 self.assertEqual(behavior.COMMON in prompt, version != "v1")

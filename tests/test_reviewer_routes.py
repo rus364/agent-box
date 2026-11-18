@@ -78,7 +78,7 @@ class ManagedReviewRouteTests(unittest.TestCase):
                               "usage": None, "response_source": "stdout"}
         with patch.object(workflow, "candidates", return_value=selected), \
              patch.object(workflow, "run", side_effect=[failure, workflow_fixtures.answer()]):
-            result = self.run_workflow("review", "1", "--brief", str(self.review_brief))
+            result = self.run_workflow("review", "1", "--brief", str(self.review_brief), "--managed")
         saved = workflow.read_evidence(self.root, self.task)["review"]
         self.assertEqual(saved["route"], selected["fallbacks"][0])
         self.assertEqual(saved["failures"], [{"provider": "claude", "category": "quota",
