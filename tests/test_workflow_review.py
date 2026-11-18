@@ -3,6 +3,7 @@ import copy
 import hashlib
 import json
 import os
+import shlex
 import stat
 import tempfile
 import unittest
@@ -74,7 +75,8 @@ class ReviewWorkflowTests(WorkflowCase):
             self.assertEqual((opened["route"]["provider"], opened["route"]["model"]), ("codex", "selected"))
             descriptor = json.loads((self.delegation_input(opened).parent / "descriptor.json").read_text())
             self.assertEqual(descriptor["native"], {"provider": "codex", "model": "selected", "effort": "high",
-                                                   "profile": "ab-reviewer", "managed": "agent-box workflow review 1"})
+                                                   "profile": "ab-reviewer",
+                                                   "managed": "agent-box workflow review 1 --managed"})
             self.assertIn(opened["input"]["path"], opened["message"])
             self.assertTrue(opened["result_command"].endswith("--provider codex --model selected"))
             with self.assertRaisesRegex(AgentBoxError, "expects profile ab-reviewer on codex selected.*"
@@ -368,6 +370,24 @@ class ReviewWorkflowTests(WorkflowCase):
         self.assertEqual(self.budget()["used"], 0)
         self.assertEqual(self.run_workflow("inspect", "1")["review"]["pending_round"]["round"], opened["round"])
         self.assertEqual(self.native_result()["verdict"], "PASS")
+
+    def test_wrong_model_retry_preserves_the_brief_for_both_native_launches(self):
+        """A managed replacement still needs the coordinator's notes and declared authors."""
+        self.config.workflow.review.other_vendor_first = True
+        brief = self.review_brief.rename(self.review_brief.with_name("reviewer's notes.md"))
+        for launch_flags in ((), ("--native",)):
+            with self.subTest(launch_flags=launch_flags):
+                opened = self.run_workflow("review", "1", "--brief", str(brief), "--author", "codex", *launch_flags)
+                self.assertEqual(opened["launch"], "native")
+                with self.assertRaisesRegex(AgentBoxError, "expects profile ab-reviewer") as caught:
+                    self.run_workflow("review", "1", "--result", str(self.report),
+                                      "--provider", "claude", "--model", "haiku")
+                retry = str(caught.exception).split(" or run ", 1)[1]
+                descriptor = json.loads(self.delegation_input(opened).with_name("descriptor.json").read_text())
+                self.assertEqual(retry, descriptor["native"]["managed"])
+                self.assertEqual(shlex.split(retry), ["agent-box", "workflow", "review", "1",
+                                                      "--author", "codex", "--brief", str(brief), "--managed"])
+                self.assertEqual(self.native_result()["verdict"], "PASS")
 
     def test_an_empty_reviewer_list_takes_any_fresh_native_reviewer(self):
         """Without candidates there is no route to contradict, so the session need not be known."""

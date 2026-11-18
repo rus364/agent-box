@@ -2187,7 +2187,9 @@ def review(args, root, binding, adapter, config, task, parent, tasks, base, fing
                                           text_settings=config.workflow, text_config=config)
                 descriptor = review_descriptor(identity, task, fingerprint, round_id)
                 if expected:
-                    descriptor["native"] = expected
+                    retry_options = ["--brief", args.brief] if args.brief else []
+                    managed = route["managed"] + " " + shlex.join([*retry_options, "--managed"])
+                    descriptor["native"] = {**expected, "managed": managed}
                 bind_delegation_input(root, descriptor, prompt, local_evidence=True)
                 from .text_delivery import publish
                 artifact = publish(prompt, config)
@@ -2218,7 +2220,7 @@ def review(args, root, binding, adapter, config, task, parent, tasks, base, fing
             first = config.workflow.models_for("reviewer", tier, authors or ())[1][0]
             require_native_reserve(config.workflow, route, first)
             expected = {"provider": provider, "model": first["model"], "effort": first["effort"],
-                        "profile": route["native"][provider], "managed": route["managed"]}
+                        "profile": route["native"][provider]}
         return open_native(route, expected)
     if cloud_review(config, task, parent):
         prepare(config)
@@ -2239,7 +2241,7 @@ def review(args, root, binding, adapter, config, task, parent, tasks, base, fing
     route = None if args.managed else launch_native_route(config, "reviewer", tier, task.id, selected, authors)
     if route:
         expected = {key: selected[key] for key in ("provider", "model", "effort")}
-        expected.update(profile=route["native"][selected["provider"]], managed=route["managed"])
+        expected["profile"] = route["native"][selected["provider"]]
         return open_native(route, expected)
     selected, preflight_failures = managed_review_route(selected)
     output = None
@@ -2310,7 +2312,7 @@ def native_result(args, root, binding, adapter, config, task):
             raise AgentBoxError(
                 f"Round {round_id} expects profile {expected['profile']} on {expected['provider']} {expected['model']} "
                 f"effort {expected['effort']}; an answer from another model is not recorded. Rerun the reviewer on "
-                f"that profile and submit its answer to this round, or run {expected['managed']} --managed")
+                f"that profile and submit its answer to this round, or run {expected['managed']}")
     try:
         report = {**review_report(text), "text": text}
     except ProviderFailure as exc:
