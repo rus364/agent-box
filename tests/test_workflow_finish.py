@@ -477,7 +477,11 @@ class NoCodeChildFinishTests(LandingCase):
                 saved = workflow.read_evidence(self.root, self.child)
                 self.assertEqual(saved.get("child_begin", saved.get("child_start"))["head"], origin)
                 self.commit(f"parent-after-{ident}.py")
-                self.begin_ready_child(resume=True)
+                preview = self.dispatch(["inspect", ident])
+                result = self.begin_ready_child(resume=True)
+                start = {"branch": f"ab/{ident}-child", "from_branch": "ab/7-parent", "commit": origin}
+                self.assertEqual(result["branch_start"], start if failure == "branch" else None)
+                self.assertEqual(preview["branch_start"], result["branch_start"])
                 self.assertEqual(gw.head_sha(self.root), origin)
                 self.assertEqual(workflow.read_evidence(self.root, self.child)["child_start"],
                                  {"head": origin, "parent": self.parent.id, "work_observed": False})

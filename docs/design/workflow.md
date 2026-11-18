@@ -20,6 +20,11 @@ reuse decisions in [workflow design references](workflow-references.md).
 - The coordinator creates the parent branch from the base and each subtask
   branch from the parent, and integrates each subtask before the next. No
   parallel workers and no branch creation by delegated agents.
+- Begin remembers the root ID for a newly created standalone or implicit parent
+  branch. A child's existing creation record also identifies its root. A changed
+  root blocks resume only when the selected parent branch exists and Git shows
+  its tip is absent from the child. Once the child includes that tip, begin
+  updates the recorded root so later parent progress can proceed normally.
 - `workflow begin CHILD` records the initial head only for a new branch claimed
   from Ready. A child still at that head can finish without commits after
   validation and the configured review. Resuming In progress or In review work,

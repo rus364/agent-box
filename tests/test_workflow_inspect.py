@@ -281,6 +281,100 @@ class InspectTests(unittest.TestCase):
         self.assertEqual(result["task_branch"], "ab/2-child")
         self.assertEqual(result["scope"], workflow.scope(self.root, "ab/1-task"))
 
+    def test_preview_and_begin_agree_when_the_parent_must_also_be_created(self):
+        """The child forks from the prospective parent even when both start at main's commit."""
+        parent = self.tasks["3"] = Task("3", "1", "New parent", state="In progress", assignees=["1"])
+        child = self.tasks["2"] = Task("2", "1", "Child", state="In progress", assignees=["1"], parent=parent.id)
+        head = gw.local_branch_head(self.root, "main")
+        expected = {"branch": "ab/2-child", "from_branch": "ab/3-new-parent", "commit": head}
+        expected_parent = {"branch": "ab/3-new-parent", "from_branch": "main", "commit": head}
+        preview = self.inspect_readonly(child.id)
+        began = self.dispatch("begin", child.id, "--resume")
+        for result in (preview, began):
+            self.assertEqual(result["branch_start"], expected)
+            self.assertEqual(result["parent_branch_start"], expected_parent)
+            self.assertEqual(result["integration_target"], "ab/3-new-parent")
+            self.assertEqual(result["base"], "main")
+        self.assertEqual(gw.head_sha(self.root), head)
+        self.assertEqual(workflow.read_evidence(self.root, parent)["branch_root"], parent.id)
+
+    def test_remote_only_default_supplies_the_start_without_becoming_the_upstream(self):
+        """A tag with the default branch's name cannot redirect a new task away from origin."""
+        task = self.tasks["3"] = Task("3", "1", "New task", state="In progress", assignees=["1"])
+        base_head = gw.local_branch_head(self.root, "main")
+        gw.git(self.root, "branch", "-d", "main")
+        gw.git(self.root, "tag", "main", "HEAD")
+        preview = self.inspect_readonly(task.id)
+        result = self.dispatch("begin", task.id, "--resume")
+        self.assertEqual(preview["branch_start"], result["branch_start"])
+        self.assertEqual(result["branch_start"]["commit"], base_head)
+        self.assertEqual(gw.head_sha(self.root), base_head)
+        self.assertEqual(gw.git(self.root, "for-each-ref", "--format=%(upstream)", "refs/heads/ab/3-new-task"), "")
+
+    def test_standalone_branch_moved_under_a_working_parent(self):
+        """The tracker move needs parent work only once, before either entry point can claim or switch."""
+        child = self.tasks["2"] = Task("2", "1", "Child", state="Ready", assignees=["1"])
+        self.adapter.update.side_effect = lambda task, fields: task
+
+        def set_state(task, state):
+            task.state = state
+            return task
+
+        self.adapter.set_state.side_effect = set_state
+        task_branch, target = "ab/2-child", "ab/1-task"
+        main = gw.local_branch_head(self.root, "main")
+        target_head = gw.local_branch_head(self.root, target)
+        standalone = self.dispatch("begin", child.id)
+        self.assertEqual(standalone["branch_start"], {"branch": task_branch, "from_branch": "main", "commit": main})
+        child.parent = self.task.id
+        gw.git(self.root, "switch", "main")
+        preview = self.inspect_readonly(child.id)
+        self.assertEqual(preview["task_branch_head"], main)
+        self.assertEqual(preview["integration_target"], target)
+        self.assertIsNone(preview["branch_start"])
+        reason = preview["next_step"]
+        for detail in (task_branch, main, target, target_head, "replay only"):
+            self.assertIn(detail, reason)
+        with patch.object(workflow, "claim", side_effect=AssertionError("premature claim")):
+            for args in (("begin", child.id, "--resume"), ("resume", child.id)):
+                with self.assertRaises(AgentBoxError) as refusal:
+                    self.dispatch(*args)
+                self.assertEqual(str(refusal.exception), reason)
+                self.assertEqual(gw.current_branch(self.root), "main")
+                self.assertEqual(gw.local_branch_head(self.root, task_branch), main)
+
+        gw.git(self.root, "branch", "-m", task_branch, "preserved-child")
+        creation = {"branch": task_branch, "from_branch": target, "commit": target_head}
+        self.assertEqual(self.inspect_readonly(child.id)["branch_start"], creation)
+        self.assertEqual(self.dispatch("begin", child.id, "--resume")["branch_start"], creation)
+        gw.git(self.root, "switch", target)
+        gw.git(self.root, "commit", "--allow-empty", "-m", "later parent work")
+        self.assertEqual(self.dispatch("resume", child.id)["task_branch_head"], target_head)
+
+    def test_existing_child_replayed_onto_its_new_parent_can_resume(self):
+        """A child creation record still describes its no-work start after its selected root changes."""
+        child = self.tasks["2"] = Task("2", "1", "Child", parent="1", state="In progress", assignees=["1"])
+        start = {"parent": "3", "head": gw.local_branch_head(self.root, "main"), "work_observed": True}
+        workflow.save_evidence(self.root, child, {"child_start": start})
+        gw.git(self.root, "branch", "ab/2-child", "ab/1-task")
+        self.assertIsNone(self.dispatch("begin", child.id, "--resume")["branch_start"])
+        self.assertEqual(workflow.read_evidence(self.root, child)["child_start"], start)
+        gw.git(self.root, "switch", "ab/1-task")
+        gw.git(self.root, "commit", "--allow-empty", "-m", "more work on the same parent")
+        self.assertFalse(self.dispatch("resume", child.id)["warnings"])
+
+    def test_parent_history_without_a_record_is_advisory(self):
+        """An externally created child can resume with both observed heads available for manual inspection."""
+        child = self.tasks["2"] = Task("2", "1", "Child", parent="1", state="In progress", assignees=["1"])
+        gw.git(self.root, "branch", "ab/2-child", "main")
+        preview = self.inspect_readonly(child.id)
+        for output in (preview, self.dispatch("begin", child.id, "--resume"), self.dispatch("resume", child.id)):
+            warning = next(message for message in output["warnings"] if "tracker relationship" in message)
+            self.assertIn(preview["task_branch_head"], warning)
+            self.assertIn(preview["integration_target_head"], warning)
+            self.assertIn("diff", warning)
+        self.assertNotIn("branch_root", workflow.read_evidence(self.root, child))
+
     def test_ambiguous_refs_and_failed_git_tracker_or_budget_reads_remain_errors(self):
         """Diagnostic availability must not hide broken authority as ordinary missing work."""
         gw.git(self.root, "branch", "ab/1-duplicate")

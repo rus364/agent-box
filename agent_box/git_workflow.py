@@ -269,16 +269,16 @@ def branch_refs(root, branch):
     A fresh clone has only the remote one, and another checkout can push to the
     same task branch, so neither copy alone speaks for the branch.
     """
-    return [candidate for candidate in (branch, f"refs/remotes/origin/{branch}")
+    return [candidate for candidate in (f"refs/heads/{branch}", f"refs/remotes/origin/{branch}")
             if _run(["git", "rev-parse", "--verify", "--quiet",
                      f"{candidate}^{{commit}}"], cwd=root).returncode == 0]
 
 
-def base_ref(root, base):
+def base_ref(root, base, *, required=True):
     refs = branch_refs(root, base)
-    if not refs:
+    if not refs and required:
         raise AgentBoxError(f"Base {base} does not resolve to a commit in this repository")
-    return refs[0]
+    return refs[0] if refs else None
 
 
 def remote_branches(root, *patterns):
@@ -374,9 +374,14 @@ def switch_branch(root, branch, base, *, resume=False, existing_only=False):
     elif remote:
         # The work already exists on the remote; forking the base again would
         # start a second branch for the same task and abandon it.
-        git(root, "switch", "-c", branch, f"origin/{branch}")
+        git(root, "switch", "-c", branch, f"refs/remotes/origin/{branch}")
     else:
-        git(root, "switch", "-c", branch, base)
+        source = base_ref(root, base)
+        # The default branch's tracking ref can supply the commit without becoming the task's upstream.
+        if source.startswith("refs/remotes/"):
+            source = git(root, "rev-parse", source)
+        git(root, "switch", "-c", branch, source)
+        return {"branch": branch, "from_branch": base, "commit": head_sha(root)}
 
 
 def github_origin(root):

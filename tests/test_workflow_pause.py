@@ -9,9 +9,15 @@ from agent_box.tracker.core import Task
 from workflow_fixtures import WorkflowCase, clone, origin_path, accepted_evidence
 
 
+REAL_RESOLVE = workflow.resolve
+
+
 class PauseTests(WorkflowCase):
     def setUp(self):
         super().setUp()
+        resolver = patch.object(workflow, 'resolve', REAL_RESOLVE)
+        resolver.start()
+        self.addCleanup(resolver.stop)
         self.config.workflow.sync.policy = 'off'
         self.branch = gw.current_branch(self.root)
         gw.git(self.root, 'commit', '--allow-empty', '-m', 'unfinished work')
@@ -215,6 +221,35 @@ class PauseTests(WorkflowCase):
         result = pause.resume(other, self.adapter, self.task)
         self.assertEqual(result['branch'], self.branch)
         self.assertEqual(gw.head_sha(other), self.head)
+
+    def test_single_task_branch_clone_resumes_without_the_default_commit(self):
+        """The default ref is needed to compare work, while either resume can use the existing task head."""
+        gw.git(self.root, 'push', 'origin', self.branch)
+        gw.git(self.root, 'switch', 'main')
+        gw.git(self.root, 'commit', '--allow-empty', '-m', 'unfetched default work')
+        default_tip = gw.head_sha(self.root)
+        gw.git(self.root, 'push', 'origin', 'main')
+        other = Path(self.directory.name) / 'single-task'
+        gw.git(self.root, 'clone', '--single-branch', '--branch', self.branch, self.origin.as_uri(), other)
+        refs = gw.git(other, 'show-ref')
+        with patch.object(workflow, 'repository_root', return_value=other):
+            preview = self.run_workflow('inspect', self.task.id)
+            self.assertEqual((preview['base'], preview['integration_target']), ('main', 'main'))
+            self.assertEqual(preview['task_branch_head'], self.head)
+            self.assertIsNone(preview['integration_target_head'])
+            self.assertIsNone(preview['scope'])
+            self.assertIsNone(preview['branch_start'])
+            self.assertFalse(preview['acceptance']['available'])
+            self.assertIn('default branch main', preview['next_step'])
+            self.assertIn('diff and acceptance', preview['next_step'])
+            for args in (('begin', self.task.id, '--resume'), ('resume', self.task.id)):
+                with self.subTest(args=args):
+                    result = self.run_workflow(*args)
+                    self.assertEqual(result['task_branch_head'], self.head)
+                    self.assertIsNone(result['branch_start'])
+        self.assertEqual(gw.git(other, 'show-ref'), refs)
+        self.assertEqual(gw.branch_refs(other, 'main'), [])
+        self.assertFalse(gw._has_commit(other, default_tip))
 
     def test_resume_never_recreates_a_lost_branch_from_main(self):
         """Missing work must be recovered explicitly, not replaced by an empty branch with a familiar name."""

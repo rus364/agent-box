@@ -147,7 +147,9 @@ class FreshCloneBranchTests(unittest.TestCase):
                 return parent, starting
 
             with patch.object(workflow, "claim", side_effect=claimed):
-                workflow.begin(other, adapter, parent, resume=False)
+                result = workflow.begin(other, adapter, parent, resume=False)
+            self.assertIsNone(result["branch_start"])
+            self.assertEqual(result["task_branch_head"], published)
             self.assertEqual(gw.current_branch(other), "ab/7-parent-deliverable")
             self.assertEqual(gw.head_sha(other), published)
             self.assertEqual(gw.git(other, "rev-parse", "--abbrev-ref", "ab/7-parent-deliverable@{upstream}"),

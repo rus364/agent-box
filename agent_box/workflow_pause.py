@@ -147,5 +147,6 @@ def resume(root, adapter, task):
     verify_local(root, branches)
     # Existing begin owns claim/resume and provenance. It may not create a new
     # base-derived branch here: both expected refs were resolved and preserved.
-    return {**begin(root, adapter, adapter.get(task.id), resume=True, existing_only=True), "warnings": warnings,
+    result = begin(root, adapter, adapter.get(task.id), resume=True, existing_only=True)
+    return {**result, "warnings": warnings + result["warnings"],
             "next": f"Run agent-box workflow inspect {task.id}; revalidate if the accepted scope changed"}

@@ -80,6 +80,20 @@ names one next step, derived from what is recorded for the current head. It is
 read-only and works before `begin`, on another branch or with uncommitted
 files.
 
+`base` is the default branch. `integration_target` is the branch that will
+receive the work. Inspect previews a new branch in `branch_start` with its
+`branch`, `from_branch` and `commit`. It also shows `parent_branch_start` when
+begin will create the parent. Begin reports actual starts. For an existing
+branch, including one adopted from an origin tracking ref, `branch_start` is
+null and `task_branch_head` gives its commit. These observations use the
+checkout's local and tracking refs.
+
+If a task's recorded root differs from its tracker root and its branch lacks
+the selected parent's tip, both resume commands stop before claiming or switching. Preserve the old
+branch under a backup name outside `ab/` and replay the intended task commits
+onto the selected parent. With unknown history, the commands report the two
+heads so you can check the tracker relationship and diff.
+
 **Acceptance belongs to the code.** Validation, review and your explicit
 approval are recorded for the exact head and base commits. A new commit or a
 moved base retires them; editing the task description does not. Put every
