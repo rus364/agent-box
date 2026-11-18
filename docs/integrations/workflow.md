@@ -179,7 +179,11 @@ empty.
   native handoff as described above; explicit `--native` is refused for
   balanced routes.
 - **An empty list means "do it yourself"** for workers and scouts: the
-  coordinator does the work in its own session. An empty reviewer list means a
+  coordinator does the work in its own session. `workflow.worker.delegate` or
+  `workflow.scout.delegate` off does the same while keeping the saved models;
+  inspect reports `self` with that reason and `workflow delegate` refuses. A
+  launch pin or one-launch `--model` still delegates, and oversized-text
+  summaries still use the scout models. An empty reviewer list means a
   fresh native subagent of the coordinator's session reviews — never the
   coordinator itself. Plan sync needs a configured list.
 - **Any CLI may serve any role.** A model of the other CLI than the
@@ -355,6 +359,7 @@ expected. A cleanup failure never undoes the merge or Done.
 | `workflow.timeout_seconds` | 3600 | Limit for each managed run |
 | `workflow.text_max_bytes` | 65536 | Total UTF-8 bytes per complete delivery (global only) |
 | `workflow.text_retention_days` | 7 | Creation-time expiry of temporary texts (global only) |
+| `workflow.worker.delegate`, `workflow.scout.delegate` | on | Off: the coordinator does that role's work itself; the models stay saved |
 | `workflow.scout.limit` | 3 | Parallel scouts |
 | `workflow.review.policy` | `auto` | `off`, `auto`, `always` |
 | `workflow.review.max_files`, `max_lines` | 5, 200 | Auto-review thresholds (inclusive) |

@@ -662,6 +662,34 @@ class DelegateCommandTests(WorkflowCase):
         execution = self.run_workflow("inspect", "1")["execution"]
         self.assertEqual((execution["worker"]["native"], execution["scout"]["native"]), ({}, {"codex": "ab-scout"}))
 
+    def test_delegate_switch_off_keeps_the_models_while_the_coordinator_does_the_work(self):
+        """An emptied list was the only way to work in-session and discarded the candidates.
+
+        A launch pin and one-launch --model name a model outright, so they still delegate.
+        """
+        for role in ("worker", "scout"):
+            settings = self.config.workflow.role(role)
+            settings.models, settings.delegate = [candidate("claude", "saved", "high")], False
+            with self.subTest(role=role):
+                self.assertEqual(self.run_workflow("inspect", "1")["execution"][role],
+                                 {"mode": "self", "models": f"workflow.{role}.models",
+                                  "reason": f"workflow.{role}.delegate is off"})
+                for flags in ((), ("--native",), ("--managed",)):
+                    with patch.object(workflow, "run") as run, \
+                            self.assertRaisesRegex(AgentBoxError, f"workflow.{role}.delegate is off, so the coordinator"):
+                        self.delegate(role, *flags)
+                    run.assert_not_called()
+                with patch.object(workflow, "run", return_value=ANSWER) as run:
+                    self.delegate(role, "--model", "codex:explicit:high")
+                self.assertEqual(run.call_args.args[0]["model"], "explicit")
+                self.config.workflow.pins[role] = [candidate("codex", "pinned", "high")]
+                self.assertEqual(self.run_workflow("inspect", "1")["execution"][role]["mode"], "delegate")
+                with patch.object(workflow, "run", return_value=ANSWER) as run:
+                    self.delegate(role)
+                self.assertEqual(run.call_args.args[0]["model"], "pinned")
+                del self.config.workflow.pins[role]
+            self.assertEqual(settings.models, [candidate("claude", "saved", "high")])
+
     def test_a_native_assignment_is_refused_where_the_sessions_route_is_managed(self):
         """The scout list opens with codex, so a Claude session's same-named profile is the fallback."""
         inspected = self.run_workflow("inspect", "1")

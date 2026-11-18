@@ -63,6 +63,18 @@ class ProjectConfigTests(unittest.TestCase):
         self.assertEqual(project_config.apply(self.config, data).workflow.scout.limit, 2)
         self.assertEqual(self.config.workflow.scout.limit, 3)
 
+    def test_project_switches_delegation_off_while_keeping_the_global_models(self):
+        """One repository may keep its coordinator working in-session without emptying anyone's lists."""
+        self.config.workflow.worker.models = [{"provider": "claude", "model": "global", "effort": "high", "speed": "inherit", "api_provider": ""}]
+        data = {'workflow': {'worker': {'delegate': False}, 'scout': {'delegate': False}}}
+        project_config.validate(data, self.path)
+        result = project_config.apply(self.config, data)
+        self.assertEqual((result.workflow.worker.delegate, result.workflow.scout.delegate), (False, False))
+        self.assertEqual(result.workflow.worker.models, self.config.workflow.worker.models)
+        self.assertTrue(self.config.workflow.worker.delegate)
+        with self.assertRaises(AgentBoxError):
+            project_config.validate({'workflow': {'worker': {'delegate': 'no'}}}, self.path)
+
     def test_explicit_sync_events_survive_project_and_runtime_overlays(self):
         """New event defaults must not widen a user's intentionally narrower sync policy."""
         self.config.workflow.enabled = True

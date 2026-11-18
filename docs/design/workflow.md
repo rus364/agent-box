@@ -67,6 +67,10 @@ with existing-only branch switching. It never recreates lost work from base.
 - A managed worker needs the task branch checked out and holds the local work
   lock, so validation cannot run under it. Unavailability or quota failure can
   fall back only while the working tree is clean; other failures stop.
+- `workflow.worker.delegate` and `workflow.scout.delegate` (on by default)
+  switch a role to `self` without emptying its list, which was the only switch
+  and discarded the saved candidates. Launch pins and `--model` still delegate;
+  the oversized-text summary reads the scout models directly and is unaffected.
 - Managed scouts overlap up to `workflow.scout.limit`, counted by
   per-repository slot locks that a finished or killed process releases; the
   coordinator counts its native scouts itself.

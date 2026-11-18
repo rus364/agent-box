@@ -317,7 +317,8 @@ class WorkflowConfigTests(unittest.TestCase):
         self.assertFalse(data["workflow"]["enabled"])
         self.assertEqual(data["workflow"]["merge_mode"], "github")
         self.assertFalse(data["workflow"]["use_tiers"])
-        self.assertEqual(data["workflow"]["scout"], {"limit": 3, "models": []})
+        self.assertEqual(data["workflow"]["scout"], {"limit": 3, "delegate": True, "models": []})
+        self.assertTrue(data["workflow"]["worker"]["delegate"])
         for role in ("worker", "review"):
             self.assertEqual(data["workflow"][role]["models"], [])
             self.assertEqual(data["workflow"][role]["tiers"], {tier: [] for tier in ("1", "2", "3")})

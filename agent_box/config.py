@@ -879,24 +879,30 @@ def model_tiers(data=None):
 
 @dataclass
 class WorkerConfig:
+    #: Off makes the coordinator do this work in its own session while the
+    #: candidates stay saved; an empty list was the only switch and discarded them.
+    #: Launch pins and one-launch --model still delegate: they name a model outright.
+    delegate: bool = True
     models: list[dict] = field(default_factory=list)
     tiers: dict[str, list] = field(default_factory=model_tiers)
 
     @classmethod
     def from_dict(cls, data):
         data = _mapping(data)
-        return cls(model_list(data.get("models")), model_tiers(data.get("tiers")))
+        return cls(_bool(data, "delegate", True), model_list(data.get("models")), model_tiers(data.get("tiers")))
 
 
 @dataclass
 class ScoutConfig:
     limit: int = 3
+    #: As WorkerConfig.delegate; the oversized-text summary still uses the models.
+    delegate: bool = True
     models: list[dict] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, data):
         data = _mapping(data)
-        return cls(_number(data, "limit", 3), model_list(data.get("models")))
+        return cls(_number(data, "limit", 3), _bool(data, "delegate", True), model_list(data.get("models")))
 
 
 @dataclass

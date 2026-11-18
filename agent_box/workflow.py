@@ -1874,12 +1874,18 @@ def native_profile(config, role, tier, candidate):
     return profile_name(role, tier if ".tiers." in path else None)
 
 
+def delegation_off(settings, role, path):
+    """A worker or scout switched to the coordinator; a pin or --model still names a delegate."""
+    return role in ("worker", "scout") and not path.startswith("--") and not settings.role(role).delegate
+
+
 def execution(config, role, tier, task_id, authors=None):
     """How the coordinator launches a configured role.
 
     An empty reviewer list requires an independent native reviewer; other
-    empty worker/scout lists mean the coordinator's own session does the work: a
-    subagent on the session's model would only reread the same context. A
+    empty worker/scout lists, or their delegate switch off, mean the coordinator's
+    own session does the work: a subagent on the session's model would only
+    reread the same context. A
     configured list means delegation to its first candidate: natively when
     the session runs that candidate's CLI, else as a managed CLI. A profile
     runs its provider's first usable candidate, which is a later, fallback
@@ -1896,6 +1902,8 @@ def execution(config, role, tier, task_id, authors=None):
     """
     from .speed import native_limitation
     path, models = config.workflow.models_for(role, tier, authors or ())
+    if delegation_off(config.workflow, role, path):
+        return {"mode": "self", "models": path, "reason": f"workflow.{role}.delegate is off"}
     if not models:
         return {"mode": "unconfigured" if role == "sync" else "native" if role == "reviewer" else "self", "models": path}
     named = ""
@@ -2061,6 +2069,9 @@ def delegate(args, root, adapter, config):
             raise AgentBoxError(f"--model {args.model} matches no installed native profile of this session "
                                 f"for the {args.role}; run {managed}")
     path, models = launch_config.workflow.models_for(args.role, tier)
+    if delegation_off(launch_config.workflow, args.role, path):
+        raise AgentBoxError(f"workflow.{args.role}.delegate is off, so the coordinator does this {args.role} work "
+                            f"itself in its own session; switch it on, or pass --model for one launch")
     if not models:
         raise AgentBoxError(f"{path} is empty, so the coordinator does this {args.role} work itself in its own "
                             f"session; configure candidates there to delegate it")
