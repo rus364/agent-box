@@ -89,9 +89,13 @@ null and `task_branch_head` gives its commit. These observations use the
 checkout's local and tracking refs.
 
 If a task's recorded root differs from its tracker root and its branch lacks
-the selected parent's tip, both resume commands stop before claiming or switching. Preserve the old
-branch under a backup name outside `ab/` and replay the intended task commits
-onto the selected parent. With unknown history, the commands report the two
+the selected parent's tip, both resume commands stop before claiming or switching.
+Inspect reports the reason in `resume_blocker` and still shows the diff when available.
+If the parent already contains the task head and that head has recorded successful
+validation, run `workflow finish TASK` to check its original acceptance.
+Otherwise preserve the old branch under a backup name
+outside `ab/` and replay the intended task commits onto the selected parent.
+With unknown history, the commands report the two
 heads so you can check the tracker relationship and diff.
 
 **Acceptance belongs to the code.** Validation, review and your explicit

@@ -875,8 +875,14 @@ def branch_context(root, task, parent, info, current, saved):
     if (previous and info["branch"] and ancestry.returncode == 1
             and gw.git(root, "rev-parse", "--is-shallow-repository") == "false"):
         problem = (f"Recorded root {previous} differs from selected parent {parent.id}. Comparing {observed}, "
-                   f"the task lacks the selected parent tip. Preserve {existing} under a backup name outside ab/ "
-                   f"and replay only the task's work onto {target}.")
+                   f"the task lacks the selected parent tip. ")
+        if (saved.get("head") == head and saved.get("validation", {}).get("exit") == 0
+                and gw._is_ancestor(root, head, target_head)):
+            problem += (f"The parent already contains the task head. Run agent-box workflow finish {task.id} "
+                        "from the task or parent branch to check the original acceptance.")
+        else:
+            problem += (f"Preserve {existing} under a backup name outside ab/ "
+                        f"and replay only the task's work onto {target}.")
         return fields, problem, None
     return fields, None, (f"Parent history is uncertain for {observed}. Check the tracker relationship "
                           "and inspect the diff between these commits.")
@@ -953,13 +959,14 @@ def inspect(root, binding, adapter, task, config, authors=None):
         unavailable.append(f"Current branch {branch or '(detached HEAD)'} is not task branch {expected}")
     if changes:
         unavailable.append(gw.dirty_tree_reason(changes))
-    branch_problem = mismatch
+    diff_problem = None
     if not starts["integration_target_head"]:
-        branch_problem = f"Fetch the default branch {info['base']} to inspect its diff and acceptance"
-    elif advisory and expected == branch and not gw._merge_base(root, head, starts["integration_target_head"]):
-        branch_problem = advisory
-    if branch_problem:
-        unavailable.append(branch_problem)
+        diff_problem = f"Fetch the default branch {info['base']} to inspect its diff and acceptance"
+    elif ((mismatch or advisory) and expected == branch
+          and not gw._merge_base(root, head, starts["integration_target_head"])):
+        diff_problem = advisory or f"No merge base found for {expected} and {starts['integration_target']}"
+    if diff_problem:
+        unavailable.append(diff_problem)
     review_state = read_review_state(root, binding, task)
     review = {"policy": config.workflow.review.policy,
               "route": review_route(config, task, parent),
@@ -983,6 +990,7 @@ def inspect(root, binding, adapter, task, config, authors=None):
     result = {"task": task.id, **info, **starts, "task_branch": expected, "current_branch": branch,
               "head": head, "scope": None, "configuration": configuration_summary(config),
               "session_provider": session_provider(),
+              "resume_blocker": mismatch,
               "acceptance": {"available": not unavailable, "reasons": unavailable},
               "review": review, "validation": None,
               "execution": {"worker": execution(config, "worker", config.workflow.effective_tier(task.tier), task.id),
@@ -998,6 +1006,7 @@ def inspect(root, binding, adapter, task, config, authors=None):
     if advisory:
         result["warnings"].append(advisory)
     if unavailable:
+        branch_problem = mismatch or diff_problem
         if task.state == "Done" or parent.state == "Done":
             next_step = completed_step(task, parent)
         elif branch_problem:
@@ -1038,6 +1047,8 @@ def inspect(root, binding, adapter, task, config, authors=None):
                       else gw.base_commit(root, base) == head and task.state not in ("In review", "Done")))
     if "next_step" in result["plan_sync"]:
         result["next_step"] = result["plan_sync"]["next_step"]
+    if mismatch and "Done" not in (task.state, parent.state):
+        result["next_step"] = mismatch
     return result
 
 
@@ -1585,6 +1596,7 @@ def begin(root, adapter, task, resume, *, existing_only=False):
                 raise AgentBoxError(INTERRUPTED_CHILD)
             gw.git(root, "branch", child, pending["head"])
             saved["child_start"] = {**saved.pop("child_begin"), "work_observed": False}
+            saved.pop("branch_root", None)
             save_evidence(root, task, saved)
             created = True
         start = gw.switch_branch(root, child, branch, resume=resume or created, existing_only=existing_only)

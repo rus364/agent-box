@@ -327,13 +327,23 @@ class InspectTests(unittest.TestCase):
         standalone = self.dispatch("begin", child.id)
         self.assertEqual(standalone["branch_start"], {"branch": task_branch, "from_branch": "main", "commit": main})
         child.parent = self.task.id
+        self.assertIn("replay only", self.inspect_readonly(child.id)["resume_blocker"])
+        (self.root / "child.py").write_text("value = 2\n")
+        gw.git(self.root, "add", "child.py")
+        gw.git(self.root, "commit", "-m", "standalone work")
+        child_head = gw.head_sha(self.root)
+        checked_out = self.inspect_readonly(child.id)
+        self.assertEqual(checked_out["acceptance"], {"available": True, "reasons": []})
+        self.assertEqual(checked_out["review"]["files"], 1)
         gw.git(self.root, "switch", "main")
         preview = self.inspect_readonly(child.id)
-        self.assertEqual(preview["task_branch_head"], main)
+        self.assertEqual(preview["task_branch_head"], child_head)
         self.assertEqual(preview["integration_target"], target)
         self.assertIsNone(preview["branch_start"])
-        reason = preview["next_step"]
-        for detail in (task_branch, main, target, target_head, "replay only"):
+        reason = preview["resume_blocker"]
+        self.assertEqual(reason, checked_out["resume_blocker"])
+        self.assertEqual(reason, preview["next_step"])
+        for detail in (task_branch, child_head, target, target_head, "replay only"):
             self.assertIn(detail, reason)
         with patch.object(workflow, "claim", side_effect=AssertionError("premature claim")):
             for args in (("begin", child.id, "--resume"), ("resume", child.id)):
@@ -341,7 +351,7 @@ class InspectTests(unittest.TestCase):
                     self.dispatch(*args)
                 self.assertEqual(str(refusal.exception), reason)
                 self.assertEqual(gw.current_branch(self.root), "main")
-                self.assertEqual(gw.local_branch_head(self.root, task_branch), main)
+                self.assertEqual(gw.local_branch_head(self.root, task_branch), child_head)
 
         gw.git(self.root, "branch", "-m", task_branch, "preserved-child")
         creation = {"branch": task_branch, "from_branch": target, "commit": target_head}
@@ -362,6 +372,19 @@ class InspectTests(unittest.TestCase):
         gw.git(self.root, "switch", "ab/1-task")
         gw.git(self.root, "commit", "--allow-empty", "-m", "more work on the same parent")
         self.assertFalse(self.dispatch("resume", child.id)["warnings"])
+
+    def test_reparented_branch_without_a_merge_base_has_no_inspectable_diff(self):
+        """Resume provenance can explain a refusal even when unrelated histories prevent a diff."""
+        child = self.tasks["2"] = Task("2", "1", "Child", parent="1", state="In progress", assignees=["1"])
+        unrelated = gw.git(self.root, "commit-tree", "HEAD^{tree}", "-m", "separate history")
+        gw.git(self.root, "switch", "-c", "ab/2-child", unrelated)
+        workflow.save_evidence(self.root, child, {"branch_root": child.id})
+
+        result = self.inspect_readonly(child.id)
+        self.assertIn("Recorded root 2", result["resume_blocker"])
+        self.assertFalse(result["acceptance"]["available"])
+        self.assertIn("No merge base", result["acceptance"]["reasons"][0])
+        self.assertIsNone(result["scope"])
 
     def test_parent_history_without_a_record_is_advisory(self):
         """An externally created child can resume with both observed heads available for manual inspection."""

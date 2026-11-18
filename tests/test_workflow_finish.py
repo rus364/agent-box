@@ -103,6 +103,27 @@ class ChildFinishTests(LandingCase):
         self.assertFalse(any(call.args[1] == "merge" for call in git.call_args_list))
         scope.assert_not_called()
 
+    def test_reparented_integrated_child_can_inspect_the_diff_and_finish_on_original_acceptance(self):
+        """A resume refusal must still direct accepted work already in the parent through finish."""
+        saved = workflow.read_evidence(self.root, self.child)
+        saved["branch_root"] = self.child.id
+        gw.git(self.root, "switch", "ab/7-parent")
+        gw.git(self.root, "merge", "--ff-only", "ab/8-child")
+        self.commit("later-parent.py")
+        gw.git(self.root, "switch", "ab/8-child")
+
+        workflow.save_evidence(self.root, self.child, {**saved, "head": saved["base_head"]})
+        self.assertIn("replay only", self.dispatch(["inspect", "8"])["resume_blocker"])
+        workflow.save_evidence(self.root, self.child, saved)
+        result = self.dispatch(["inspect", "8"])
+        self.assertTrue(result["acceptance"]["available"])
+        self.assertEqual(result["scope"], workflow.scope(self.root, "ab/7-parent"))
+        self.assertEqual(result["review"]["files"], 0)
+        self.assertIn("already contains the task head", result["resume_blocker"])
+        self.assertIn("workflow finish 8", result["next_step"])
+        self.assertNotIn("replay", result["next_step"])
+        self.assertEqual(self.dispatch(["finish", "8"])["state"], "Done")
+
     def test_integrated_child_metadata_edits_reuse_original_acceptance(self):
         """A child keeps its accepted content when only links and ordinary labels change."""
         self.interrupted_finish()
@@ -455,12 +476,13 @@ class NoCodeChildFinishTests(LandingCase):
                 self.assertEqual((budget["failures"], budget["pending"]), (1, "new-round"))
 
     def test_claimed_child_recovers_creation_and_switch_failures_at_original_parent(self):
-        """A successful Ready claim survives Git failure without substituting the later parent tip."""
+        """The recovered Ready start supersedes a former root even after the selected parent moves."""
         for failure, ident in (("branch", "9"), ("switch", "10")):
             with self.subTest(failure=failure):
                 self.child = replace(self.child, id=ident, state="Ready")
                 self.parent.children = [ident]
                 self.adapter.get.side_effect = lambda key: self.parent if key == "7" else self.child
+                workflow.save_evidence(self.root, self.child, {"branch_root": ident})
                 origin = gw.local_branch_head(self.root, "ab/7-parent")
                 original_git = gw.git
 
@@ -485,6 +507,8 @@ class NoCodeChildFinishTests(LandingCase):
                 self.assertEqual(gw.head_sha(self.root), origin)
                 self.assertEqual(workflow.read_evidence(self.root, self.child)["child_start"],
                                  {"head": origin, "parent": self.parent.id, "work_observed": False})
+                self.assertIsNone(self.dispatch(["inspect", ident])["resume_blocker"])
+                self.assertEqual(self.dispatch(["resume", ident])["task_branch_head"], origin)
                 self.adapter.reset_mock()
                 with self.assertRaisesRegex(AgentBoxError, "workflow validate"):
                     self.dispatch(["finish", ident])
