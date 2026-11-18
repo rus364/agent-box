@@ -11,7 +11,7 @@ from agent_box.config import BalanceConfig, Config, model_entry
 from agent_box.errors import AgentBoxError
 from agent_box.repo_binding import Binding
 from agent_box.tracker.core import Task, TrackerError
-from workflow_fixtures import BINDING, repository
+from workflow_fixtures import BINDING, origin_path, repository
 
 
 class InspectTests(unittest.TestCase):
@@ -363,6 +363,40 @@ class InspectTests(unittest.TestCase):
         gw.git(self.root, "switch", target)
         gw.git(self.root, "commit", "--allow-empty", "-m", "later parent work")
         self.assertEqual(self.dispatch("resume", child.id)["task_branch_head"], target_head)
+
+    def test_shallow_clone_blocks_reparented_task_when_parent_is_a_proven_descendant(self):
+        """A visible path from the task to its new parent proves the missing work even at a shallow boundary."""
+        gw.git(self.root, "push", "origin", "HEAD:main")
+        root = Path(self.temporary.name) / "shallow"
+        gw.git(self.root, "clone", "--depth=1", origin_path(self.temporary.name).as_uri(), root)
+        self.assertEqual(gw.git(root, "rev-parse", "--is-shallow-repository"), "true")
+        child = self.tasks["2"] = Task("2", "1", "Child", state="In progress", assignees=["1"])
+        task_branch, target = "ab/2-child", "ab/1-task"
+        with patch.object(workflow, "repository_root", return_value=root):
+            child_head = gw.head_sha(root)
+            self.dispatch("begin", child.id, "--resume")
+            gw.git(root, "switch", "-c", target, "main")
+            gw.git(root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+                   "commit", "--allow-empty", "-m", "parent work")
+            target_head = gw.head_sha(root)
+            child.parent = self.task.id
+            gw.git(root, "switch", "main")
+            refs = gw.git(root, "show-ref")
+            reason = self.inspect_readonly(child.id)["resume_blocker"]
+            self.assertIsNotNone(reason)
+            for detail in (f"refs/heads/{task_branch} at {child_head}", f"refs/heads/{target} at {target_head}",
+                           "already contains the task head"):
+                self.assertIn(detail, reason)
+            for args in (("begin", child.id, "--resume"), ("resume", child.id)):
+                with self.subTest(args=args), patch.object(workflow, "claim") as claim, \
+                        patch.object(gw, "switch_branch") as switch:
+                    with self.assertRaises(AgentBoxError) as refusal:
+                        self.dispatch(*args)
+                    self.assertEqual(str(refusal.exception), reason)
+                    claim.assert_not_called()
+                    switch.assert_not_called()
+                    self.assertEqual(gw.current_branch(root), "main")
+                    self.assertEqual(gw.git(root, "show-ref"), refs)
 
     def test_existing_child_replayed_onto_its_new_parent_can_resume(self):
         """A child creation record still describes its no-work start after its selected root changes."""

@@ -872,11 +872,12 @@ def branch_context(root, task, parent, info, current, saved):
     if ancestry.returncode == 0:
         return fields, None, None
     observed = f"{task_ref} at {head} and {target_ref} at {target_head}"
-    if (previous and info["branch"] and ancestry.returncode == 1
-            and gw.git(root, "rev-parse", "--is-shallow-repository") == "false"):
+    changed_root = previous and info["branch"] and ancestry.returncode == 1
+    parent_contains_task = changed_root and gw._is_ancestor(root, head, target_head)
+    if changed_root and (parent_contains_task or gw.git(root, "rev-parse", "--is-shallow-repository") == "false"):
         problem = (f"Recorded root {previous} differs from selected parent {parent.id}. Comparing {observed}, "
                    f"the task lacks the selected parent tip. ")
-        if gw._is_ancestor(root, head, target_head):
+        if parent_contains_task:
             problem += ("The parent already contains the task head. If the desired work is already included, "
                         f"keep {existing} and run agent-box workflow finish {task.id} from the task or parent "
                         "branch to check the original acceptance and follow any recovery instructions. "
