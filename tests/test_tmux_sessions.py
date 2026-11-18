@@ -209,7 +209,9 @@ class AttachAndStopTests(unittest.TestCase):
     def test_attach_evicts_the_ghost_client_of_a_dead_terminal(self):
         """Refresh host link policy before a resumed CLI can request a browser over SSH."""
         events = []
-        with mock.patch.object(runtime, "inspect_workspace_container", return_value={"State": {"Status": "running"}}), \
+        # The host bridge is under test; a suite run inside a box must not turn it off.
+        with mock.patch.object(runtime, "inside_box", return_value=False), \
+             mock.patch.object(runtime, "inspect_workspace_container", return_value={"State": {"Status": "running"}}), \
              mock.patch.object(runtime, "tmux_sessions", return_value=["claude-9"]), \
              mock.patch.object(runtime, "cleanup_workspace_container_if_idle"), \
              mock.patch.object(runtime.links, "reattach", side_effect=lambda *a: events.append("refresh")) as refresh, \
