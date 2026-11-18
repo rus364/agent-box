@@ -163,6 +163,8 @@ empty.
   Inspection and launch check the installed profile against its ownership
   digest and the current rendering from the saved list at the effective role or
   tier path. Missing, symlinked, edited or stale profiles leave the route managed.
+  Claude picks also run managed if `CLAUDE_CODE_EFFORT_LEVEL` or
+  `CLAUDE_CODE_SUBAGENT_MODEL` is nonempty because either can override the profile.
   An empty project tier can use a matching saved role profile.
 - **Vendor balancing.** Global `workflow.balance.mode` is `off` by default.
   Set it to `weighted` and set `workflow.balance.weights`, for example

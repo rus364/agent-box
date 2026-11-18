@@ -38,7 +38,8 @@ from .errors import AgentBoxError
 from . import git_workflow as gw
 from .launch_options import SPEC, parse_spec
 from .paths import WORKFLOW_STATE
-from .provider_runner import SEVERITIES, ProviderFailure, preflight, require_sync_coordinator, review_report, run, save_private
+from .provider_runner import (CLAUDE_NATIVE_OVERRIDE_ENV, SEVERITIES, ProviderFailure, preflight, require_sync_coordinator,
+                              review_report, run, save_private)
 from .repo_binding import Binding, repository_root, server_identity
 from .routing import eligible_weights, reserve_excluded, select
 from .tracker.core import TrackerError, claim, checkboxes, root_task, completion_reasons, blocking_reasons
@@ -1853,16 +1854,28 @@ def release_branch(root, config, task, branch, base, *, expected_head=None):
     return _cleanup_branch(root, config, task, branch=branch, base=base, expected_head=expected_head)
 
 
+def native_candidate_limitation(candidate):
+    from .speed import native_limitation
+    if session_external_api():
+        return "native subagents inherit this session's external API"
+    provider = candidate["provider"]
+    if provider == "claude":
+        for name in CLAUDE_NATIVE_OVERRIDE_ENV:
+            if os.environ.get(name):
+                return f"{name} can override the native Claude profile"
+    return native_limitation(provider, candidate.get("speed", "inherit"))
+
+
 def native_profile(config, role, tier, candidate):
     """Name the installed profile only when it can run this exact candidate."""
     from . import runtime
     from .agent_profiles import installed_profile_matches, profile_candidate, profile_name
-    from .speed import configuration_error, native_limitation
+    from .speed import configuration_error
     path, _ = config.workflow.models_for(role, tier)
     provider = candidate["provider"]
-    if (path.startswith("--") or not config.workflow.enabled or candidate.get("api_provider") or session_external_api()
+    if (path.startswith("--") or not config.workflow.enabled or candidate.get("api_provider")
             or configuration_error(provider, candidate)
-            or native_limitation(provider, candidate.get("speed", "inherit"))
+            or native_candidate_limitation(candidate)
             or role in ("reviewer", "sync") and candidate["effort"] == "default"):
         return None
     # An empty project tier falls back to the role profile even if the saved tier has its own.
@@ -1908,7 +1921,6 @@ def execution(config, role, tier, task_id, authors=None):
     hand a reserve fallback to the session's profile at launch
     (launch_native_route).
     """
-    from .speed import native_limitation
     path, models = config.workflow.models_for(role, tier, authors or ())
     if delegation_off(config.workflow, role, path):
         return {"mode": "self", "models": path, "reason": f"workflow.{role}.delegate is off"}
@@ -1924,8 +1936,7 @@ def execution(config, role, tier, task_id, authors=None):
     weights = eligible_weights(config.workflow, models) if config.workflow.balance.mode == "weighted" else {}
     # A rotation, or a sole weighted vendor that does not open the list, changes the opener.
     balanced = not path.startswith("--") and (len(weights) > 1 or bool(weights) and vendor(first) not in weights)
-    limitation = ("native subagents inherit this session's external API" if session_external_api()
-                  else native_limitation(first["provider"], first.get("speed", "inherit")))
+    limitation = native_candidate_limitation(first)
     if not balanced and (profile := native_profile(config, role, tier, first)):
         native[first["provider"]] = profile
     provider = session_provider()
@@ -2165,6 +2176,8 @@ def review(args, root, binding, adapter, config, task, parent, tasks, base, fing
 
     def open_native(route, expected):
         with lock(root, "review"):
+            if scope(root, base) != fingerprint:
+                raise AgentBoxError("Code or base changed before review; start a review of the current head")
             require_review_budget(task, read_review_budget(root, binding, task, limit))
             prepare(config)
             saved = evidence(root, task, fingerprint, base)

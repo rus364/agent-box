@@ -10,6 +10,7 @@ import contextlib
 import copy
 import io
 import json
+import os
 import shlex
 import stat
 import tempfile
@@ -368,6 +369,36 @@ class DelegateCommandTests(WorkflowCase):
             self.assertIn(opened["input"]["path"], opened["message"])
             self.assertEqual((forced["route"]["model"], forced["response"]), ("opus", ANSWER))
             run.assert_called_once()
+
+    def test_claude_overrides_keep_the_worker_pick_managed(self):
+        """An inherited model or effort setting defeats exact native routing, even if its value matches the pick."""
+        opener = candidate("codex", "opener", "high")
+        worker = candidate("claude", "opus", "high")
+        exhausted = {"windows": [{"remaining": 0, "reset_at": 4102444800}]}
+        for models in ([worker], [opener, worker]):
+            self.config.workflow.worker.models = models
+            install_profiles(self.config)
+            with routing_session("claude"), \
+                    patch.object(workflow, "usage_snapshot", side_effect=lambda provider, **_: (
+                        exhausted if provider == "codex" else {})), \
+                    patch.dict(os.environ, {"CLAUDE_CODE_EFFORT_LEVEL": "", "CLAUDE_CODE_SUBAGENT_MODEL": ""}):
+                self.assertEqual(self.delegate("worker")["launch"], "native")
+                for name, value in (("CLAUDE_CODE_EFFORT_LEVEL", "high"), ("CLAUDE_CODE_SUBAGENT_MODEL", "opus")):
+                    with self.subTest(opener=models[0]["provider"], override=name), \
+                            patch.dict(os.environ, {name: value}), \
+                            patch.object(workflow, "run", return_value=ANSWER) as run:
+                        result = self.delegate("worker")
+                        self.assertNotIn("launch", result)
+                        self.assertEqual((result["route"]["model"], result["response"]), ("opus", ANSWER))
+                        run.assert_called_once()
+                        if models == [worker]:
+                            route = self.run_workflow("inspect", "1")["execution"]["worker"]
+                            self.assertEqual(route["for_this_session"], "managed")
+                            self.assertIn(name, route["native_limitation"])
+                            with self.assertRaisesRegex(AgentBoxError, name):
+                                self.delegate("worker", "--native")
+                            pinned = self.delegate("worker", "--model", "claude:opus:high")
+                            self.assertEqual((pinned["route"]["model"], pinned["response"]), ("opus", ANSWER))
 
     def test_unbalanced_reserve_fallback_stays_managed_unless_the_session_profile_runs_it(self):
         """A profile runs its CLI's first candidate; any other pick or session would run what was not selected.

@@ -13,8 +13,8 @@ def isolated_environment(directory):
     # A workspace session exports its runtime config, notification credentials
     # and flags; the suite must see only its own fixtures, never the caller's.
     env = {name: value for name, value in os.environ.items() if not name.startswith("AGENT_BOX_")}
-    # Workflow reads the calling agent from these markers; tests choose it themselves.
-    for name in ("CLAUDECODE", "CODEX_THREAD_ID"):
+    # Workflow routing reads the calling agent and Claude's native overrides.
+    for name in ("CLAUDECODE", "CODEX_THREAD_ID", "CLAUDE_CODE_EFFORT_LEVEL", "CLAUDE_CODE_SUBAGENT_MODEL"):
         env.pop(name, None)
     for name, child in {
         "XDG_CONFIG_HOME": "xdg-config", "XDG_DATA_HOME": "xdg-data",

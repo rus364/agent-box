@@ -83,7 +83,9 @@ with existing-only branch switching. It never recreates lost work from base.
   detected session CLI, matches the saved profile candidate (model, effort,
   inherited speed, built-in API, no `ext` session), and the installed file
   matches both its ownership digest and the current rendering. Missing,
-  symlinked, edited or stale profiles leave the run managed.
+  symlinked, edited or stale profiles leave the run managed. A Claude pick
+  stays managed if `CLAUDE_CODE_EFFORT_LEVEL` or `CLAUDE_CODE_SUBAGENT_MODEL`
+  is nonempty because either can override the profile.
   Review and sync also require non-default effort. A reserve fallback can
   therefore run natively although static inspection reported `managed`. The
   handoff names `profile`, `message` and, for review/sync, `result_command`; it

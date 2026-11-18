@@ -31,6 +31,7 @@ DIAGNOSTIC_MAX_FILES = 20
 DIAGNOSTIC_MAX_AGE = 7 * 24 * 3600
 STREAM_LIMIT = 8 * 1024 * 1024
 SYNC_EXECUTOR_ENV = "AGENT_BOX_SYNC_EXECUTOR"
+CLAUDE_NATIVE_OVERRIDE_ENV = ("CLAUDE_CODE_SUBAGENT_MODEL", "CLAUDE_CODE_EFFORT_LEVEL")
 
 
 def require_sync_coordinator():
@@ -311,7 +312,7 @@ def run(route, role, root, prompt, *, timeout=3600, read_paths=(), diagnostics=N
     """
     from .external_launch import builtin_environment, prepare
     env = builtin_environment(os.environ)
-    for key in ("CLAUDE_CODE_SUBAGENT_MODEL", "CLAUDE_CODE_EFFORT_LEVEL", "CLAUDECODE"):
+    for key in (*CLAUDE_NATIVE_OVERRIDE_ENV, "CLAUDECODE"):
         env.pop(key, None)
     from .notify import SUPPRESS_NOTIFY_ENV
     env[SUPPRESS_NOTIFY_ENV] = "1"

@@ -2,6 +2,7 @@
 import copy
 import hashlib
 import json
+import os
 import stat
 import tempfile
 import unittest
@@ -148,6 +149,39 @@ class ReviewWorkflowTests(WorkflowCase):
         self.report.write_text("Verdict: PASS\n\nReviewed.\n")
         result = self.run_workflow("review", "1", "--result", str(self.report), "--provider", "claude", "--model", "opus")
         self.assertEqual((result["verdict"], result["reconciliation"]["status"]), ("PASS", "applied"))
+
+    def test_claude_overrides_keep_the_reviewer_pick_managed(self):
+        """A native descriptor cannot bind the requested model and effort while Claude may override them."""
+        opus = candidate("claude", "opus", "high")
+        codex = candidate("codex", "opener", "high")
+        exhausted = {"windows": [{"remaining": 0, "reset_at": 4102444800}]}
+        self.config.workflow.review.max_rounds = 6
+        for models in ([opus], [codex, opus]):
+            self.config.workflow.review.models = models
+            install_profiles(self.config)
+            with routing_session("claude"), \
+                    patch.object(workflow, "usage_snapshot", side_effect=lambda provider, **_: (
+                        exhausted if provider == "codex" else {})), \
+                    patch.dict(os.environ, {"CLAUDE_CODE_EFFORT_LEVEL": "", "CLAUDE_CODE_SUBAGENT_MODEL": ""}):
+                for name, value in (("CLAUDE_CODE_EFFORT_LEVEL", "high"), ("CLAUDE_CODE_SUBAGENT_MODEL", "opus")):
+                    with self.subTest(opener=models[0]["provider"], override=name), \
+                            patch.dict(os.environ, {name: value}), \
+                            patch.object(workflow, "run", side_effect=managed_runner(lambda *args, **kwargs: answer())) as run:
+                        result = self.run_workflow("review", "1")
+                        self.assertEqual((result["route"]["model"], result.get("verdict")), ("opus", "PASS"))
+                        self.assertEqual(json.loads(Path(result["result_path"]).read_text())["backend"], "managed")
+                        run.assert_called_once()
+                        if models == [opus]:
+                            route = self.run_workflow("inspect", "1")["execution"]["reviewer"]
+                            self.assertEqual(route["for_this_session"], "managed")
+                            self.assertIn(name, route["native_limitation"])
+                            with self.assertRaisesRegex(AgentBoxError, name):
+                                self.native_round()
+                opened = self.run_workflow("review", "1")
+                self.assertEqual(opened["launch"], "native")
+                result = self.run_workflow("review", "1", "--result", str(self.report),
+                                           "--provider", "claude", "--model", "opus")
+                self.assertEqual(result["verdict"], "PASS")
 
     def test_unbalanced_reserve_fallback_review_stays_managed_unless_the_session_profile_runs_it(self):
         """A later same-CLI reviewer past an exhausted profile model, or another CLI's pick, must not open a native round."""
@@ -629,6 +663,22 @@ class ReviewWorkflowTests(WorkflowCase):
                         self.assertRaisesRegex(AgentBoxError, "Another local review operation owns"):
                     self.run_workflow("review", "1", *flags)
         provider.assert_not_called()
+        self.assertFalse(workflow.review_budget_path(self.root, BINDING, self.task).exists())
+        self.assertFalse((workflow.WORKFLOW_STATE / "review-inputs").exists())
+        self.assertFalse((workflow.WORKFLOW_STATE / "texts").exists())
+
+    def test_native_review_refuses_a_head_that_changes_during_selection(self):
+        """A commit made during usage refresh invalidates the round before it publishes input or spends budget."""
+        def refresh(provider, **kwargs):
+            gw.git(self.root, "commit", "--allow-empty", "-m", "Change head during selection")
+            return {}
+
+        with routing_session("claude"), patch.object(workflow, "usage_snapshot", side_effect=refresh) as usage, \
+                patch.object(workflow, "run") as run, \
+                self.assertRaisesRegex(AgentBoxError, "Code or base changed before review; start a review of the current head"):
+            self.run_workflow("review", "1")
+        usage.assert_called_once_with("claude", no_cache=True)
+        run.assert_not_called()
         self.assertFalse(workflow.review_budget_path(self.root, BINDING, self.task).exists())
         self.assertFalse((workflow.WORKFLOW_STATE / "review-inputs").exists())
         self.assertFalse((workflow.WORKFLOW_STATE / "texts").exists())
