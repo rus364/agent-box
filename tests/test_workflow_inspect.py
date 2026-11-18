@@ -327,7 +327,10 @@ class InspectTests(unittest.TestCase):
         standalone = self.dispatch("begin", child.id)
         self.assertEqual(standalone["branch_start"], {"branch": task_branch, "from_branch": "main", "commit": main})
         child.parent = self.task.id
-        self.assertIn("replay only", self.inspect_readonly(child.id)["resume_blocker"])
+        reason = self.inspect_readonly(child.id)["resume_blocker"]
+        self.assertIn("already contains the task head", reason)
+        self.assertIn("If the branch was empty or work must continue, preserve any existing work "
+                      f"and start from {target}", reason)
         (self.root / "child.py").write_text("value = 2\n")
         gw.git(self.root, "add", "child.py")
         gw.git(self.root, "commit", "-m", "standalone work")

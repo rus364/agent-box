@@ -876,10 +876,12 @@ def branch_context(root, task, parent, info, current, saved):
             and gw.git(root, "rev-parse", "--is-shallow-repository") == "false"):
         problem = (f"Recorded root {previous} differs from selected parent {parent.id}. Comparing {observed}, "
                    f"the task lacks the selected parent tip. ")
-        if (saved.get("head") == head and saved.get("validation", {}).get("exit") == 0
-                and gw._is_ancestor(root, head, target_head)):
-            problem += (f"The parent already contains the task head. Run agent-box workflow finish {task.id} "
-                        "from the task or parent branch to check the original acceptance.")
+        if gw._is_ancestor(root, head, target_head):
+            problem += ("The parent already contains the task head. If the desired work is already included, "
+                        f"keep {existing} and run agent-box workflow finish {task.id} from the task or parent "
+                        "branch to check the original acceptance and follow any recovery instructions. "
+                        "If the branch was empty or work must continue, preserve any existing work "
+                        f"and start from {target}.")
         else:
             problem += (f"Preserve {existing} under a backup name outside ab/ "
                         f"and replay only the task's work onto {target}.")

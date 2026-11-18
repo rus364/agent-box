@@ -91,10 +91,12 @@ checkout's local and tracking refs.
 If a task's recorded root differs from its tracker root and its branch lacks
 the selected parent's tip, both resume commands stop before claiming or switching.
 Inspect reports the reason in `resume_blocker` and still shows the diff when available.
-If the parent already contains the task head and that head has recorded successful
-validation, run `workflow finish TASK` to check its original acceptance.
-Otherwise preserve the old branch under a backup name
-outside `ab/` and replay the intended task commits onto the selected parent.
+If the parent already contains the task head, check whether the desired work is
+included. If it is, keep the task branch and run `workflow finish TASK` to check
+its original acceptance and follow any recovery instructions. If the branch was
+empty or work must continue, preserve any existing work and start from the selected
+parent. If the branches have diverged, preserve the old branch under a backup name
+outside `ab/` and replay only the intended task commits onto the selected parent.
 With unknown history, the commands report the two
 heads so you can check the tracker relationship and diff.
 

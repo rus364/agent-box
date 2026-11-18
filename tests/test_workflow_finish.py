@@ -113,14 +113,16 @@ class ChildFinishTests(LandingCase):
         gw.git(self.root, "switch", "ab/8-child")
 
         workflow.save_evidence(self.root, self.child, {**saved, "head": saved["base_head"]})
-        self.assertIn("replay only", self.dispatch(["inspect", "8"])["resume_blocker"])
+        stale_reason = self.dispatch(["inspect", "8"])["resume_blocker"]
         workflow.save_evidence(self.root, self.child, saved)
         result = self.dispatch(["inspect", "8"])
         self.assertTrue(result["acceptance"]["available"])
         self.assertEqual(result["scope"], workflow.scope(self.root, "ab/7-parent"))
         self.assertEqual(result["review"]["files"], 0)
         self.assertIn("already contains the task head", result["resume_blocker"])
-        self.assertIn("workflow finish 8", result["next_step"])
+        self.assertEqual(result["resume_blocker"], stale_reason)
+        self.assertIn("If the desired work is already included, keep ab/8-child and run agent-box workflow finish 8",
+                      result["next_step"])
         self.assertNotIn("replay", result["next_step"])
         self.assertEqual(self.dispatch(["finish", "8"])["state"], "Done")
 
