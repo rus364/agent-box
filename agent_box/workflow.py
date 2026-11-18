@@ -1860,13 +1860,18 @@ def native_profile(config, role, tier, candidate):
     """Name the installed profile only when it can run this exact candidate."""
     from .agent_profiles import profile_candidate, profile_name
     from .speed import configuration_error, native_limitation
-    path, models = config.workflow.models_for(role, tier)
+    path, _ = config.workflow.models_for(role, tier)
     provider = candidate["provider"]
     if (path.startswith("--") or not config.workflow.enabled or candidate.get("api_provider") or session_external_api()
             or configuration_error(provider, candidate)
             or native_limitation(provider, candidate.get("speed", "inherit"))
             or role in ("reviewer", "sync") and candidate["effort"] == "default"):
         return None
+    # Profiles are rendered from the saved lists: a repository's overlaid list
+    # matched a pick the installed profile does not run.
+    saved = copy.copy(getattr(config, "_project_base", config).workflow)
+    saved.pins = {}
+    path, models = saved.models_for(role, tier)
     profile = profile_candidate(models, provider)
     if any(candidate.get(key, default) != profile.get(key, default)
            for key, default in (("model", ""), ("effort", "default"), ("speed", "inherit"))):

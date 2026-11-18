@@ -690,6 +690,21 @@ class DelegateCommandTests(WorkflowCase):
                 del self.config.workflow.pins[role]
             self.assertEqual(settings.models, [candidate("claude", "saved", "high")])
 
+    def test_a_project_list_cannot_borrow_the_profile_rendered_from_the_saved_list(self):
+        """Profiles come from saved lists, so a repository's overlaid pick must run managed, not as another model."""
+        saved = copy.deepcopy(self.config)
+        saved.workflow.worker.models = [candidate("claude", "global", "medium")]
+        self.config._project_base = saved
+        self.assertEqual(self.run_workflow("inspect", "1")["execution"]["worker"]["native"], {})
+        with patch.object(workflow, "run", return_value=ANSWER) as run:
+            result = self.delegate("worker")
+        self.assertNotIn("launch", result)
+        self.assertEqual(run.call_args.args[0]["model"], "worker-model")
+        saved.workflow.worker.models = copy.deepcopy(self.config.workflow.worker.models)
+        with patch.object(workflow, "run") as run:
+            self.assertEqual(self.delegate("worker")["profile"], "ab-worker")
+        run.assert_not_called()
+
     def test_a_native_assignment_is_refused_where_the_sessions_route_is_managed(self):
         """The scout list opens with codex, so a Claude session's same-named profile is the fallback."""
         inspected = self.run_workflow("inspect", "1")

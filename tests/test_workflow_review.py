@@ -1,4 +1,5 @@
 """Review rounds: one neutral input, attempts spent only by verdicts, and results bound to their round."""
+import copy
 import hashlib
 import json
 import stat
@@ -157,6 +158,17 @@ class ReviewWorkflowTests(WorkflowCase):
             result = self.run_workflow("review", "1", "--managed")
         self.assertEqual(result["verdict"], "PASS")
         self.assertEqual(json.loads(Path(result["result_path"]).read_text())["backend"], "managed")
+        self.assertEqual(run.call_count, 1)
+
+    def test_a_project_reviewer_list_runs_managed_when_the_saved_profile_runs_another_model(self):
+        """Profiles come from saved lists; a native round would record the project's model for one that never ran."""
+        saved = copy.deepcopy(self.config)
+        saved.workflow.review.models = [candidate("claude", "global", "medium")]
+        self.config._project_base = saved
+        with patch.object(workflow, "run", side_effect=managed_runner(lambda *args, **kwargs: answer())) as run:
+            result = self.run_workflow("review", "1")
+        self.assertNotIn("launch", result)
+        self.assertEqual((result["route"]["model"], result["verdict"]), ("m", "PASS"))
         self.assertEqual(run.call_count, 1)
 
     def test_balanced_reviewer_without_a_detected_session_runs_managed(self):

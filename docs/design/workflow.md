@@ -82,6 +82,8 @@ with existing-only branch switching. It never recreates lost work from base.
   returns a `launch: native` handoff on any route when the pick belongs to the
   detected session CLI and matches its profile exactly (model, effort,
   inherited speed, built-in API, no `ext` session); otherwise it runs managed.
+  The profile is matched against the saved lists it was rendered from, so a
+  project's overlaid list never borrows a profile that runs another model.
   Review and sync also require non-default effort. A reserve fallback can
   therefore run natively although static inspection reported `managed`. The
   handoff names `profile`, `message` and, for review/sync, `result_command`; it

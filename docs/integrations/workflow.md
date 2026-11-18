@@ -153,7 +153,8 @@ empty.
   `workflow review` or `workflow sync` without `--native` or `--managed`)
   selects after reserve filtering and any balancing. When the pick belongs to
   the session's detected CLI and its installed profile runs exactly that
-  candidate (model, effort, speed, built-in API), it returns a `launch: native`
+  candidate (model, effort, speed, built-in API; profiles follow the saved
+  lists, so a project's own list runs managed), it returns a `launch: native`
   handoff (`profile`, `message`, and a review/sync `result_command`) instead of
   running, on any route; a reserve fallback can do so even though inspection
   reported `managed`. Otherwise, and for an undetected session or one launched

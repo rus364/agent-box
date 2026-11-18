@@ -528,6 +528,14 @@ class WorkflowTextDeliveryTests(WorkflowCase):
                 text_summary.compact("x" * 70000, self.config, self.root, label="fixture")
             self.assertIn(f"Workflow behavior: {version} (scout)", run.call_args.args[3])
 
+    def test_scout_delegation_off_still_summarizes_oversized_text(self):
+        """The switch hands research to the coordinator; oversized deliveries would otherwise stop with nothing to summarize them."""
+        self.config.workflow.scout.delegate = False
+        with patch.object(workflow, "run", return_value="Short verified summary.") as run:
+            summary, _ = text_summary.compact("x" * 70000, self.config, self.root, label="fixture")
+        run.assert_called_once()
+        self.assertIn("Short verified summary.", summary)
+
     def test_sync_summaries_preserve_formatted_outcomes_without_requiring_terminal_position(self):
         """Summaries may move an explicit outcome, but cannot hide or invent another marker."""
         marker = " \t`Sync: UPDATED` \t"
