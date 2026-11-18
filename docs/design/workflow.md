@@ -85,7 +85,9 @@ with existing-only branch switching. It never recreates lost work from base.
   matches both its ownership digest and the current rendering. Missing,
   symlinked, edited or stale profiles leave the run managed. A Claude pick
   stays managed if `CLAUDE_CODE_EFFORT_LEVEL` or `CLAUDE_CODE_SUBAGENT_MODEL`
-  is nonempty because either can override the profile.
+  is nonempty because either can override the profile. Safe mode hides custom
+  profiles, so Claude picks also stay managed in interactive `--safe-mode`
+  sessions. Safe-mode detection applies only to launches through agent-box.
   Review and sync also require non-default effort. A reserve fallback can
   therefore run natively although static inspection reported `managed`. The
   handoff names `profile`, `message` and, for review/sync, `result_command`; it

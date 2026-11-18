@@ -400,6 +400,35 @@ class DelegateCommandTests(WorkflowCase):
                             pinned = self.delegate("worker", "--model", "claude:opus:high")
                             self.assertEqual((pinned["route"]["model"], pinned["response"]), ("opus", ANSWER))
 
+    def test_claude_safe_mode_keeps_worker_picks_managed(self):
+        """Safe mode hides the matching Claude profile even for a reserve fallback or a one-launch model."""
+        opus = candidate("claude", "opus", "high")
+        codex = candidate("codex", "opener", "high")
+        exhausted = {"windows": [{"remaining": 0, "reset_at": 4102444800}]}
+        limitation = "Claude safe mode hides custom agent profiles"
+        with patch.dict(os.environ, {runtime.CLAUDE_SAFE_MODE_ENV: "1"}):
+            for models in ([opus], [codex, opus]):
+                self.config.workflow.worker.models = models
+                install_profiles(self.config)
+                with self.subTest(opener=models[0]["provider"]), routing_session("claude"), \
+                        patch.object(workflow, "usage_snapshot", side_effect=lambda provider, **_: (
+                            exhausted if provider == "codex" else {})), \
+                        patch.object(workflow, "run", return_value=ANSWER) as run:
+                    result = self.delegate("worker")
+                    self.assertEqual((result["route"]["model"], result["response"]), ("opus", ANSWER))
+                    run.assert_called_once()
+                    if models == [opus]:
+                        route = self.run_workflow("inspect", "1")["execution"]["worker"]
+                        self.assertEqual((route["for_this_session"], route["native_limitation"]), ("managed", limitation))
+                        with self.assertRaisesRegex(AgentBoxError, limitation):
+                            self.delegate("worker", "--native")
+                        pinned = self.delegate("worker", "--model", "claude:opus:high")
+                        self.assertEqual((pinned["route"]["model"], pinned["response"]), ("opus", ANSWER))
+            with routing_session("codex"), patch.object(workflow, "run") as run:
+                result = self.delegate("worker")
+                self.assertEqual((result["launch"], result["route"]["model"]), ("native", "opener"))
+                run.assert_not_called()
+
     def test_unbalanced_reserve_fallback_stays_managed_unless_the_session_profile_runs_it(self):
         """A profile runs its CLI's first candidate; any other pick or session would run what was not selected.
 

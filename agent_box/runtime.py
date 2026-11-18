@@ -3092,6 +3092,7 @@ _CLAUDE_MODEL_PREFIX_MANAGEMENT_COMMANDS = frozenset({
 
 _CLAUDE_INFORMATION_FLAGS = frozenset({"--help", "-h", "--version", "-v"})
 _CLAUDE_BACKGROUND_FLAGS = frozenset({"--bg", "--background"})
+CLAUDE_SAFE_MODE_ENV = "AGENT_BOX_CLAUDE_SAFE_MODE"
 
 
 def is_claude_non_session_flag_invocation(rest: list[str]) -> bool:
@@ -3148,6 +3149,19 @@ def is_claude_session_invocation(rest: list[str]) -> bool:
         command = rest[1] if len(rest) > 1 else ""
         return command not in _CLAUDE_MODEL_PREFIX_MANAGEMENT_COMMANDS
     return True
+
+
+def claude_batch_invocation(flags: list[str]) -> bool:
+    return any(arg in {"-p", "--print", "--dry-run", "--yes"} or
+               arg.startswith(("--print=", "--yes=")) for arg in flags)
+
+
+def claude_safe_mode_invocation(agent: str, rest: list[str]) -> bool:
+    if agent != "claude":
+        return False
+    flags = rest[:rest.index("--")] if "--" in rest else rest
+    return ("--safe-mode" in flags and is_claude_session_invocation(rest)
+            and not claude_batch_invocation(flags))
 
 
 def claude_session_args(
@@ -3372,6 +3386,13 @@ def runtime_main(
         invocation, process_env = invocation_env(config, agent)
         # Channel/workflow values are invocation policy, not box identity.
         invocation += extra_env
+        if claude_safe_mode_invocation(agent, rest):
+            marker = f"{CLAUDE_SAFE_MODE_ENV}=1"
+            if session is None:
+                invocation.append(marker)
+            else:
+                # The shared tmux server keeps its first client's environment.
+                command = ["env", marker, *command]
         if session is not None:
             announce_existing_sessions(spec.name)
             command = session.wrap(command)
@@ -3801,6 +3822,9 @@ def host_main(
         env.update(config.box.env.set)
         # Owned metadata describes this launch, even when box.env.set names these keys.
         env["AGENT_BOX_RUNTIME_CONFIG"] = str(session_runtime(config, container=False))
+        env.pop(CLAUDE_SAFE_MODE_ENV, None)
+        if claude_safe_mode_invocation(agent, rest):
+            env[CLAUDE_SAFE_MODE_ENV] = "1"
         if getattr(config, "_launch", {}).get("notify") is False:
             env[notify_module.NOTIFY_OFF_ENV] = "1"
         # agent-box's own request channel is not part of the session it describes.
@@ -3897,9 +3921,7 @@ def host_interactive_invocation(agent: str, rest: list[str], *, batch=False) -> 
             command = command[1:]
         if command[:1] == ["import"]:
             return False
-        return is_claude_session_invocation(rest) and (batch or not any(
-            arg in {"-p", "--print", "--dry-run", "--yes"} or
-            arg.startswith(("--print=", "--yes=")) for arg in flags))
+        return is_claude_session_invocation(rest) and (batch or not claude_batch_invocation(flags))
     if any(arg in {"--help", "-h", "--version", "-V"} for arg in flags):
         return False
     # Skip option values so a model/profile named 'exec' remains interactive.

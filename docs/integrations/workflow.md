@@ -165,6 +165,9 @@ empty.
   tier path. Missing, symlinked, edited or stale profiles leave the route managed.
   Claude picks also run managed if `CLAUDE_CODE_EFFORT_LEVEL` or
   `CLAUDE_CODE_SUBAGENT_MODEL` is nonempty because either can override the profile.
+  Safe mode hides custom profiles, so Claude picks also stay managed in
+  interactive `--safe-mode` sessions. Safe-mode detection applies only to
+  launches through agent-box.
   An empty project tier can use a matching saved role profile.
 - **Vendor balancing.** Global `workflow.balance.mode` is `off` by default.
   Set it to `weighted` and set `workflow.balance.weights`, for example

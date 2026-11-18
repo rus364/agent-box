@@ -1855,11 +1855,14 @@ def release_branch(root, config, task, branch, base, *, expected_head=None):
 
 
 def native_candidate_limitation(candidate):
+    from .runtime import CLAUDE_SAFE_MODE_ENV
     from .speed import native_limitation
     if session_external_api():
         return "native subagents inherit this session's external API"
     provider = candidate["provider"]
     if provider == "claude":
+        if os.environ.get(CLAUDE_SAFE_MODE_ENV) == "1":
+            return "Claude safe mode hides custom agent profiles"
         for name in CLAUDE_NATIVE_OVERRIDE_ENV:
             if os.environ.get(name):
                 return f"{name} can override the native Claude profile"

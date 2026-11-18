@@ -1098,6 +1098,50 @@ class ContainerHostParityTests(IsolatedRuntimeTest):
                         runtime.runtime_main(["codex"], runtime.PACKAGE_ROOT)
                 prepare.assert_called_once_with(settings, workspace, "codex", [])
 
+    def test_box_marks_only_the_current_interactive_claude_safe_mode_session(self):
+        """A shared workspace or tmux server may host safe-mode and ordinary Claude sessions together."""
+        root = Path(self._state_tmp.name) / "workspace"
+        root.mkdir()
+        marker = f"{runtime.CLAUDE_SAFE_MODE_ENV}=1"
+        for detachable in (False, True):
+            for args, marked in ((["--safe-mode"], True), ([], False),
+                                 (["--", "--safe-mode"], False), (["-p", "--safe-mode", "prompt"], False),
+                                 (["--safe-mode", "--version"], False)):
+                with self.subTest(detachable=detachable, args=args), \
+                        mock.patch.object(runtime.host_podman, "require"), \
+                        mock.patch.object(runtime, "resolve_workspace", return_value=Workspace(root, root)), \
+                        mock.patch.object(runtime, "ensure_workspace_image", return_value="sha256:test-image"), \
+                        mock.patch.object(runtime, "tmux_enabled", return_value=detachable), \
+                        mock.patch.object(runtime, "announce_existing_sessions"), \
+                        mock.patch.object(runtime.TmuxSession, "finish", return_value=0), \
+                        mock.patch.object(runtime, "launch_in_workspace_container", return_value=0) as launch:
+                    with self.assertRaises(SystemExit) as exited:
+                        runtime.runtime_main(["claude", *args], runtime.PACKAGE_ROOT)
+                    self.assertEqual(exited.exception.code, 0)
+                    spec, _, command, invocation, _ = launch.call_args.args
+                    self.assertNotIn(f"--env={marker}", spec.create_argv)
+                    self.assertEqual(marker in invocation, marked and not detachable)
+                    self.assertEqual(marker in command, marked and detachable)
+                    if marked and detachable:
+                        marker_index = command.index(marker)
+                        self.assertEqual(command[marker_index - 1:marker_index + 2], ["env", marker, "claude"])
+
+    def test_host_child_safe_mode_marker_describes_its_own_claude_arguments(self):
+        """An inherited marker cannot make an ordinary nested host session appear to use safe mode."""
+        root = Path(self._state_tmp.name)
+        marker = runtime.CLAUDE_SAFE_MODE_ENV
+        with mock.patch.object(runtime, "resolved_workspace", return_value=Workspace(root, root)), \
+                mock.patch.object(runtime.shutil, "which", return_value="/fixture/claude"), \
+                mock.patch.object(runtime, "tmux_enabled", return_value=False), \
+                mock.patch.object(runtime.subprocess, "call", return_value=0) as call:
+            self.assertEqual(runtime.host_main("claude", ["--safe-mode"]), 0)
+            self.assertEqual(call.call_args.kwargs["env"][marker], "1")
+            with mock.patch.dict(os.environ, {marker: "1"}):
+                for args in ([], ["--", "--safe-mode"], ["--print", "--safe-mode", "prompt"]):
+                    with self.subTest(args=args):
+                        self.assertEqual(runtime.host_main("claude", args), 0)
+                        self.assertNotIn(marker, call.call_args.kwargs["env"])
+
 
 
 

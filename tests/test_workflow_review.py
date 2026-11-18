@@ -152,12 +152,12 @@ class ReviewWorkflowTests(WorkflowCase):
         result = self.run_workflow("review", "1", "--result", str(self.report), "--provider", "claude", "--model", "opus")
         self.assertEqual((result["verdict"], result["reconciliation"]["status"]), ("PASS", "applied"))
 
-    def test_claude_overrides_keep_the_reviewer_pick_managed(self):
-        """A native descriptor cannot bind the requested model and effort while Claude may override them."""
+    def test_claude_overrides_and_safe_mode_keep_the_reviewer_pick_managed(self):
+        """A native descriptor needs an available profile that runs the exact reviewer model and effort."""
         opus = candidate("claude", "opus", "high")
         codex = candidate("codex", "opener", "high")
         exhausted = {"windows": [{"remaining": 0, "reset_at": 4102444800}]}
-        self.config.workflow.review.max_rounds = 6
+        self.config.workflow.review.max_rounds = 8
         for models in ([opus], [codex, opus]):
             self.config.workflow.review.models = models
             install_profiles(self.config)
@@ -165,7 +165,10 @@ class ReviewWorkflowTests(WorkflowCase):
                     patch.object(workflow, "usage_snapshot", side_effect=lambda provider, **_: (
                         exhausted if provider == "codex" else {})), \
                     patch.dict(os.environ, {"CLAUDE_CODE_EFFORT_LEVEL": "", "CLAUDE_CODE_SUBAGENT_MODEL": ""}):
-                for name, value in (("CLAUDE_CODE_EFFORT_LEVEL", "high"), ("CLAUDE_CODE_SUBAGENT_MODEL", "opus")):
+                for name, value, reason in (
+                        ("CLAUDE_CODE_EFFORT_LEVEL", "high", "CLAUDE_CODE_EFFORT_LEVEL"),
+                        ("CLAUDE_CODE_SUBAGENT_MODEL", "opus", "CLAUDE_CODE_SUBAGENT_MODEL"),
+                        (runtime.CLAUDE_SAFE_MODE_ENV, "1", "Claude safe mode hides custom agent profiles")):
                     with self.subTest(opener=models[0]["provider"], override=name), \
                             patch.dict(os.environ, {name: value}), \
                             patch.object(workflow, "run", side_effect=managed_runner(lambda *args, **kwargs: answer())) as run:
@@ -176,8 +179,8 @@ class ReviewWorkflowTests(WorkflowCase):
                         if models == [opus]:
                             route = self.run_workflow("inspect", "1")["execution"]["reviewer"]
                             self.assertEqual(route["for_this_session"], "managed")
-                            self.assertIn(name, route["native_limitation"])
-                            with self.assertRaisesRegex(AgentBoxError, name):
+                            self.assertIn(reason, route["native_limitation"])
+                            with self.assertRaisesRegex(AgentBoxError, reason):
                                 self.native_round()
                 opened = self.run_workflow("review", "1")
                 self.assertEqual(opened["launch"], "native")
