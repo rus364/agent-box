@@ -3566,7 +3566,9 @@ def apply_config(config: Config, *, session=False) -> list[str]:
     wanted = managed_skills(config)
     sync_managed_skills(config)
     from . import agent_profiles
-    report.extend(agent_profiles.sync(config, CODEX_HOME, CLAUDE_HOME))
+    # The agent homes are host-backed and shared by every box; launches match
+    # picks against the saved lists, so one repository's overlay never renders them.
+    report.extend(agent_profiles.sync(getattr(config, "_project_base", config), CODEX_HOME, CLAUDE_HOME))
     report.append(
         f"skills installed in {AGENT_SKILLS_DIR}: {', '.join(sorted(wanted)) or 'none'}")
 

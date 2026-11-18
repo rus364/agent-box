@@ -219,6 +219,25 @@ class ApplyConfigTests(unittest.TestCase):
         self.assertIn(f"applying the rendered session configuration {snapshot}", output.getvalue())
         self.assertIn("host-only and untouched", output.getvalue())
 
+    def test_session_apply_renders_shared_profiles_from_the_saved_layer_not_a_project_overlay(self):
+        """Profiles live in the host-backed agent homes and are matched against saved lists at launch.
+
+        Rendering one repository's overlaid list into them made a launch hand a
+        pick to a profile that runs another model.
+        """
+        from agent_box import project_config
+        config = self._fully_enabled()
+        with contextlib.redirect_stderr(io.StringIO()):
+            runtime.apply_config(config)
+        profile = self.root / "home/.codex/agents/ab-worker-1.toml"
+        before = profile.read_text()
+        self.assertIn("chosen-model", before)
+        overlaid = project_config.apply(config, {"workflow": {"worker": {"tiers": {"1": [
+            {"provider": "codex", "model": "project-model", "effort": "medium", "speed": "inherit", "api_provider": ""}]}}}})
+        with contextlib.redirect_stderr(io.StringIO()):
+            runtime.apply_config(overlaid, session=True)
+        self.assertEqual(profile.read_text(), before)
+
     def test_interactive_config_refuses_in_the_same_session(self):
         """The menu edits the saved file, which a session box does not mount."""
         snapshot = self.root / "session/config.json"
