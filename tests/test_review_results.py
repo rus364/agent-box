@@ -139,20 +139,19 @@ class ReviewResultTests(unittest.TestCase):
         with self.assertRaisesRegex(AgentBoxError, "No native review round is pending"):
             self.native()
 
-    def test_a_new_round_retires_the_input_of_a_killed_managed_round_but_not_a_running_one(self):
-        """A kill leaves no code to clean up; the next round does, unless that round is still executing."""
+    def test_a_native_round_retires_managed_input_after_the_execution_lock_is_released(self):
+        """The next round cleans up after a kill, once it can acquire the execution lock."""
         with patch.object(workflow, "run", side_effect=KeyboardInterrupt), self.assertRaises(KeyboardInterrupt):
             with patch.object(workflow, "cleanup_review_evidence"):
                 self.review()
-        killed = workflow.read_review_state(self.root, BINDING, self.task)["pending"]
-        package = workflow.review_evidence_path(self.root, "1", killed)
+        state = workflow.read_review_state(self.root, BINDING, self.task)
+        package = workflow.review_evidence_path(self.root, "1", state["pending"])
         self.assertTrue(package.is_dir())
-        with workflow_state.lock(self.root, "review"):
+        with workflow_state.lock(self.root, "review"), \
+                self.assertRaisesRegex(AgentBoxError, "Another local review operation owns"):
             self.native_round()
         self.assertTrue(package.is_dir())
-        state = workflow.read_review_state(self.root, BINDING, self.task)
-        state.update(pending=killed, pending_backend="managed", failures=0)
-        workflow.save_review_state(self.root, BINDING, self.task, state)
+        self.assertEqual(workflow.read_review_state(self.root, BINDING, self.task), state)
         self.native_round()
         self.assertFalse(package.exists())
 

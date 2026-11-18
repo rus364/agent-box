@@ -369,7 +369,7 @@ def require_review_budget(task, budget):
 
 
 def start_review(root, binding, task, limit, round_id, fingerprint, backend):
-    """Open a round; only its verdict will spend an attempt.
+    """Open a round under the caller's review lock.
 
     Every start counts as a failure until a verdict clears it: a killed process
     runs no code afterwards, and an abandoned native reviewer reports nothing, so
@@ -390,12 +390,9 @@ def start_review(root, binding, task, limit, round_id, fingerprint, backend):
         state.update(pending=round_id, pending_backend=backend, failures=budget["failures"] + 1)
         save_review_state(root, binding, task, state)
     unanswered = previous.get("pending")
-    if unanswered and not any(item["round"] == unanswered for item in previous.get("results", [])) and (
-            previous.get("pending_backend") != "managed" or backend == "managed"
-            or managed_round_status(root, previous) == "ended_without_response") and (
-            previous.get("pending_backend") != "cloud"):
-        # Its answer can no longer be recorded, so nobody needs its input; foreign files stay. A managed
-        # caller already holds the execution lock, so an earlier managed round cannot still be running.
+    if (unanswered and previous.get("pending_backend") != "cloud"
+            and not any(item["round"] == unanswered for item in previous.get("results", []))):
+        # The execution lock excludes earlier managed runs, so their unanswered input can be retired.
         # A cloud round keeps its input whatever opens next: the request is already published, and that
         # text is what stops the next round from paying the bot for a question it was asked once.
         with contextlib.suppress(AgentBoxError, OSError):
@@ -2058,13 +2055,17 @@ def delegate(args, root, adapter, config):
     if args.provider and not args.native:
         raise AgentBoxError("--provider names the session of a native run; pass it with --native")
     task = adapter.get(args.task)
+    tier = config.workflow.effective_tier(task.tier) if args.role == "worker" else None
+    path, models = config.workflow.models_for(args.role, tier)
+    if args.model is None and delegation_off(config.workflow, args.role, path):
+        raise AgentBoxError(f"workflow.{args.role}.delegate is off, so the coordinator does this {args.role} work "
+                            f"itself in its own session; switch it on, or pass --model for one launch")
     brief = read_brief(args.brief)
     if args.role == "worker":
         _, info, current, _ = resolve(root, adapter, task)
         branch = current.get("branch") or info["branch"]
         if gw.current_branch(root) != branch:
             raise AgentBoxError(f"Switch to task branch {branch} before delegating a worker")
-    tier = config.workflow.effective_tier(task.tier) if args.role == "worker" else None
     launch_config, selected = config, None
     if args.model is not None:
         # Keep this pin out of subsequent launches and the configured text-summary scout route.
@@ -2079,11 +2080,7 @@ def delegate(args, root, adapter, config):
         if args.native and not model_route:
             raise AgentBoxError(f"--model {args.model} matches no installed native profile of this session "
                                 f"for the {args.role}; run {managed}")
-    path, models = launch_config.workflow.models_for(args.role, tier)
-    if delegation_off(launch_config.workflow, args.role, path):
-        raise AgentBoxError(f"workflow.{args.role}.delegate is off, so the coordinator does this {args.role} work "
-                            f"itself in its own session; switch it on, or pass --model for one launch")
-    if not models:
+    elif not models:
         raise AgentBoxError(f"{path} is empty, so the coordinator does this {args.role} work itself in its own "
                             f"session; configure candidates there to delegate it")
     guidance = repository_instructions(root, config.workflow)
@@ -2163,27 +2160,28 @@ def review(args, root, binding, adapter, config, task, parent, tasks, base, fing
         return {**saved, "review_budget": read_review_budget(root, binding, task, config.workflow.review.max_rounds)}
     brief = read_brief(args.brief) if args.brief else None
     from .text_delivery import prepare
-    prepare(config)
     limit = config.workflow.review.max_rounds
     round_id = secrets.token_urlsafe(18)
 
     def open_native(route, expected):
-        require_review_budget(task, read_review_budget(root, binding, task, limit))
-        saved = evidence(root, task, fingerprint, base)
-        try:
-            prompt = reviewer_handoff(root, base, task, parent, tasks, brief, saved, review_context, round_id,
-                                      config.workflow.languages().engineering, behavior_version=config.workflow.behavior_version,
-                                      text_settings=config.workflow, text_config=config)
-            descriptor = review_descriptor(identity, task, fingerprint, round_id)
-            if expected:
-                descriptor["native"] = expected
-            bind_delegation_input(root, descriptor, prompt, local_evidence=True)
-            from .text_delivery import publish
-            artifact = publish(prompt, config)
-            budget = start_review(root, binding, task, limit, round_id, fingerprint, "native")
-        except BaseException:
-            cleanup_review_evidence(review_evidence_path(root, task.id, round_id))
-            raise
+        with lock(root, "review"):
+            require_review_budget(task, read_review_budget(root, binding, task, limit))
+            prepare(config)
+            saved = evidence(root, task, fingerprint, base)
+            try:
+                prompt = reviewer_handoff(root, base, task, parent, tasks, brief, saved, review_context, round_id,
+                                          config.workflow.languages().engineering, behavior_version=config.workflow.behavior_version,
+                                          text_settings=config.workflow, text_config=config)
+                descriptor = review_descriptor(identity, task, fingerprint, round_id)
+                if expected:
+                    descriptor["native"] = expected
+                bind_delegation_input(root, descriptor, prompt, local_evidence=True)
+                from .text_delivery import publish
+                artifact = publish(prompt, config)
+                budget = start_review(root, binding, task, limit, round_id, fingerprint, "native")
+            except BaseException:
+                cleanup_review_evidence(review_evidence_path(root, task.id, round_id))
+                raise
         return {"task": task.id, "round": round_id, "scope": fingerprint, "review_budget": budget,
                 "launch": "native", "route": route,
                 "message": bootstrap("reviewer", artifact), "input": artifact,
@@ -2210,6 +2208,7 @@ def review(args, root, binding, adapter, config, task, parent, tasks, base, fing
                         "profile": route["native"][provider], "managed": route["managed"]}
         return open_native(route, expected)
     if cloud_review(config, task, parent):
+        prepare(config)
         from .github_review import review as in_pull_request
         return in_pull_request(root, binding, adapter, config, task, parent, tasks, base, fingerprint,
                                identity, brief, review_context)
@@ -2245,6 +2244,7 @@ def review(args, root, binding, adapter, config, task, parent, tasks, base, fing
         with lock(root, "review"):
             if scope(root, base) != fingerprint:
                 raise AgentBoxError("Code or base changed before review; start a review of the current head")
+            prepare(config)
             saved = evidence(root, task, fingerprint, base)
             prompt = reviewer_handoff(root, base, task, parent, tasks, brief, saved, review_context, round_id,
                                       config.workflow.languages().engineering, behavior_version=config.workflow.behavior_version,
@@ -2297,7 +2297,7 @@ def native_result(args, root, binding, adapter, config, task):
             raise AgentBoxError(
                 f"Round {round_id} expects profile {expected['profile']} on {expected['provider']} {expected['model']} "
                 f"effort {expected['effort']}; an answer from another model is not recorded. Rerun the reviewer on "
-                f"that profile and submit its answer to this round, or run {expected['managed']}")
+                f"that profile and submit its answer to this round, or run {expected['managed']} --managed")
     try:
         report = {**review_report(text), "text": text}
     except ProviderFailure as exc:

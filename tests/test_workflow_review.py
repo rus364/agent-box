@@ -76,7 +76,8 @@ class ReviewWorkflowTests(WorkflowCase):
                                                    "profile": "ab-reviewer", "managed": "agent-box workflow review 1"})
             self.assertIn(opened["input"]["path"], opened["message"])
             self.assertTrue(opened["result_command"].endswith("--provider codex --model selected"))
-            with self.assertRaisesRegex(AgentBoxError, "expects profile ab-reviewer on codex selected"):
+            with self.assertRaisesRegex(AgentBoxError, "expects profile ab-reviewer on codex selected.*"
+                                                       "agent-box workflow review 1 --managed$"):
                 self.native_result()
             accepted = self.run_workflow("review", "1", "--result", str(self.report),
                                          "--provider", "codex", "--model", "selected", "--effort", "high")
@@ -320,13 +321,15 @@ class ReviewWorkflowTests(WorkflowCase):
         self.assertTrue(opened["result_command"].endswith("--provider codex --model sol"))
 
     def test_an_answer_from_another_candidate_is_not_recorded_and_leaves_the_round_open(self):
-        """A haiku answer recorded as the round's verdict passed for the configured reviewer's acceptance."""
-        opened = self.native_round()
+        """A wrong model leaves the round open and the managed retry keeps the declared authors."""
+        self.config.workflow.review.other_vendor_first = True
+        opened = self.native_round("--author", "codex")
         for flags in (("--provider", "codex", "--model", "m"), ("--provider", "claude", "--model", "haiku"),
                       ("--provider", "claude", "--model", "m", "--effort", "low")):
             with self.subTest(flags=flags):
                 with self.assertRaisesRegex(AgentBoxError, "expects profile ab-reviewer on claude m effort high.*"
-                                                           "submit its answer to this round, or run agent-box workflow review 1"):
+                                                           "submit its answer to this round, or run "
+                                                           "agent-box workflow review 1 --author codex --managed$"):
                     self.run_workflow("review", "1", "--result", str(self.report), *flags)
         self.assertEqual(self.budget()["used"], 0)
         self.assertEqual(self.run_workflow("inspect", "1")["review"]["pending_round"]["round"], opened["round"])
@@ -581,12 +584,15 @@ class ReviewWorkflowTests(WorkflowCase):
         self.assertIn("recorded-validation.json", prompt)
 
     def test_a_managed_result_cannot_overwrite_a_newer_native_round(self):
-        """A provider returning after another round opened keeps its verdict private."""
-        def provider(*args, **kwargs):
-            self.native_round()
-            return answer("Verdict: PASS\n\nOlder managed round.\n")
+        """A saved verdict cannot accept work if another round opens before reconciliation."""
+        reconcile = workflow.review_result
 
-        with patch.object(workflow, "run", side_effect=managed_runner(provider)):
+        def after_execution(*args, **kwargs):
+            self.native_round()
+            return reconcile(*args, **kwargs)
+
+        with patch.object(workflow, "run", side_effect=managed_runner(lambda *args, **kwargs: answer())), \
+                patch.object(workflow, "review_result", side_effect=after_execution):
             result = self.run_workflow("review", "1", "--managed")
         self.assertEqual(result["reconciliation"]["status"], "superseded")
         self.assertTrue(Path(result["result_path"]).exists())
@@ -614,6 +620,18 @@ class ReviewWorkflowTests(WorkflowCase):
         with patch.object(workflow, "run", side_effect=managed_runner(provider)):
             self.assertEqual(self.run_workflow("review", "1", "--managed")["verdict"], "PASS")
         self.assertTrue(artifact_paths and all(not path.exists() for path in artifact_paths))
+
+    def test_native_review_cannot_open_while_the_local_review_lock_is_held(self):
+        """A native handoff must leave the active operation's round, budget and input alone."""
+        with workflow_state.lock(self.root, "review"), patch.object(workflow, "run") as provider:
+            for flags in ((), ("--native",)):
+                with self.subTest(flags=flags), \
+                        self.assertRaisesRegex(AgentBoxError, "Another local review operation owns"):
+                    self.run_workflow("review", "1", *flags)
+        provider.assert_not_called()
+        self.assertFalse(workflow.review_budget_path(self.root, BINDING, self.task).exists())
+        self.assertFalse((workflow.WORKFLOW_STATE / "review-inputs").exists())
+        self.assertFalse((workflow.WORKFLOW_STATE / "texts").exists())
 
     def test_known_managed_launch_refusals_precede_the_round(self):
         """Local constraints observed before launch neither open a round nor count as failures."""

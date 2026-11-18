@@ -678,7 +678,7 @@ class DelegateCommandTests(WorkflowCase):
     def test_delegate_switch_off_keeps_the_models_while_the_coordinator_does_the_work(self):
         """An emptied list was the only way to work in-session and discarded the candidates.
 
-        A launch pin and one-launch --model name a model outright, so they still delegate.
+        A launch pin and one-launch --model still delegate and require the task branch for a worker.
         """
         for role in ("worker", "scout"):
             settings = self.config.workflow.role(role)
@@ -702,6 +702,15 @@ class DelegateCommandTests(WorkflowCase):
                 self.assertEqual(run.call_args.args[0]["model"], "pinned")
                 del self.config.workflow.pins[role]
             self.assertEqual(settings.models, [candidate("claude", "saved", "high")])
+
+        gw.git(self.root, "switch", "main")
+        with self.assertRaisesRegex(AgentBoxError, r"workflow\.worker\.delegate is off"):
+            self.delegate("worker")
+        with self.assertRaisesRegex(AgentBoxError, "Switch to task branch ab/1-task"):
+            self.delegate("worker", "--model", "codex:explicit:high")
+        self.config.workflow.pins["worker"] = [candidate("codex", "pinned", "high")]
+        with self.assertRaisesRegex(AgentBoxError, "Switch to task branch ab/1-task"):
+            self.delegate("worker")
 
     def test_a_project_list_cannot_borrow_the_profile_rendered_from_the_saved_list(self):
         """Profiles come from saved lists, so a repository's overlaid pick must run managed, not as another model."""
