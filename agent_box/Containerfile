@@ -528,12 +528,7 @@ RUN set -eux; \
             ;; \
     esac; \
     curl -fsSL \
-        https://api.github.com/repos/mikefarah/yq/releases/latest \
-        -o /tmp/yq-release.json; \
-    yq_version="$(jq -er '.tag_name' /tmp/yq-release.json)"; \
-    rm -f /tmp/yq-release.json; \
-    curl -fsSL \
-        "https://github.com/mikefarah/yq/releases/download/${yq_version}/yq_linux_${arch}" \
+        "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_${arch}" \
         -o /usr/local/bin/yq; \
     chmod 0755 /usr/local/bin/yq
 
@@ -581,11 +576,7 @@ RUN set -eux; \
             exit 1; \
             ;; \
     esac; \
-    curl -fsSL \
-        https://api.github.com/repos/helm/helm/releases/latest \
-        -o /tmp/helm-release.json; \
-    helm_version="$(jq -er '.tag_name' /tmp/helm-release.json)"; \
-    rm -f /tmp/helm-release.json; \
+    helm_version="$(curl -fsSL https://get.helm.sh/helm4-latest-version)"; \
     curl -fsSL \
         "https://get.helm.sh/helm-${helm_version}-linux-${arch}.tar.gz" \
         -o /tmp/helm.tar.gz; \
