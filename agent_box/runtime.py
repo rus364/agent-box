@@ -3160,8 +3160,7 @@ def claude_safe_mode_invocation(agent: str, rest: list[str]) -> bool:
     if agent != "claude":
         return False
     flags = rest[:rest.index("--")] if "--" in rest else rest
-    return ("--safe-mode" in flags and is_claude_session_invocation(rest)
-            and not claude_batch_invocation(flags))
+    return "--safe-mode" in flags and is_claude_session_invocation(rest)
 
 
 def claude_session_args(

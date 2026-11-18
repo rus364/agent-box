@@ -166,8 +166,7 @@ empty.
   Claude picks also run managed if `CLAUDE_CODE_EFFORT_LEVEL` or
   `CLAUDE_CODE_SUBAGENT_MODEL` is nonempty because either can override the profile.
   Safe mode hides custom profiles, so Claude picks also stay managed in
-  interactive `--safe-mode` sessions. Safe-mode detection applies only to
-  launches through agent-box.
+  `--safe-mode` sessions launched through agent-box, including print sessions.
   An empty project tier can use a matching saved role profile.
 - **Vendor balancing.** Global `workflow.balance.mode` is `off` by default.
   Set it to `weighted` and set `workflow.balance.weights`, for example
@@ -274,11 +273,13 @@ SKIPPED, INCONCLUSIVE and provider errors are not PASS.
 ### Cloud review in the pull request
 
 With `workflow.review.github_provider` set to `codex` or `claude` in GitHub
-merge mode, the parent's final review happens in its pull request. `finish`
+merge mode, the parent's final review defaults to its pull request. `finish`
 then asks only for validation, `ab-pr` opens the pull request, and
 `workflow review PARENT` posts one `@codex review` or `@claude review` request
 for the exact head, and every later run reads the bot's answer back into the
-same budget. Subtasks keep their local rounds. Silence is never acceptance:
+same budget. `workflow review PARENT --managed` runs configured local reviewer
+candidates in that same budget and saves the local result. Subtasks keep their
+local rounds. Silence is never acceptance:
 after `wait_seconds` (default 3600) the round fails without spending an
 attempt and you decide what to do. With `auto` or `local`, every round is
 local.

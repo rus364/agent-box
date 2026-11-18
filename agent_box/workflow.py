@@ -1714,7 +1714,8 @@ def parser():
             mode = cmd.add_mutually_exclusive_group()
             mode.add_argument("--native", action="store_true",
                               help="Open a round and print the input message for a fresh native reviewer")
-            mode.add_argument("--managed", action="store_true", help="Run the selected candidate and fallbacks managed, without a native handoff")
+            mode.add_argument("--managed", action="store_true",
+                              help="Run configured local reviewer candidates as managed CLIs, bypassing native and cloud review")
             mode.add_argument("--result", metavar="FILE", help="Record the pending native round's Markdown answer")
             cmd.add_argument("--provider", choices=("codex", "claude"),
                              help="With --native: " + SESSION_PROVIDER_HELP + "; with --result: the provider that ran")
@@ -2146,7 +2147,7 @@ def delegate(args, root, adapter, config):
 
 
 def review(args, root, binding, adapter, config, task, parent, tasks, base, fingerprint, identity):
-    """Open a review round: run it managed, or hand its input to a native reviewer."""
+    """Route a required review to a managed CLI, a native reviewer or the pull request."""
     if args.model or args.effort:
         raise AgentBoxError("--model and --effort describe a native answer; pass them with --result")
     if args.provider and not args.native:
@@ -2225,7 +2226,7 @@ def review(args, root, binding, adapter, config, task, parent, tasks, base, fing
             expected = {"provider": provider, "model": first["model"], "effort": first["effort"],
                         "profile": route["native"][provider]}
         return open_native(route, expected)
-    if cloud_review(config, task, parent):
+    if not args.managed and cloud_review(config, task, parent):
         prepare(config)
         from .github_review import review as in_pull_request
         return in_pull_request(root, binding, adapter, config, task, parent, tasks, base, fingerprint,
@@ -2237,8 +2238,9 @@ def review(args, root, binding, adapter, config, task, parent, tasks, base, fing
                             f"workflow review {task.id} --native")
     authors = author_vendors(config, getattr(args, "author", None))
     if authors_missing(config, authors):
+        mode = " --managed" if args.managed else ""
         raise AgentBoxError(f"workflow.review.other_vendor_first orders reviewers by the code's authors; "
-                            f"rerun workflow review {task.id} {AUTHOR_FORM}")
+                            f"rerun workflow review {task.id}{mode} {AUTHOR_FORM}")
     require_review_budget(task, read_review_budget(root, binding, task, limit))
     selected = candidates(config, "reviewer", tier, authors=authors or ())
     route = None if args.managed else launch_native_route(config, "reviewer", tier, task.id, selected, authors)

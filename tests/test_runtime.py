@@ -1098,15 +1098,15 @@ class ContainerHostParityTests(IsolatedRuntimeTest):
                         runtime.runtime_main(["codex"], runtime.PACKAGE_ROOT)
                 prepare.assert_called_once_with(settings, workspace, "codex", [])
 
-    def test_box_marks_only_the_current_interactive_claude_safe_mode_session(self):
+    def test_box_marks_only_the_current_claude_safe_mode_session(self):
         """A shared workspace or tmux server may host safe-mode and ordinary Claude sessions together."""
         root = Path(self._state_tmp.name) / "workspace"
         root.mkdir()
         marker = f"{runtime.CLAUDE_SAFE_MODE_ENV}=1"
         for detachable in (False, True):
             for args, marked in ((["--safe-mode"], True), ([], False),
-                                 (["--", "--safe-mode"], False), (["-p", "--safe-mode", "prompt"], False),
-                                 (["--safe-mode", "--version"], False)):
+                                 (["-p", "--safe-mode", "prompt"], True), (["--", "--safe-mode"], False),
+                                 (["--safe-mode", "--version"], False), (["agents", "--safe-mode"], False)):
                 with self.subTest(detachable=detachable, args=args), \
                         mock.patch.object(runtime.host_podman, "require"), \
                         mock.patch.object(runtime, "resolve_workspace", return_value=Workspace(root, root)), \
@@ -1134,10 +1134,12 @@ class ContainerHostParityTests(IsolatedRuntimeTest):
                 mock.patch.object(runtime.shutil, "which", return_value="/fixture/claude"), \
                 mock.patch.object(runtime, "tmux_enabled", return_value=False), \
                 mock.patch.object(runtime.subprocess, "call", return_value=0) as call:
-            self.assertEqual(runtime.host_main("claude", ["--safe-mode"]), 0)
-            self.assertEqual(call.call_args.kwargs["env"][marker], "1")
+            for args in (["--safe-mode"], ["--print", "--safe-mode", "prompt"]):
+                with self.subTest(args=args):
+                    self.assertEqual(runtime.host_main("claude", args), 0)
+                    self.assertEqual(call.call_args.kwargs["env"][marker], "1")
             with mock.patch.dict(os.environ, {marker: "1"}):
-                for args in ([], ["--", "--safe-mode"], ["--print", "--safe-mode", "prompt"]):
+                for args in ([], ["--", "--safe-mode"], ["--safe-mode", "--help"]):
                     with self.subTest(args=args):
                         self.assertEqual(runtime.host_main("claude", args), 0)
                         self.assertNotIn(marker, call.call_args.kwargs["env"])

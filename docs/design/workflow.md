@@ -86,8 +86,8 @@ with existing-only branch switching. It never recreates lost work from base.
   symlinked, edited or stale profiles leave the run managed. A Claude pick
   stays managed if `CLAUDE_CODE_EFFORT_LEVEL` or `CLAUDE_CODE_SUBAGENT_MODEL`
   is nonempty because either can override the profile. Safe mode hides custom
-  profiles, so Claude picks also stay managed in interactive `--safe-mode`
-  sessions. Safe-mode detection applies only to launches through agent-box.
+  profiles, so Claude picks also stay managed in `--safe-mode` sessions
+  launched through agent-box, including print sessions.
   Review and sync also require non-default effort. A reserve fallback can
   therefore run natively although static inspection reported `managed`. The
   handoff names `profile`, `message` and, for review/sync, `result_command`; it
@@ -355,6 +355,8 @@ with existing-only branch switching. It never recreates lost work from base.
 
 ## Cloud review in the pull request
 
+- Explicit `workflow review PARENT --managed` runs the configured local
+  reviewer candidates in the normal review budget and saves a managed receipt.
 - On a head with no request, `workflow review PARENT` publishes one comment
   asking `@codex review` or `@claude review` for that exact commit; later runs
   read the answer back. A request in the thread counts only when its text is

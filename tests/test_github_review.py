@@ -8,6 +8,8 @@ parser has to survive. The one addition is Claude's `Reviewed-Base` line: the
 request asks for it now, and the probe answers predate that request form.
 """
 import datetime
+import json
+import shlex
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -17,7 +19,7 @@ from agent_box import github_review
 from agent_box import workflow
 from agent_box.delegation import REVIEW_SCOPE
 from agent_box.errors import AgentBoxError
-from workflow_fixtures import BINDING, LandingCase
+from workflow_fixtures import BINDING, LandingCase, answer, candidate, install_profiles, managed_runner, routing_session
 
 
 CLAUDE_PASS = """**Claude finished @rus364's task in 32s** —— [View job](https://github.com/o/r/actions/runs/1)
@@ -215,6 +217,7 @@ class CloudReviewTests(LandingCase):
 
     def test_the_first_run_publishes_one_request_and_later_runs_publish_none(self):
         """A rerun is how the answer is read, so it must never ask a second time."""
+        self.config.workflow.review.models = [candidate("codex", "local-model", "high")]
         opened = self.review()
         body = self.published()
         self.assertIn("@claude review", body)
@@ -227,6 +230,41 @@ class CloudReviewTests(LandingCase):
         self.assertEqual(waiting["round"], opened["round"])
         self.assertIn("no answer", waiting["outcome"])
         self.assertNotIn("review", workflow.read_evidence(self.root, self.parent))
+
+    def test_native_retry_on_a_cloud_parent_runs_the_local_managed_reviewer(self):
+        """A failed native spawn must retry the local review without requesting a bot verdict."""
+        self.config.workflow.review.models = [candidate("codex", "local-model", "high")]
+        install_profiles(self.config)
+        with routing_session("codex"), patch.object(workflow.shutil, "which", return_value="/fixture/codex"), \
+                patch.object(workflow, "run", side_effect=managed_runner(lambda *args, **kwargs: answer())) as run:
+            opened = self.review("--native")
+            self.assertEqual(opened["launch"], "native")
+            self.assertEqual(opened["review_budget"]["failures"], 1)
+            native_input = workflow.review_evidence_path(self.root, "7", opened["round"])
+            retry = json.loads((native_input / "descriptor.json").read_text())["native"]["managed"]
+            command = shlex.split(retry)
+            self.assertEqual(command[:4], ["agent-box", "workflow", "review", "7"])
+            result = self.review(*command[4:])
+        run.assert_called_once()
+        self.assertIsNone(self.published())
+        self.assertEqual((result["route"]["model"], result["verdict"]), ("local-model", "PASS"))
+        self.assertEqual(result["reconciliation"]["status"], "applied")
+        self.assertEqual((result["review_budget"]["used"], result["review_budget"]["failures"]), (1, 0))
+        self.assertEqual(json.loads(Path(result["result_path"]).read_text())["backend"], "managed")
+
+    def test_managed_override_on_a_cloud_parent_requires_local_candidates(self):
+        """An empty local list must give the local configuration error before publishing."""
+        with self.assertRaisesRegex(AgentBoxError, r"No reviewer candidates in workflow\.review\.models.*--native"):
+            self.review("--managed")
+        self.assertIsNone(self.published())
+
+    def test_managed_author_retry_on_a_cloud_parent_stays_local(self):
+        """A missing-authors error must name a retry that still bypasses cloud review."""
+        self.config.workflow.review.models = [candidate("codex", "local-model", "high")]
+        self.config.workflow.review.other_vendor_first = True
+        with self.assertRaisesRegex(AgentBoxError, "rerun workflow review 7 --managed --author VENDOR"):
+            self.review("--managed")
+        self.assertIsNone(self.published())
 
     def test_claude_answers_in_the_reviewer_form_and_spends_one_round(self):
         """Claude is asked for the canonical answer, so its comment is read as a verdict."""
