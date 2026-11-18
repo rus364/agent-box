@@ -17,7 +17,7 @@ from agent_box.config import Config, effective_config
 from agent_box.errors import AgentBoxError
 from agent_box.repo_binding import AGENT_RULES, block_text
 from agent_box.tracker import audit
-from workflow_fixtures import BINDING, WorkflowCase, answer, candidate, managed_runner
+from workflow_fixtures import BINDING, WorkflowCase, answer, candidate, install_profiles, managed_runner
 
 SKILLS = Path(workflow.__file__).parent / "skills"
 
@@ -170,6 +170,7 @@ class GeneratedPromptTests(WorkflowCase):
         super().setUp()
         self.config.workflow.sync.models = [candidate("codex", "gpt-sync", "high")]
         self.config.workflow.worker.models = [candidate("claude", "worker-model", "high")]
+        install_profiles(self.config)
         self.config.workflow.review.policy = "always"
         self.adapter.subtree.return_value = ["1"]
         usage = patch.object(workflow, "usage_snapshot", return_value={})

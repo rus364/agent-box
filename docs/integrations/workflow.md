@@ -152,16 +152,18 @@ empty.
 - **Native handoff at launch.** The plain managed command (`workflow delegate`,
   `workflow review` or `workflow sync` without `--native` or `--managed`)
   selects after reserve filtering and any balancing. When the pick belongs to
-  the session's detected CLI and its installed profile runs exactly that
-  candidate (model, effort, speed, built-in API; profiles follow the saved
-  lists, so a project's own list runs managed), it returns a `launch: native`
-  handoff (`profile`, `message`, and a review/sync `result_command`) instead of
-  running, on any route; a reserve fallback can do so even though inspection
-  reported `managed`. Otherwise, and for an undetected session or one launched
-  through `ext`, it runs managed. A handoff has no automatic fallback: if native
-  spawning fails before work starts, rerun with `--managed` to select again and
-  run the pick and fallbacks managed, following review failure-budget and sync
-  reconciliation rules.
+  the session's detected CLI and exactly matches the candidate (model, effort,
+  speed, built-in API) in an intact agent-box-owned profile, it returns a
+  `launch: native` handoff (`profile`, `message`, and a review/sync
+  `result_command`) on any route, including a reserve fallback after inspection
+  reported `managed`. An undetected session or one launched through `ext` uses
+  managed execution. If native spawning fails before work starts, rerun with
+  `--managed` to select again and run the pick and fallbacks managed, following
+  review failure-budget and sync reconciliation rules.
+  Inspection and launch check the installed profile against its ownership
+  digest and the current rendering from the saved list at the effective role or
+  tier path. Missing, symlinked, edited or stale profiles leave the route managed.
+  An empty project tier can use a matching saved role profile.
 - **Vendor balancing.** Global `workflow.balance.mode` is `off` by default.
   Set it to `weighted` and set `workflow.balance.weights`, for example
   `{"claude": 3, "codex": 1}`, to spread launches in that proportion.

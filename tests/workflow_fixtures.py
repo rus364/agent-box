@@ -13,6 +13,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+from agent_box import agent_profiles, runtime
 from agent_box import git_workflow as gw
 from agent_box import provider_runner
 from agent_box import workflow
@@ -31,6 +32,17 @@ POISON = ("Progress update\n\n```agent-box-workflow\n"
 
 def origin_path(directory):
     return Path(directory) / "origin.git"
+
+
+def patch_agent_homes(test, directory):
+    for attribute, name in (("CODEX_HOME", "codex"), ("CLAUDE_HOME", "claude")):
+        home = patch.object(runtime, attribute, Path(directory) / name)
+        home.start()
+        test.addCleanup(home.stop)
+
+
+def install_profiles(config):
+    return agent_profiles.sync(getattr(config, "_project_base", config), runtime.CODEX_HOME, runtime.CLAUDE_HOME)
 
 
 def repository(directory, *, remote=True):
@@ -129,6 +141,7 @@ class WorkflowCase(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
+        patch_agent_homes(self, self.directory.name)
         self.root = repository(self.directory.name)
         gw.git(self.root, "switch", "-c", "ab/1-task")
         self.task = Task("1", "1", "Task", description="## Acceptance\n- [ ] requirement",
@@ -139,6 +152,7 @@ class WorkflowCase(unittest.TestCase):
         # The task is labelled tier 1; with tiers on, its reviewer routes at that tier.
         self.config.workflow.use_tiers = True
         self.config.workflow.review.models = [candidate("claude", "m", "high")]
+        install_profiles(self.config)
         self.adapter = Mock()
         self.adapter.get.return_value = self.task
         self.adapter.resolve.side_effect = lambda reference, *args, **kwargs: self.adapter.get(reference)
@@ -204,6 +218,7 @@ class LandingCase(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
+        patch_agent_homes(self, self.temporary.name)
         self.root = repository(self.temporary.name)
         state_patch = patch.object(workflow_state, "WORKFLOW_STATE",
                                    Path(self.temporary.name) / "state")

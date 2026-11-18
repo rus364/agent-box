@@ -15,6 +15,31 @@ def entry(provider, model, effort, **fields):
 
 
 class AgentProfileTests(unittest.TestCase):
+    def test_native_profile_verification_requires_owned_regular_files(self):
+        """Even matching rendered bytes cannot establish ownership through a foreign file or symlink."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            codex = root / "codex"
+            config = Config()
+            config.workflow.enabled = True
+            spec = entry("codex", "scout-model", "high")
+            config.workflow.scout.models = [spec]
+            sync(config, codex, root / "claude")
+            profile = codex / "agents/ab-scout.toml"
+            marker = profile.with_suffix(".toml.agent-box")
+            self.assertTrue(agent_profiles.installed_profile_matches(codex, "codex", "scout", None, spec, [spec]))
+            marker_contents = marker.read_bytes()
+            marker.unlink()
+            self.assertFalse(agent_profiles.installed_profile_matches(codex, "codex", "scout", None, spec, [spec]))
+            marker.write_bytes(marker_contents)
+            for path in (profile, marker, profile.parent, codex):
+                with self.subTest(path=path):
+                    target = path.rename(root / f"moved-{path.name}")
+                    path.symlink_to(target)
+                    self.assertFalse(agent_profiles.installed_profile_matches(codex, "codex", "scout", None, spec, [spec]))
+                    path.unlink()
+                    target.rename(path)
+
     def test_interrupted_profile_creation_or_upgrade_retries_with_ownership_intact(self):
         """Every write boundary must preserve ownership through retry and later removal."""
         for existing in (False, True):

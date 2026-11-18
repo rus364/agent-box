@@ -11,13 +11,14 @@ from agent_box.config import BalanceConfig, Config, model_entry
 from agent_box.errors import AgentBoxError
 from agent_box.repo_binding import Binding
 from agent_box.tracker.core import Task, TrackerError
-from workflow_fixtures import BINDING, origin_path, repository
+from workflow_fixtures import BINDING, install_profiles, origin_path, patch_agent_homes, repository
 
 
 class InspectTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
+        patch_agent_homes(self, self.temporary.name)
         self.root = repository(self.temporary.name)
         gw.git(self.root, "switch", "-c", "ab/1-task")
         (self.root / "code.py").write_text("value = 1\n")
@@ -122,6 +123,7 @@ class InspectTests(unittest.TestCase):
         c.worker.models = [model_entry({"provider": "claude", "model": "one"}),
                            model_entry({"provider": "claude", "model": "two", "api_provider": "api"})]
         c.worker.tiers["1"] = [c.worker.models[0]]
+        install_profiles(self.config)
         self.assertIn("balanced", workflow.execution(self.config, "worker", None, "1"))
         self.assertNotIn("balanced", workflow.execution(self.config, "worker", 1, "1"))
         c.balance.weights["api"] = 0
@@ -137,6 +139,7 @@ class InspectTests(unittest.TestCase):
         """The native reserve is a launch check; inspecting ordered lists must stay static and read-only."""
         for role in ("worker", "scout", "reviewer", "sync"):
             self.config.workflow.role(role).models = [model_entry({"provider": "codex", "model": role, "effort": "high"})]
+        install_profiles(self.config)
         with patch.object(workflow, "usage_snapshot", side_effect=AssertionError("usage read")), \
                 patch.object(workflow, "balance_vendor", side_effect=AssertionError("turn consumed")):
             inspected = self.inspect_readonly()
@@ -153,6 +156,7 @@ class InspectTests(unittest.TestCase):
         route = workflow.execution(self.config, "worker", None, "1")
         self.assertEqual((route["native"], "balanced" in route), ({}, True))
         c.balance.weights = {"codex": 1, "claude": 0}
+        install_profiles(self.config)
         self.assertEqual(workflow.execution(self.config, "worker", None, "1")["native"], {"codex": "ab-worker"})
 
     def test_balanced_native_refusal_names_the_command_that_selects_the_launch(self):

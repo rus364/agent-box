@@ -14,7 +14,7 @@ from agent_box import config, config_proposal, delegation, github_review, projec
 from agent_box import git_workflow as gw
 from agent_box import workflow_behavior as behavior
 from agent_box.errors import AgentBoxError
-from workflow_fixtures import WorkflowCase, candidate
+from workflow_fixtures import WorkflowCase, candidate, install_profiles
 from test_text_delivery import delivered_bytes
 
 
@@ -143,6 +143,7 @@ class BehaviorDeliveryTests(WorkflowCase):
         """The coordinator copies only a generated locator, never reconstructs requirements or policy."""
         for role in ("worker", "scout"):
             self.config.workflow.role(role).models = [candidate("codex", "model", "high")]
+        install_profiles(self.config)
         self.run_as("codex")
         original = self.task.description = "Authoritative requirement: preserve 日本語 and the final line"
         self.review_brief.write_text("Only inspect the assigned path; do not change requirements.")
@@ -168,6 +169,7 @@ class BehaviorDeliveryTests(WorkflowCase):
         self.config.workflow.review.incremental = "off"
         self.config.workflow.review.max_rounds = 2 * len(behavior.VERSIONS)
         self.config.workflow.sync.models = [candidate("codex", "sync", "high")]
+        install_profiles(self.config)
         self.adapter.subtree.return_value = ["1"]
         for version in behavior.VERSIONS:
             with self.project_override(version):

@@ -4,11 +4,11 @@
 
 - A plain `workflow delegate`, `review` or `sync` returns a native handoff
   whenever the launch-time pick is exactly what the session CLI's installed
-  profile runs, not only on balanced routes: a reserve-skipped opener of the
-  other CLI no longer runs the same-CLI fallback as a managed copy. The profile
-  is matched against the saved lists it was rendered from, so a project's own
-  list runs managed. `ab-work` now waits for a managed run by its background
-  completion notification instead of polling.
+  profile runs, including a same-CLI reserve fallback. Inspection and launch
+  verify profile ownership and compare the installed file with the current
+  rendering from the saved role or tier list selected by the effective path.
+  Missing, symlinked, edited or stale profiles use the managed route.
+  `ab-work` now waits for the managed run's background completion notification.
 - Add `workflow.worker.delegate` and `workflow.scout.delegate` (on by default,
   project-overridable, under Workers/Scouts → Delegation): off makes the
   coordinator do that role's work itself while the saved models stay; a launch

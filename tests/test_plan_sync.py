@@ -14,7 +14,7 @@ from agent_box.provider_runner import ProviderFailure
 from agent_box.project_config import PROJECT_FIELDS, apply
 from agent_box.repo_binding import block_text
 from agent_box.tracker.core import Task
-from workflow_fixtures import BINDING, WorkflowCase, candidate, routing_session
+from workflow_fixtures import BINDING, WorkflowCase, candidate, install_profiles, routing_session
 
 # The fixture stubs branch resolution; integration targets need the real derivation.
 REAL_RESOLVE = workflow.resolve
@@ -24,6 +24,7 @@ class PlanSyncTests(WorkflowCase):
     def setUp(self):
         super().setUp()
         self.config.workflow.sync.models = [candidate("codex", "gpt-sync", "high")]
+        install_profiles(self.config)
         self.adapter.subtree.return_value = ["1"]
         self.binding = BINDING
         self.run_as("codex")
@@ -34,6 +35,7 @@ class PlanSyncTests(WorkflowCase):
         self.config.workflow.sync.models.append(candidate("claude", "other", "high"))
         self.config.workflow.sync.policy = "always"
         self.config.workflow.sync.events = ["plan"]
+        install_profiles(self.config)
         with routing_session("codex"), \
                 patch.object(workflow, "balance_vendor", wraps=workflow.balance_vendor) as turn, \
                 patch.object(workflow, "run", return_value="Sync: UNCHANGED\n") as run:
@@ -59,6 +61,7 @@ class PlanSyncTests(WorkflowCase):
         """The weighted vendor behind the opener uses its profile only when the coordinator's CLI is known."""
         self.config.workflow.balance = BalanceConfig("weighted", {"claude": 1})
         self.config.workflow.sync.models.append(candidate("claude", "weighted", "high"))
+        install_profiles(self.config)
         with routing_session("claude"), patch.object(workflow, "run") as run, \
                 patch.object(workflow, "balance_vendor", side_effect=AssertionError("sole vendor spent a counter")):
             opened = self.run_workflow("sync", "1")
@@ -78,6 +81,7 @@ class PlanSyncTests(WorkflowCase):
         self.config.workflow.balance = BalanceConfig("weighted", {"claude": 1})
         self.config.workflow.sync.models += [candidate("claude", "profile", "high"),
                                              candidate("claude", "reserve", "high")]
+        install_profiles(self.config)
         exhausted = {"windows": [{"remaining": 0, "reset_at": 4102444800, "models": ["profile"]}]}
         with routing_session("claude"), patch.object(workflow, "usage_snapshot", return_value=exhausted), \
                 patch.object(workflow, "run", return_value="Sync: UNCHANGED\n") as run:
@@ -91,6 +95,7 @@ class PlanSyncTests(WorkflowCase):
         self.config.workflow.sync.models = [candidate("codex", "opener", "high"), candidate("claude", "opus", "high"),
                                             candidate("codex", "later", "high")]
         usage = {"codex": {"windows": [{"remaining": 0, "reset_at": 4102444800}]}}
+        install_profiles(self.config)
         with routing_session("claude"), \
                 patch.object(workflow, "usage_snapshot", side_effect=lambda provider, **_: usage.get(provider, {})), \
                 patch.object(workflow, "run") as run:
@@ -108,6 +113,7 @@ class PlanSyncTests(WorkflowCase):
         exhausted = {"windows": [{"remaining": 0, "reset_at": 4102444800}]}
         self.config.workflow.sync.models = [candidate("codex", "opener", "high"), candidate("claude", "opus", "high"),
                                             candidate("claude", "sonnet", "high")]
+        install_profiles(self.config)
         usage = {"codex": exhausted, "claude": {"windows": [{**exhausted["windows"][0], "models": ["opus"]}]}}
         with routing_session("claude"), \
                 patch.object(workflow, "usage_snapshot", side_effect=lambda provider, **_: usage.get(provider, {})), \
@@ -120,6 +126,7 @@ class PlanSyncTests(WorkflowCase):
         """A failed native spawn can run managed only after recovery, preserving the original automatic event."""
         self.config.workflow.balance = BalanceConfig("weighted", {"claude": 1})
         self.config.workflow.sync.models.append(candidate("claude", "weighted", "high"))
+        install_profiles(self.config)
         self.config.workflow.sync.policy = "always"
         self.config.workflow.sync.events = ["plan"]
         command = ("sync", "1", "--event", "plan")
@@ -159,6 +166,7 @@ class PlanSyncTests(WorkflowCase):
     def test_explicit_native_sync_checks_the_reserve_before_creating_a_record(self):
         """A reserve refusal must leave sync retryable without a pending run or reconciliation requirement."""
         self.config.workflow.sync.models.append(candidate("claude", "fallback", "high"))
+        install_profiles(self.config)
         exhausted = {"windows": [{"remaining": 4, "reset_at": 4102444800}]}
         for mode in ("off", "weighted"):
             self.config.workflow.balance = BalanceConfig(mode, {"codex": 1})
@@ -181,6 +189,7 @@ class PlanSyncTests(WorkflowCase):
         """A sync profile that omits effort cannot enforce a selected model default in the parent's session."""
         self.config.workflow.balance = BalanceConfig("weighted", {"claude": 1})
         self.config.workflow.sync.models.append(candidate("claude", "selected", "default"))
+        install_profiles(self.config)
         with routing_session("claude"), patch.object(workflow, "run", return_value="Sync: UNCHANGED\n") as run:
             result = self.run_workflow("sync", "1")
         self.assertEqual(result["route"]["effort"], "default")
@@ -378,6 +387,7 @@ class PlanSyncTests(WorkflowCase):
     def test_a_native_run_is_refused_where_the_sessions_route_is_managed(self):
         """Plan sync once ran natively on a Claude fallback while the codex list made the route managed."""
         self.config.workflow.sync.models.append(candidate("claude", "fallback", "high"))
+        install_profiles(self.config)
         self.run_as("claude")
         with self.assertRaisesRegex(AgentBoxError, r"managed for this claude session.*"
                                                    r"run agent-box workflow sync 1 --output reference"):

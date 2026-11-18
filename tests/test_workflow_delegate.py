@@ -17,13 +17,14 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from agent_box import delegation, git_workflow as gw, provider_runner, text_delivery, workflow, workflow_state
+from agent_box import delegation, project_config, provider_runner, runtime, text_delivery, workflow, workflow_state
+from agent_box import git_workflow as gw
 from agent_box.agent_profiles import body
 from agent_box.config import BalanceConfig
 from agent_box.errors import AgentBoxError
 from agent_box.tracker.core import Task
 from test_external_config import external_config
-from workflow_fixtures import BINDING, WorkflowCase, candidate, repository, routing_session
+from workflow_fixtures import BINDING, WorkflowCase, candidate, install_profiles, repository, routing_session
 
 ANSWER = "## Done\nEdited change.py.\n\n## Evidence\n- unittest passed\n\n## Limitations\nNone."
 
@@ -34,6 +35,7 @@ class DelegateCommandTests(WorkflowCase):
         self.config.workflow.worker.models = [candidate("claude", "worker-model", "high")]
         self.config.workflow.scout.models = [candidate("codex", "scout-model", "high"),
                                              candidate("claude", "scout-fallback", "low")]
+        install_profiles(self.config)
         usage = patch.object(workflow, "usage_snapshot", return_value={})
         usage.start()
         self.addCleanup(usage.stop)
@@ -87,6 +89,7 @@ class DelegateCommandTests(WorkflowCase):
         for role in ("worker", "scout"):
             self.config.workflow.role(role).models = [candidate("claude", "ordinary", "high"),
                                                      candidate("codex", "gpt-6.1-sol", "high")]
+            install_profiles(self.config)
             with self.subTest(role=role), routing_session("codex"), \
                     patch.object(workflow, "usage_snapshot", return_value=exhausted), \
                     patch.object(workflow, "balance_vendor", side_effect=AssertionError("balance turn consumed")), \
@@ -133,6 +136,7 @@ class DelegateCommandTests(WorkflowCase):
         for role in ("worker", "scout"):
             self.config.workflow.role(role).models = [candidate("codex", "first", "high"),
                                                      candidate("claude", "claude-opus-5-5", "high")]
+            install_profiles(self.config)
             for session, spec, pinned, native in (("claude", "claude:claude-opus-5-5:high", False, True),
                                                   ("claude", "claude:claude-opus-5-5:high", True, True),
                                                   ("claude", "claude:claude-opus-5-5:low", False, False),
@@ -242,6 +246,7 @@ class DelegateCommandTests(WorkflowCase):
                 self.config.workflow.worker.tiers["1"] = models
             else:
                 self.config.workflow.scout.models = models
+            install_profiles(self.config)
             with self.subTest(role=role), routing_session("codex"), \
                     patch.object(workflow, "balance_vendor", wraps=workflow.balance_vendor) as turn, \
                     patch.object(workflow, "run", return_value=ANSWER) as run:
@@ -265,6 +270,7 @@ class DelegateCommandTests(WorkflowCase):
         for role in ("worker", "scout"):
             self.config.workflow.role(role).models = [candidate("claude", "first", "high"),
                                                      candidate("codex", "weighted", "high")]
+            install_profiles(self.config)
             command = ("delegate", "1", "--role", role, "--brief", str(self.review_brief))
             with self.subTest(role=role), routing_session("codex"), \
                     patch.object(workflow, "run", return_value=ANSWER) as run:
@@ -309,6 +315,7 @@ class DelegateCommandTests(WorkflowCase):
         for role in ("worker", "scout"):
             self.config.workflow.role(role).models = [candidate("claude", "first", "high"),
                                                        candidate("codex", "weighted", "high")]
+            install_profiles(self.config)
             for provider in ("codex", None):
                 with self.subTest(role=role, provider=provider), routing_session(provider), \
                         patch.object(workflow, "balance_vendor", side_effect=AssertionError("sole vendor spent a counter")), \
@@ -326,6 +333,7 @@ class DelegateCommandTests(WorkflowCase):
             self.config.workflow.role(role).models = [candidate("claude", "first", "high"),
                                                        candidate("codex", "profile", "high"),
                                                        candidate("codex", "reserve", "high")]
+            install_profiles(self.config)
             with self.subTest(role=role), routing_session("codex"), \
                     patch.object(workflow, "usage_snapshot", return_value=exhausted), \
                     patch.object(workflow, "run", return_value=ANSWER) as run:
@@ -346,6 +354,7 @@ class DelegateCommandTests(WorkflowCase):
             self.config.workflow.role(role).models = [candidate("codex", "opener", "high"),
                                                      candidate("claude", "opus", "high"),
                                                      candidate("codex", "later", "high")]
+            install_profiles(self.config)
             with self.subTest(role=role), routing_session("claude"), \
                     patch.object(workflow, "usage_snapshot", side_effect=lambda provider, **_: usage.get(provider, {})), \
                     patch.object(workflow, "run", return_value=ANSWER) as run:
@@ -371,6 +380,7 @@ class DelegateCommandTests(WorkflowCase):
             self.config.workflow.role(role).models = [candidate("codex", "opener", "high"),
                                                      candidate("claude", "opus", "high"),
                                                      candidate("claude", "sonnet", "high")]
+            install_profiles(self.config)
             for session, usage, expected in (
                     ("claude", {"codex": exhausted, "claude": {"windows": [{**exhausted["windows"][0], "models": ["opus"]}]}},
                      "sonnet"),
@@ -391,6 +401,7 @@ class DelegateCommandTests(WorkflowCase):
         for role in ("worker", "scout"):
             spec = candidate("codex", "external-small", "high")
             self.config.workflow.role(role).models = [spec, {**spec, "api_provider": "deepseek"}]
+            install_profiles(self.config)
             with self.subTest(role=role), routing_session("codex"), \
                     patch.object(workflow, "run", return_value=ANSWER) as run:
                 result = self.delegate(role)
@@ -416,6 +427,7 @@ class DelegateCommandTests(WorkflowCase):
         for role in ("worker", "scout"):
             self.config.workflow.role(role).models = [candidate("codex", "opener", "high"),
                                                      candidate("claude", "fallback", "high")]
+            install_profiles(self.config)
             command = ("delegate", "1", "--role", role, "--brief", str(self.review_brief))
             for mode in ("off", "weighted"):
                 self.config.workflow.balance = BalanceConfig(mode, {"codex": 1})
@@ -644,6 +656,7 @@ class DelegateCommandTests(WorkflowCase):
         The fixture runs from a Claude session, so only a claude profile is its native route.
         """
         self.config.workflow.worker.tiers["1"] = [candidate("codex", "worker-tier1", "high")]
+        install_profiles(self.config)
         self.config.workflow.scout.models = []
         for use_tiers, worker in ((False, {"mode": "delegate", "models": "workflow.worker.models",
                                            "native": {"claude": "ab-worker"}, "for_this_session": "native"}),
@@ -695,15 +708,55 @@ class DelegateCommandTests(WorkflowCase):
         saved = copy.deepcopy(self.config)
         saved.workflow.worker.models = [candidate("claude", "global", "medium")]
         self.config._project_base = saved
+        install_profiles(self.config)
         self.assertEqual(self.run_workflow("inspect", "1")["execution"]["worker"]["native"], {})
         with patch.object(workflow, "run", return_value=ANSWER) as run:
             result = self.delegate("worker")
         self.assertNotIn("launch", result)
         self.assertEqual(run.call_args.args[0]["model"], "worker-model")
         saved.workflow.worker.models = copy.deepcopy(self.config.workflow.worker.models)
+        install_profiles(self.config)
         with patch.object(workflow, "run") as run:
             self.assertEqual(self.delegate("worker")["profile"], "ab-worker")
         run.assert_not_called()
+
+    def test_delegate_uses_managed_for_an_edited_missing_or_stale_profile(self):
+        """A matching saved candidate alone cannot establish what would run, even during inspection."""
+        path = runtime.CLAUDE_HOME / "agents/ab-worker.md"
+        original = path.read_text()
+        cases = (("edited", original.replace('model: "worker-model"', 'model: "edited"'), "worker-model"),
+                 ("missing", None, "worker-model"),
+                 ("stale", original, "new-model"))
+        for condition, content, model in cases:
+            with self.subTest(condition=condition):
+                path.unlink(missing_ok=True)
+                if content is not None:
+                    path.write_text(content)
+                self.config.workflow.worker.models[0]["model"] = model
+                route = self.run_workflow("inspect", "1")["execution"]["worker"]
+                self.assertEqual((route["native"], route["for_this_session"]), ({}, "managed"))
+                with patch.object(workflow, "run", return_value=ANSWER) as run:
+                    result = self.delegate("worker")
+                self.assertNotIn("launch", result)
+                self.assertEqual(run.call_args.args[0]["model"], model)
+
+    def test_project_tier_uses_the_saved_list_at_its_effective_path(self):
+        """Clearing a project tier uses the role profile, while an unsaved tier has no tier profile."""
+        self.config.workflow.worker.tiers["1"] = [candidate("claude", "tier-model", "high")]
+        install_profiles(self.config)
+        for tier, models, path, profile in (("1", [], "workflow.worker.models", "ab-worker"),
+                                            ("2", self.config.workflow.worker.models, "workflow.worker.tiers.2", None)):
+            with self.subTest(tier=tier):
+                self.task.labels = [f"ab:tier:{tier}"]
+                effective = project_config.apply(self.config, {"workflow": {"worker": {"tiers": {tier: models}}}})
+                with patch.object(workflow, "effective_config", return_value=effective), \
+                        patch.object(workflow, "run", return_value=ANSWER) as run:
+                    route = self.run_workflow("inspect", "1")["execution"]["worker"]
+                    launched = self.delegate("worker")
+                self.assertEqual(route["models"], path)
+                self.assertEqual(route["for_this_session"], "native" if profile else "managed")
+                self.assertEqual(launched.get("profile"), profile)
+                self.assertEqual(run.call_count, 0 if profile else 1)
 
     def test_a_native_assignment_is_refused_where_the_sessions_route_is_managed(self):
         """The scout list opens with codex, so a Claude session's same-named profile is the fallback."""
@@ -732,6 +785,7 @@ class DelegateCommandTests(WorkflowCase):
         self.config.workflow.review.models = [candidate("codex", "gpt-5.6-luna", "max"),
                                               candidate("claude", "fallback", "high")]
         self.config.workflow.review.tiers["1"] = [candidate("claude", "tier-reviewer", "high")]
+        install_profiles(self.config)
         for tiered, native, source, session in (
                 (False, {"codex": "ab-reviewer"}, "workflow.review.models", "managed"),
                 (True, {"claude": "ab-reviewer-1"}, "workflow.review.tiers.1", "native")):
@@ -760,6 +814,7 @@ class DelegateCommandTests(WorkflowCase):
                 for speed in ('inherit', 'standard', 'fast'):
                     with self.subTest(role=role, provider=provider, speed=speed):
                         self.config.workflow.role(role).models = [{**candidate(provider, model, 'high'), 'speed': speed}]
+                        install_profiles(self.config)
                         route = self.run_workflow('inspect', '1')['execution'][role]
                         native = {provider: 'ab-' + role} if speed == 'inherit' else {}
                         self.assertEqual(route['native'], native)

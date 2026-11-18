@@ -11,7 +11,7 @@ from agent_box import plan_sync, provider_runner, text_delivery, text_summary, w
 from agent_box.errors import AgentBoxError
 from agent_box.tracker.core import Task
 from test_text_delivery import delivered_bytes
-from workflow_fixtures import BINDING, WorkflowCase, answer, candidate, managed_runner
+from workflow_fixtures import BINDING, WorkflowCase, answer, candidate, install_profiles, managed_runner
 
 
 def payload_of(prompt):
@@ -30,6 +30,7 @@ class WorkflowTextDeliveryTests(WorkflowCase):
         self.config.workflow.text_max_bytes = 65536
         for role in ("worker", "scout", "sync"):
             self.config.workflow.role(role).models = [candidate("codex", "fixture", "high")]
+        install_profiles(self.config)
         self.config.workflow.review.policy = "always"
         self.config.workflow.review.incremental = "off"
         self.adapter.subtree.return_value = ["1"]

@@ -11,6 +11,9 @@ from .external_config import has_toml_spelling, toml_string
 from .speed import configuration_error, native_limitation
 
 
+PROFILE_SUFFIXES = {"codex": ".toml", "claude": ".md"}
+
+
 def _codex_field(value):
     """One profile field as TOML text.
 
@@ -67,10 +70,8 @@ def body(provider, role, tier, spec, position=None):
             f"model: {json.dumps(spec['model'])}\n{effort}tools: {tools}\n---\n{instructions}\n")
 
 
-def content_for(provider, role, tier, spec, position=None):
-    value = body(provider, role, tier, spec, position)
-    # Claude requires frontmatter at the start, so ownership uses a sidecar.
-    return value
+def content_for(provider, role, tier, spec, models):
+    return body(provider, role, tier, spec, (models.index(spec) + 1, len(models)))
 
 
 def profile_lists(config):
@@ -110,6 +111,26 @@ def ownership_digests(marker):
     return values if 1 <= len(values) <= 2 and all(re.fullmatch(r"[0-9a-f]{64}", v) for v in values) else []
 
 
+def installed_profile_matches(home, provider, role, tier, spec, models):
+    """A preserved or stale profile may pin a different model or role contract."""
+    home = Path(home)
+    directory = home / "agents"
+    path = directory / (profile_name(role, tier) + PROFILE_SUFFIXES[provider])
+    # Claude requires frontmatter at the start, so ownership uses a sidecar.
+    marker = path.with_name(path.name + ".agent-box")
+    try:
+        if home.is_symlink() or directory.is_symlink() or path.is_symlink() or not path.is_file():
+            return False
+        digests = ownership_digests(marker)
+        if not digests:
+            return False
+        current = path.read_bytes()
+        expected = content_for(provider, role, tier, spec, models).encode()
+    except (OSError, UnicodeError):
+        return False
+    return current == expected and hashlib.sha256(current).hexdigest() in digests
+
+
 def sync(config, codex_home, claude_home):
     messages = []
     for provider, home in (("codex", codex_home), ("claude", claude_home)):
@@ -117,7 +138,7 @@ def sync(config, codex_home, claude_home):
         if directory.is_symlink() or Path(home).is_symlink():
             messages.append(f"Preserved user-owned agent directory: {directory}")
             continue
-        suffix = ".toml" if provider == "codex" else ".md"
+        suffix = PROFILE_SUFFIXES[provider]
         desired = {profile_name(role, tier) + suffix: (role, tier, models)
                    for role, tier, models in profile_lists(config)}
         # A profile agent-box no longer defines is removed like a disabled one, and only while intact.
@@ -150,7 +171,7 @@ def sync(config, codex_home, claude_home):
                     path.unlink(missing_ok=True)
                     marker.unlink()
                 continue
-            content = content_for(provider, role, tier, spec, (models.index(spec) + 1, len(models)))
+            content = content_for(provider, role, tier, spec, models)
             if not has_toml_spelling(content):
                 # Any configured field can carry a lone surrogate, which
                 # no UTF-8 write can encode: report the profile as

@@ -80,10 +80,10 @@ with existing-only branch switching. It never recreates lost work from base.
 - The plain `managed` command (no `--native`, no `--managed`) of a delegate,
   review or sync selects once, after reserve filtering and any balancing, then
   returns a `launch: native` handoff on any route when the pick belongs to the
-  detected session CLI and matches its profile exactly (model, effort,
-  inherited speed, built-in API, no `ext` session); otherwise it runs managed.
-  The profile is matched against the saved lists it was rendered from, so a
-  project's overlaid list never borrows a profile that runs another model.
+  detected session CLI, matches the saved profile candidate (model, effort,
+  inherited speed, built-in API, no `ext` session), and the installed file
+  matches both its ownership digest and the current rendering. Missing,
+  symlinked, edited or stale profiles leave the run managed.
   Review and sync also require non-default effort. A reserve fallback can
   therefore run natively although static inspection reported `managed`. The
   handoff names `profile`, `message` and, for review/sync, `result_command`; it
@@ -280,11 +280,13 @@ with existing-only branch switching. It never recreates lost work from base.
 - `config apply` installs native profiles with exact model and effort per CLI
   and role (`ab-scout`, `ab-worker`, `ab-sync`, `ab-reviewer`, and
   `ab-worker-N`, `ab-sync-N`, `ab-reviewer-N` for nonempty tiers), each from
-  that CLI's first built-in-API candidate. Profiles agent-box no longer defines
-  are removed while unedited. A profile is a convenience, not proof of the live
-  tool's capabilities. Sessions launched through `ext` cannot use these native
-  profiles: children inherit the external API, while managed runs restore the
-  built-in environment. This also applies to launch-time picks of the session CLI.
+  that CLI's first built-in-API candidate. Inspection and launch verify the
+  installed file against the rendering from the saved list at the effective
+  path. An empty project tier selects the saved role profile. A nonempty
+  project tier needs a matching saved tier profile. Agent-box removes intact
+  profiles it no longer defines. The CLI confirms live support when it spawns
+  the agent. Sessions launched through `ext` use managed runs to restore the
+  built-in environment because native children inherit the external API.
   Effort `default` omits the override; it is not a literal provider value.
 
 ## Local landing

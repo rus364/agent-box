@@ -1858,7 +1858,8 @@ def release_branch(root, config, task, branch, base, *, expected_head=None):
 
 def native_profile(config, role, tier, candidate):
     """Name the installed profile only when it can run this exact candidate."""
-    from .agent_profiles import profile_candidate, profile_name
+    from . import runtime
+    from .agent_profiles import installed_profile_matches, profile_candidate, profile_name
     from .speed import configuration_error, native_limitation
     path, _ = config.workflow.models_for(role, tier)
     provider = candidate["provider"]
@@ -1867,16 +1868,21 @@ def native_profile(config, role, tier, candidate):
             or native_limitation(provider, candidate.get("speed", "inherit"))
             or role in ("reviewer", "sync") and candidate["effort"] == "default"):
         return None
-    # Profiles are rendered from the saved lists: a repository's overlaid list
-    # matched a pick the installed profile does not run.
-    saved = copy.copy(getattr(config, "_project_base", config).workflow)
-    saved.pins = {}
-    path, models = saved.models_for(role, tier)
+    # An empty project tier falls back to the role profile even if the saved tier has its own.
+    profile_tier = tier if ".tiers." in path else None
+    saved = getattr(config, "_project_base", config).workflow.role(role)
+    if profile_tier is None:
+        models = saved.models
+    else:
+        models = saved.tiers.get(str(profile_tier), []) if isinstance(saved.tiers, dict) else []
     profile = profile_candidate(models, provider)
-    if any(candidate.get(key, default) != profile.get(key, default)
-           for key, default in (("model", ""), ("effort", "default"), ("speed", "inherit"))):
+    fields = (("model", ""), ("effort", "default"), ("speed", "inherit"))
+    if not profile["model"] or any(candidate.get(key, default) != profile.get(key, default) for key, default in fields):
         return None
-    return profile_name(role, tier if ".tiers." in path else None)
+    home = runtime.CODEX_HOME if provider == "codex" else runtime.CLAUDE_HOME
+    if installed_profile_matches(home, provider, role, profile_tier, profile, models):
+        return profile_name(role, profile_tier)
+    return None
 
 
 def delegation_off(settings, role, path):
@@ -1978,7 +1984,7 @@ def native_provider(route, provider):
     if not provider:
         raise AgentBoxError("Cannot tell this session's CLI; name it with --provider codex|claude")
     if provider not in route.get("native", {}):
-        reason = route.get("native_limitation") or f"{route['models']} does not open with a {provider} candidate"
+        reason = route.get("native_limitation") or f"no installed {provider} profile matches the opener in {route['models']}"
         raise AgentBoxError(f"The route is managed for this {provider} session ({reason}); run {route['managed']}")
     return provider
 

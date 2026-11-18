@@ -10,14 +10,14 @@ from unittest.mock import patch
 
 from agent_box import git_workflow as gw
 from agent_box import provider_runner
-from agent_box import workflow
+from agent_box import runtime, workflow
 from agent_box import workflow_state
 from agent_box.config import BalanceConfig, WorkflowConfig
 from agent_box.errors import AgentBoxError
 from agent_box.repo_binding import Binding
 from agent_box.tracker.core import Task
 from test_workflow_text_delivery import required_reading
-from workflow_fixtures import (BINDING, WorkflowCase, answer, candidate, managed_runner, repository,
+from workflow_fixtures import (BINDING, WorkflowCase, answer, candidate, install_profiles, managed_runner, repository,
                                routing_session, selected_route)
 
 
@@ -46,11 +46,22 @@ class ReviewWorkflowTests(WorkflowCase):
     def budget(self):
         return workflow.read_review_budget(self.root, BINDING, self.task, self.config.workflow.review.max_rounds)
 
+    def test_edited_reviewer_profile_uses_managed_and_records_the_actual_model(self):
+        """The review round must not bind a native reviewer whose installed profile was edited."""
+        path = runtime.CLAUDE_HOME / "agents/ab-reviewer.md"
+        path.write_text(path.read_text().replace('model: "m"', 'model: "edited"'))
+        with patch.object(workflow, "run", side_effect=managed_runner(lambda *args, **kwargs: answer())) as run:
+            result = self.run_workflow("review", "1")
+        self.assertNotIn("launch", result)
+        self.assertEqual((run.call_args.args[0]["model"], result["verdict"]), ("m", "PASS"))
+        self.assertEqual(json.loads(Path(result["result_path"]).read_text())["backend"], "managed")
+
     def test_balanced_review_rotates_between_managed_and_a_result_bound_native_round(self):
         """A native pick spends one turn and accepts only the selected provider's profile as the round's reviewer."""
         self.config.workflow.balance = BalanceConfig("weighted", {"claude": 1, "codex": 1})
         self.config.workflow.review.models.append(candidate("codex", "selected", "high"))
         self.config.workflow.review.max_rounds = 3
+        install_profiles(self.config)
         with routing_session("codex"), \
                 patch.object(workflow, "balance_vendor", wraps=workflow.balance_vendor) as turn, \
                 patch.object(workflow, "run", side_effect=managed_runner(lambda *args, **kwargs: answer())) as run:
@@ -80,6 +91,7 @@ class ReviewWorkflowTests(WorkflowCase):
         """A sole positive weight still changes the opener and must reach launch-time native selection."""
         self.config.workflow.balance = BalanceConfig("weighted", {"codex": 1})
         self.config.workflow.review.models.append(candidate("codex", "selected", "high"))
+        install_profiles(self.config)
         with routing_session("codex"), patch.object(workflow, "run") as run, \
                 patch.object(workflow, "balance_vendor", side_effect=AssertionError("sole vendor spent a counter")):
             opened = self.run_workflow("review", "1")
@@ -91,6 +103,7 @@ class ReviewWorkflowTests(WorkflowCase):
         """An unstarted native reviewer can retry managed within the failure budget instead of returning another handoff."""
         self.config.workflow.balance = BalanceConfig("weighted", {"codex": 1})
         self.config.workflow.review.models.append(candidate("codex", "selected", "high"))
+        install_profiles(self.config)
 
         def reviewed(*args, **kwargs):
             state = workflow.read_review_state(self.root, BINDING, self.task)
@@ -120,6 +133,7 @@ class ReviewWorkflowTests(WorkflowCase):
         """
         self.config.workflow.review.models = [candidate("codex", "opener", "high"), candidate("claude", "opus", "high"),
                                               candidate("codex", "later", "high")]
+        install_profiles(self.config)
         usage = {"codex": {"windows": [{"remaining": 0, "reset_at": 4102444800}]}}
         with routing_session("claude"), \
                 patch.object(workflow, "usage_snapshot", side_effect=lambda provider, **_: usage.get(provider, {})), \
@@ -139,6 +153,7 @@ class ReviewWorkflowTests(WorkflowCase):
         exhausted = {"windows": [{"remaining": 0, "reset_at": 4102444800}]}
         self.config.workflow.review.models = [candidate("codex", "opener", "high"), candidate("claude", "opus", "high"),
                                               candidate("claude", "sonnet", "high")]
+        install_profiles(self.config)
         self.config.workflow.review.max_rounds = 5
         for session, usage, expected in (
                 ("claude", {"codex": exhausted, "claude": {"windows": [{**exhausted["windows"][0], "models": ["opus"]}]}},
@@ -165,6 +180,7 @@ class ReviewWorkflowTests(WorkflowCase):
         saved = copy.deepcopy(self.config)
         saved.workflow.review.models = [candidate("claude", "global", "medium")]
         self.config._project_base = saved
+        install_profiles(self.config)
         with patch.object(workflow, "run", side_effect=managed_runner(lambda *args, **kwargs: answer())) as run:
             result = self.run_workflow("review", "1")
         self.assertNotIn("launch", result)
@@ -187,6 +203,7 @@ class ReviewWorkflowTests(WorkflowCase):
         self.config.workflow.balance = BalanceConfig("weighted", {"codex": 1})
         self.config.workflow.review.models += [candidate("codex", "profile", "high"),
                                                candidate("codex", "reserve", "high")]
+        install_profiles(self.config)
         exhausted = {"windows": [{"remaining": 0, "reset_at": 4102444800, "models": ["profile"]}]}
         with routing_session("codex"), patch.object(workflow, "usage_snapshot", return_value=exhausted), \
                 patch.object(workflow, "run", side_effect=managed_runner(lambda *args, **kwargs: answer())) as run:
@@ -207,6 +224,7 @@ class ReviewWorkflowTests(WorkflowCase):
     def test_explicit_native_review_checks_the_reserve_before_opening_a_round(self):
         """Refusing a depleted profile must preserve the review budget and point to managed fallback selection."""
         self.config.workflow.review.models.append(candidate("codex", "fallback", "high"))
+        install_profiles(self.config)
         exhausted = {"windows": [{"remaining": 5, "reset_at": 4102444800}]}
         for mode in ("off", "weighted"):
             self.config.workflow.balance = BalanceConfig(mode, {"claude": 1})
@@ -232,6 +250,7 @@ class ReviewWorkflowTests(WorkflowCase):
         """Native review must not inherit the coordinator's effort in place of a selected model default."""
         self.config.workflow.balance = BalanceConfig("weighted", {"codex": 1})
         self.config.workflow.review.models.append(candidate("codex", "selected", "default"))
+        install_profiles(self.config)
         with routing_session("codex"), \
                 patch.object(workflow, "run", side_effect=managed_runner(lambda *args, **kwargs: answer())) as run:
             result = self.run_workflow("review", "1")
@@ -242,6 +261,7 @@ class ReviewWorkflowTests(WorkflowCase):
         """A malformed native answer ends its round without directing the retry to a refused --native launch."""
         self.config.workflow.balance = BalanceConfig("weighted", {"codex": 1})
         self.config.workflow.review.models.append(candidate("codex", "selected", "high"))
+        install_profiles(self.config)
         with routing_session("codex"):
             opened = self.run_workflow("review", "1")
             self.report.write_text("No verdict line.\n")
@@ -284,6 +304,7 @@ class ReviewWorkflowTests(WorkflowCase):
         widen the route.
         """
         self.config.workflow.review.models = [candidate("codex", "sol", "high"), candidate("claude", "m", "high")]
+        install_profiles(self.config)
         with self.assertRaisesRegex(AgentBoxError, r"managed for this claude session.*run agent-box workflow review 1$"):
             self.native_round()
         with self.assertRaisesRegex(AgentBoxError, "--provider codex differs from this claude session"):
@@ -1010,6 +1031,7 @@ class ReviewAuthorTests(WorkflowCase):
         self.assertTrue(self.reviewer("--author", "codex")["managed"].endswith("review 1 --author codex"))
         self.assertTrue(self.reviewer("--author", "unknown")["managed"].endswith("review 1 --author unknown"))
         self.config.workflow.review.models = [candidate("codex", "a", "high"), candidate("claude", "m", "high")]
+        install_profiles(self.config)
         self.assertEqual(self.reviewer("--author", "codex")["native"], {"claude": "ab-reviewer"})
         self.config.workflow.pins["reviewer"] = [candidate("codex", "a", "high")]
         self.assertEqual(self.reviewer()["managed"], "agent-box workflow review 1")
