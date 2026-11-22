@@ -1,30 +1,38 @@
 # Release notes
 
-## Unreleased
+## 0.3.0
 
-- A plain `workflow delegate`, `review` or `sync` returns a native handoff
-  whenever the launch-time pick is exactly what the session CLI's installed
-  profile runs, including a same-CLI reserve fallback. Inspection and launch
-  verify profile ownership and compare the installed file with the current
-  rendering from the saved role or tier list selected by the effective path.
-  Missing, symlinked, edited or stale profiles use the managed route.
-  `ab-work` now waits for the managed run's background completion notification.
-- Add `workflow.worker.delegate` and `workflow.scout.delegate` (on by default,
-  project-overridable, under Workers/Scouts → Delegation): off makes the
-  coordinator do that role's work itself while the saved models stay; a launch
-  pin or one-launch `--model` still delegates.
-- Let Codex Plan sync save descriptions of 8 KiB or more: Bash writes such a
-  heredoc to a temporary file, which the read-only sandbox refused. Managed runs
-  get a private writable `TMPDIR`; the native `ab-sync` profile may write
-  `$TMPDIR` and `/tmp` while workspace roots stay read-only. Rerun
-  `agent-box config apply` (or relaunch after updating) to refresh the profile.
-- `agent-box tracker update` refuses an empty description instead of erasing the task.
-- Add Workflow behavior v3, now the default: v2 plus offering only viable,
-  fairly described alternatives, and stating a settled choice instead of padding
-  a question with strawman options. `ab-interview` and `ab-config` no longer
-  require 2-4 options per question. A saved configuration keeps
-  its explicit version; select `v3` under Workflow → Behavior or as a project
-  override to adopt it.
+- Paste PNG images with Ctrl+V in local interactive container Codex and Claude
+  sessions. Install `wl-clipboard` on Wayland or `xclip` on X11, then launch
+  or reattach with the updated host launcher.
+  [Clipboard setup and limits](docs/integrations/clipboard.md)
+- Add a subscription usage reserve (default 5%) and optional weighted vendor
+  balancing for workflow launches. Balancing starts off. A managed worker that
+  hits quota can try the next candidate when its working tree is clean.
+- Select a worker or scout model for one launch with `workflow delegate --model`.
+  Turn off `workflow.worker.delegate` or `workflow.scout.delegate` to work in
+  the coordinator session while retaining saved models. Both switches default
+  to on. A session pin or one-launch model choice still delegates.
+- Return a native handoff when the selected model exactly matches an intact
+  installed profile for the session CLI, including after reserve filtering.
+  Claude safe-mode sessions and overrides that would change the Claude profile
+  keep the managed route. Use `--managed` to retry a failed native spawn.
+  [Model selection and routing](docs/integrations/workflow.md#models-and-routing)
+- Show the starting commit and integration target for task branches. Resume
+  reports a recorded parent change when Git can prove the task branch is
+  missing the selected parent tip, including in shallow repositories where
+  the available history proves the result.
+- Let Codex Plan sync save long task descriptions using writable temporary
+  storage while keeping project files read-only. Tracker updates now refuse
+  an empty description.
+- Default to Workflow behavior v3, which asks agents to offer distinct viable
+  choices and state a settled choice directly. Explicitly saved versions stay
+  in effect. Select `v3` under Workflow → Behavior to adopt it.
+- Download yq and resolve the Helm release through their direct release
+  endpoints so workspace image builds avoid GitHub REST API rate limits.
+- After the package upgrade, the first host launch refreshes configured
+  integrations. Run `agent-box config apply` to refresh them immediately.
+  Stop and relaunch existing workspaces to adopt the updated runtime and image.
 
 ## 0.2.0
 
