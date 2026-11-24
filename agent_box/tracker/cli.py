@@ -13,7 +13,7 @@ from ..errors import AgentBoxError
 from ..paths import WORKFLOW_STATE
 from ..repo_binding import BINDING_FILE, Binding, repository_root, server_identity, write_setup
 from .audit import audit_project
-from .core import (NORMALIZED_LABEL, STATES, Task, TrackerError, checkboxes, claim, error_detail, ready_tasks,
+from .core import (NORMALIZED_LABEL, STATES, Task, TrackerError, checkboxes, claim, error_detail, evidence_fields, ready_tasks,
                    root_task, set_checkboxes, task_context)
 from .registry import make_adapter
 
@@ -76,11 +76,11 @@ def parser():
         if name == "get":
             pages = cmd.add_mutually_exclusive_group()
             pages.add_argument("--context", dest="context_page", action="store_const", const=1,
-                               help="Include the first page of directly linked task descriptions")
+                               help="Read task evidence and the first page of directly linked descriptions")
             pages.add_argument("--context-page", type=int, metavar="N",
                                help="Read page N of directly linked tasks (starts at 1)")
             cmd.add_argument("--comments", action=argparse.BooleanOptionalAction, default=True,
-                             help="Include the task journal in output (default); Jira also reads comments for revision checks with --no-comments")
+                             help="Include the task journal in output (default); ordinary Jira get also reads comments for revision checks")
         elif name == "claim":
             cmd.add_argument("--resume", action="store_true")
         elif name == "state":
@@ -403,6 +403,17 @@ def dispatch(args):
         tasks = [found for found in adapter.search(project, "", args.recursive or binding.recursive)
                  if found.project in scope and found.state == "Done"
                  and (NORMALIZED_LABEL in found.labels) == args.undo]
+    elif args.command == "get" and args.context_page is not None:
+        task = (adapter.resolve(args.task, binding.project, binding.recursive, canonical=True, evidence=True)
+                if binding else adapter.context_neighbor(args.task))
+        result = evidence_fields(task)
+        result["context"] = task_context(task, adapter, args.context_page)
+        if args.comments:
+            try:
+                result["comments"] = adapter.comments(task.id)
+            except TrackerError as exc:
+                result["comments_error"] = error_detail(exc)
+        return result
     elif args.command == "get" and binding is not None:
         tasks = [adapter.resolve(args.task, binding.project, binding.recursive, canonical=True)]
     else:
@@ -423,15 +434,8 @@ def dispatch(args):
                                "Relations must stay inside the repository binding", "conflict")
     if args.command == "get":
         result = task.to_dict()
-        if args.context_page is not None:
-            result["context"] = task_context(task, adapter, args.context_page)
         if args.comments:
-            try:
-                result["comments"] = adapter.comments(task.id)
-            except TrackerError as exc:
-                if args.context_page is None:
-                    raise
-                result["comments_error"] = error_detail(exc)
+            result["comments"] = adapter.comments(task.id)
         return result
     if args.command == "checklist":
         return {"task": task.id, "revision": task.revision,

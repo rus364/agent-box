@@ -269,7 +269,10 @@ class VikunjaAdapter:
         return self.normalize(self.client.get(f"/tasks/{task_id}?format=markdown&expand=buckets&expand=subtasks"))
 
     def context_neighbor(self, task_id):
-        path = f"/tasks/{int(task_id)}?format=markdown"
+        try:
+            path = f"/tasks/{int(task_id)}?format=markdown"
+        except ValueError:
+            raise TrackerError("Use a canonical numeric Vikunja task ID; run tracker resolve for user references") from None
         raw = self.client.get(path)
         task = self.evidence_task(raw)
         with neighbor_lifecycle(task):
@@ -278,14 +281,21 @@ class VikunjaAdapter:
             task.state, task.state_reason = self.board_state(raw)
         return task
 
-    def extra_context_relations(self, task_id):
-        links = self.client.get(f"/tasks/{int(task_id)}").get("related_tasks") or {}
-        kinds = {"blocks": "blocking", "duplicate": "duplicateof", "duplicated-by": "duplicates"}
-        for kind, native in kinds.items():
-            for row in links.get(native) or []:
-                yield kind, str(row["id"])
+    def context_relations(self, task_id, links):
+        path = f"/tasks/{int(task_id)}?format=markdown"
+        try:
+            raw = self.client.get(path + "&expand=subtasks")
+        except TrackerError as exc:
+            links.report("subtasks", exc)
+            raw = self.client.get(path)
+        related = raw.get("related_tasks") or {}
+        kinds = {"parenttask": "parent", "subtask": "child", "blocked": "blocked-by", "related": "related",
+                 "blocking": "blocks", "duplicateof": "duplicate", "duplicates": "duplicated-by"}
+        for native, kind in kinds.items():
+            for row in related.get(native) or []:
+                links.add(kind, str(row["id"]))
 
-    def resolve(self, reference, project, recursive=False, *, title=False, canonical=False):
+    def resolve(self, reference, project, recursive=False, *, title=False, canonical=False, evidence=False):
         """User references resolve once; internal reads keep their canonical IDs.
 
         With ``canonical`` (``tracker get``) a bare number may also be a canonical
@@ -294,15 +304,16 @@ class VikunjaAdapter:
         a canonical ID outside the binding still reads when no visible number matches.
         """
         text = reference.strip()
+        read = self.context_neighbor if evidence else self.get
         if canonical and not title and re.fullmatch(r"[0-9]+", text):
             try:
-                by_id = self.get(text)
+                by_id = read(text)
             except api.APIError as exc:
                 if not (exc.status == 404 and exc.code == 4002):
                     raise
                 by_id = None
             try:
-                by_number = self.resolve(text, project, recursive)
+                by_number = self.resolve(text, project, recursive, evidence=evidence)
             except TrackerError as exc:
                 if exc.category != "not-found" or by_id is None:
                     raise
@@ -321,7 +332,7 @@ class VikunjaAdapter:
             match = re.fullmatch(re.escape(server.path.rstrip("/")) + r"/tasks/([0-9]+)/?", link.path)
             if (link.scheme, link.netloc) != (server.scheme, server.netloc) or not match:
                 raise TrackerError("Use a task URL from the configured tracker")
-            task = self.get(match[1])
+            task = read(match[1])
             if task.project not in scope:
                 raise TrackerError("Task URL is outside the selected project scope")
             return task
@@ -330,15 +341,19 @@ class VikunjaAdapter:
             tasks = []
             for project_id in sorted(scope):
                 try:
+                    expand = "" if evidence else "&expand=buckets&expand=subtasks"
                     raw = self.client.get(
                         f"/projects/{project_id}/tasks/by-index/{int(number[1])}"
-                        "?format=markdown&expand=buckets&expand=subtasks")
+                        f"?format=markdown{expand}")
                 except api.APIError as exc:
                     # Only a missing task is absence; incomplete reads cannot prove uniqueness.
                     if exc.status == 404 and exc.code == 4002:
                         continue
                     raise
-                tasks.append(self.normalize(raw))
+                tasks.append(self.evidence_task(raw) if evidence else self.normalize(raw))
+        elif evidence:
+            tasks = [self.evidence_task(raw) for raw in api.collect_tasks(
+                self.client, query=text, project=project, recursive=recursive, buckets=False)]
         else:
             tasks = self.search(project, query=text, recursive=recursive)
         matches = [task for task in tasks if task.project in scope and (
@@ -351,7 +366,7 @@ class VikunjaAdapter:
                 f"{projects.get(task.project, task.project)} (project {task.project}): "
                 f"#{task.number} {task.title} (ID {task.id}, {task.url})" for task in matches)
             raise TrackerError(f"Ambiguous task reference: {choices}. Use --project or a task URL", "conflict")
-        return self.get(matches[0].id)
+        return read(matches[0].id)
 
     def search(self, project, query="", recursive=False, *, open_only=False):
         tasks = [self.normalize(raw) for raw in api.collect_tasks(

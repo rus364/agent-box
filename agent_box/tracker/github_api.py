@@ -51,6 +51,18 @@ fields(first: 100) {
 }
 workflows(first: 50) { nodes { name enabled } }
 """
+
+
+def items_query(operation, fields):
+    """Title resolution only needs board membership and identity; full search also returns task details."""
+    return f"""query {operation}($project: ID!, $query: String, $after: String) {{
+  node(id: $project) {{ ... on ProjectV2 {{ items(first: 50, after: $after, query: $query) {{
+    pageInfo {{ hasNextPage endCursor }}
+    nodes {{ type content {{ __typename ... on Issue {{ {fields} }} }} }}
+  }} }} }}
+}}"""
+
+
 QUERIES = {
     "Viewer": "query Viewer { viewer { login } }",
     "Project": f"""query Project($owner: String!, $number: Int!) {{
@@ -68,9 +80,13 @@ QUERIES = {
     "ContextNeighbor": f"""query ContextNeighbor($owner: String!, $name: String!, $number: Int!) {{
   repository(owner: $owner, name: $name) {{ issue(number: $number) {{ {ISSUE_EVIDENCE} }} }}
 }}""",
+    "ContextHierarchy": f"""query ContextHierarchy($owner: String!, $name: String!, $number: Int!) {{
+  repository(owner: $owner, name: $name) {{ issue(number: $number) {{ parent {{ {REF} }} duplicateOf {{ {REF} }} }} }}
+}}""",
     "ContextLinks": f"""query ContextLinks($owner: String!, $name: String!, $number: Int!) {{
   repository(owner: $owner, name: $name) {{ issue(number: $number) {{
-    id duplicateOf {{ {REF} }} blocking(first: 100) {{ pageInfo {{ hasNextPage endCursor }} nodes {{ {REF} }} }}
+    id blocking(first: 100) {{ pageInfo {{ hasNextPage endCursor }} nodes {{ {REF} }} }}
+    {" ".join(connection(name).replace(", after: $after", "") for name in ("subIssues", "blockedBy", "relatesTo"))}
   }} }}
 }}""",
     "IssueBlocking": f"""query IssueBlocking($id: ID!, $after: String) {{
@@ -78,12 +94,8 @@ QUERIES = {
     pageInfo {{ hasNextPage endCursor }} nodes {{ {REF} }}
   }} }} }}
 }}""",
-    "Items": f"""query Items($project: ID!, $query: String, $after: String) {{
-  node(id: $project) {{ ... on ProjectV2 {{ items(first: 50, after: $after, query: $query) {{
-    pageInfo {{ hasNextPage endCursor }}
-    nodes {{ type content {{ __typename ... on Issue {{ {ISSUE} }} }} }}
-  }} }} }}
-}}""",
+    "Items": items_query("Items", ISSUE),
+    "ContextTitles": items_query("ContextTitles", REF + " title url"),
     **{"Issue" + name[0].upper() + name[1:]:
        f"query Issue{name[0].upper() + name[1:]}($id: ID!, $after: String) {{ node(id: $id) {{ ... on Issue {{ {connection(name)} }} }} }}"
        for name in CONNECTIONS},
@@ -158,7 +170,6 @@ class APIError(TrackerError):
                     else "transport" if transient else "provider")
         super().__init__(f"{prefix}: {detail}{suffix}", category, transient and not unknown)
 
-
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         # The token belongs to the configured endpoint, never a redirect destination.
@@ -227,7 +238,7 @@ class GitHubClient:
     def redact(self, value):
         return str(value).replace(self.token, "[redacted]") if self.token else str(value)
 
-    def graphql(self, query, variables=None):
+    def graphql(self, query, variables=None, *, partial_error=None):
         """Run one named operation; GraphQL reports refusals inside a 200 reply.
 
         A mutation refused that way was not applied, so only a lost reply makes
@@ -241,8 +252,13 @@ class GitHubClient:
             first = errors[0] if isinstance(errors[0], dict) else {}
             kind = first.get("type")
             name = operation[2] if operation else "GraphQL"
-            raise APIError(200, f"{name}: {self.redact(first.get('message') or 'request refused')}",
-                           kind=kind, rate_limited=kind == "RATE_LIMITED")
+            error = APIError(200, f"{name}: {self.redact(first.get('message') or 'request refused')}",
+                             kind=kind, rate_limited=kind == "RATE_LIMITED")
+            data = reply.get("data")
+            if partial_error is None or not isinstance(data, dict) or not (
+                    (data.get("repository") or {}).get("issue") or data.get("node")):
+                raise error
+            partial_error(error)
         if not isinstance(reply, dict) or not isinstance(reply.get("data"), dict):
             raise APIError(200, "GraphQL reply carries no data", write=write)
         return reply["data"]
@@ -259,7 +275,7 @@ def complete(connection, what):
     return nodes
 
 
-def all_nodes(client, raw, name):
+def all_nodes(client, raw, name, *, partial_error=None):
     """Every node of one of an issue's lists, following its cursor past the first page."""
     found = raw.get(name)
     cursors = set()
@@ -267,16 +283,24 @@ def all_nodes(client, raw, name):
     for _ in range(10000):
         info = (found or {}).get("pageInfo") or {}
         rows = (found or {}).get("nodes")
-        if not isinstance(rows, list) or None in rows or not isinstance(info.get("hasNextPage"), bool):
+        if isinstance(rows, list):
+            for row in rows:
+                if row is not None:
+                    yield row
+                elif partial_error:
+                    partial_error(TrackerError(f"GitHub returned an unreadable {name} entry", "provider"))
+                else:
+                    raise TrackerError(f"GitHub returned an incomplete {name} connection", "provider")
+        if not isinstance(rows, list) or not isinstance(info.get("hasNextPage"), bool):
             raise TrackerError(f"GitHub returned an incomplete {name} connection", "provider")
-        yield from rows
         if not info["hasNextPage"]:
             return
         after = info.get("endCursor")
         if not after or after in cursors:
             raise TrackerError(f"GitHub returned an incomplete {name} continuation", "provider")
         cursors.add(after)
-        data = client.graphql(QUERIES[operation], {"id": raw["id"], "after": after})
+        options = {"partial_error": partial_error} if partial_error is not None else {}
+        data = client.graphql(QUERIES[operation], {"id": raw["id"], "after": after}, **options)
         found = (data.get("node") or {}).get(name)
     raise APIError(200, f"pagination of an issue's {name} did not converge")
 
@@ -373,19 +397,10 @@ def projects(client, owner):
              "title": node.get("title") or "", "closed": bool(node.get("closed")), "parent": ""} for node in nodes]
 
 
-def issue_context(client, repository, number):
-    """Outgoing dependency pages are needed only for a context root, never for every search hit."""
-    raw = issue_node(client, repository, number, "ContextLinks")
-    original = ref(raw.get("duplicateOf"))
-    if original:
-        yield "duplicate", original
-    for node in all_nodes(client, raw, "blocking"):
-        yield "blocks", ref(node)
-
-
-def issue_node(client, repository, number, operation):
+def issue_node(client, repository, number, operation, *, partial_error=None):
     owner, name = repository.split("/", 1)
-    data = client.graphql(QUERIES[operation], {"owner": owner, "name": name, "number": int(number)})
+    options = {"partial_error": partial_error} if partial_error is not None else {}
+    data = client.graphql(QUERIES[operation], {"owner": owner, "name": name, "number": int(number)}, **options)
     raw = (data.get("repository") or {}).get("issue")
     if not raw:
         raise APIError(404, f"issue {repository}#{number} not found", kind="NOT_FOUND")

@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from agent_box.config import Config
 from agent_box.repo_binding import Binding
-from agent_box.tracker import github_api as api
+from agent_box.tracker import cli, github_api as api
 from agent_box.tracker.core import TrackerError, task_context
 from agent_box.tracker.github import GitHubAdapter, repository_from_url
 from github_fixtures import REPO, adapter, issue, project
@@ -88,7 +88,35 @@ class TaskShapeTests(unittest.TestCase):
         self.assertEqual([row["id"] for row in context["tasks"]], ["4", "2"])
         self.assertIsNone(context["total"])
         self.assertEqual(context["known_total"], 2)
-        self.assertIn("incomplete blocking", context["discovery_error"]["error"])
+        self.assertIn("incomplete blocking", context["discovery_errors"][0]["error"])
+
+    def test_public_context_keeps_earlier_blockers_and_independent_edges_after_a_failed_page(self):
+        """A failure after page one cannot erase a known blocker or prevent other relation kinds from loading."""
+        tracker, client = adapter([issue(1, status="Ready", blocked_by=[2, 3], related=[4], title="New design"),
+                                   issue(2), issue(3), issue(4)], list_page=1)
+        with patch.object(cli, "context", return_value=(tracker, tracker.binding, None)), patch.object(
+                client, "op_IssueBlockedBy", create=True, return_value={"node": None}):
+            for ref in ("#1", "1", "New design", "https://github.com/" + REPO + "/issues/1"):
+                result = cli.dispatch(cli.parser().parse_args(["get", ref, "--context", "--no-comments"]))
+                rows = result["context"]
+                self.assertEqual(result["title"], "New design")
+                self.assertEqual([row["id"] for row in rows["tasks"]], ["2", "4"])
+                self.assertEqual((rows["total"], rows["known_total"]), (None, 2))
+                self.assertEqual(rows["discovery_errors"][0]["source"], "blockedBy")
+            with self.assertRaisesRegex(TrackerError, "incomplete blockedBy"):
+                cli.dispatch(cli.parser().parse_args(["get", "#1"]))
+
+    def test_root_duplicate_survives_an_unavailable_github_connections_query(self):
+        """The original decision is independently readable when the list-valued fields are forbidden."""
+        tracker, client = adapter([issue(1, state="CLOSED", reason="DUPLICATE", duplicate_of=2),
+                                   issue(2, body="Keep black ink.")])
+        with patch.object(cli, "context", return_value=(tracker, tracker.binding, None)), patch.object(
+                client, "op_ContextLinks", side_effect=TrackerError("connections unavailable")):
+            root = cli.dispatch(cli.parser().parse_args(["get", "1", "--context", "--no-comments"]))
+        row, = root["context"]["tasks"]
+        self.assertEqual((row["id"], row["relations"], row["description"]), ("2", ["duplicate"], "Keep black ink."))
+        self.assertEqual(root["context"]["known_total"], 1)
+        self.assertIsNone(root["context"]["total"])
 
     def test_context_keeps_neighbor_description_when_its_second_hop_is_unavailable(self):
         """A direct blocker remains readable even if its own relations cannot be paged."""
@@ -271,6 +299,17 @@ class TransportTests(unittest.TestCase):
             with self.subTest(query=query, category=category), self.assertRaises(api.APIError) as raised:
                 self.client(outcome).graphql(query)
             self.assertEqual((raised.exception.category, raised.exception.retryable), (category, retryable))
+
+    def test_partial_graphql_data_preserves_readable_connections_and_the_error(self):
+        """GitHub may return relation data alongside field-level errors in the same HTTP 200."""
+        outcome = {"data": {"repository": {"issue": {"parent": {"number": 5}, "duplicateOf": None}}},
+                   "errors": [{"type": "FORBIDDEN", "message": "Cannot read duplicateOf"}]}
+        client = self.client(outcome)
+        errors = []
+        self.assertEqual(client.graphql(api.QUERIES["ContextHierarchy"], partial_error=errors.append), outcome["data"])
+        self.assertIn("Cannot read duplicateOf", str(errors[0]))
+        with self.assertRaisesRegex(api.APIError, "Cannot read duplicateOf"):
+            client.graphql(api.QUERIES["ContextHierarchy"])
 
     def test_unreadable_success_of_a_mutation_is_an_unknown_outcome(self):
         """A create whose reply cannot be read may exist; a retry would duplicate it."""

@@ -137,20 +137,28 @@ class JiraAdapter:
             task.state, task.state_reason = self.issue_state(raw["fields"])
         return task
 
-    def extra_context_relations(self, task_id):
-        raw = self.raw(task_id, fields="issuelinks")
-        directions = {("blocks", "outwardIssue"): "blocks", ("duplicates", "outwardIssue"): "duplicate",
-                      ("duplicates", "inwardIssue"): "duplicated-by"}
-        for link in raw["fields"].get("issuelinks") or []:
+    def context_relations(self, task_id, links):
+        fields = self.raw(task_id, fields="parent,subtasks,issuelinks")["fields"]
+        if fields.get("parent"):
+            links.add("parent", fields["parent"]["key"])
+        for child in fields.get("subtasks") or []:
+            links.add("child", child["key"])
+        directions = {("blocks", "outwardIssue"): "blocks", ("blocks", "inwardIssue"): "blocked-by",
+                      ("duplicates", "outwardIssue"): "duplicate", ("duplicates", "inwardIssue"): "duplicated-by",
+                      ("relates to", "inwardIssue"): "related", ("relates to", "outwardIssue"): "related"}
+        for link in fields.get("issuelinks") or []:
             outward = link["type"].get("outward", "").casefold()
             for side in ("inwardIssue", "outwardIssue"):
                 kind = directions.get((outward, side))
                 if kind and side in link:
-                    yield kind, link[side]["key"]
+                    links.add(kind, link[side]["key"])
 
-    def resolve(self, reference, project, recursive=False, *, title=False, canonical=False):
-        scope = self.subtree(project, recursive)
+    def resolve(self, reference, project, recursive=False, *, title=False, canonical=False, evidence=False):
         text = str(reference).strip()
+        read = self.context_neighbor if evidence else self.get
+        if evidence and canonical and not title and KEY.fullmatch(text) and not recursive:
+            return read(text)
+        scope = self.subtree(project, recursive)
         key = None
         if not title and text.startswith(("http://", "https://")):
             link, server = urlsplit(text), urlsplit(self.server)
@@ -160,16 +168,21 @@ class JiraAdapter:
             key = path[1]
         elif not title and KEY.fullmatch(text):
             if canonical:
-                return self.get(text)
+                return read(text)
             key = text
         elif not title and re.fullmatch(r"#?[1-9][0-9]*", text):
             key = scope[0] + "-" + text.lstrip("#")
         if key:
-            task = self.get(key)
+            task = read(key)
             if task.project not in scope:
                 raise TrackerError("Issue is outside the selected project scope", "conflict")
             return task
-        matches = [task for task in self.search(scope[0], text) if task.title == text]
+        if evidence:
+            rows = self.client.search(f'project = "{scope[0]}" ORDER BY key ASC')
+            matches = [read(row["key"]) for row in rows if row["fields"]["summary"] == text]
+            matches = [task for task in matches if task.project in scope and task.title == text]
+        else:
+            matches = [task for task in self.search(scope[0], text) if task.title == text]
         if len(matches) != 1:
             raise TrackerError("No exact task match" if not matches else
                                "Ambiguous title; use an issue key: " + ", ".join(t.id for t in matches),

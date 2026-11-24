@@ -1044,7 +1044,7 @@ nested staging root neither renames it nor creates an extra root above it.
     return Inventory(projects, tasks, client.paginate("/labels"))
 
 
-def collect_tasks(client, query=None, project=None, recursive=False, filter_expr=None):
+def collect_tasks(client, query=None, project=None, recursive=False, filter_expr=None, *, buckets=True):
     """List or search tasks server-side.
 
     The API matches `q` as a case-insensitive substring of title or description;
@@ -1062,7 +1062,9 @@ def collect_tasks(client, query=None, project=None, recursive=False, filter_expr
             resolved = ProjectIndex(projects).resolve(project)
             ids = (sorted(descendants(projects, resolved["id"])) if recursive else [int(resolved["id"])])
         clauses.append("project_id in " + ", ".join(str(i) for i in ids))
-    params = {"format": "markdown", "expand": ["buckets"]}
+    params = {"format": "markdown"}
+    if buckets:
+        params["expand"] = ["buckets"]
     if clauses:
         params["filter"] = " && ".join(clauses)
     if query:

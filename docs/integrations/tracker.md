@@ -86,8 +86,10 @@ agent-box tracker relation 124 blocked-by 123
 agent-box tracker state 123 Done --reason "Superseded by #130"
 ```
 
-With `--context`, the ordinary task output gains a `context` object. Each page
-reads up to three distinct neighbors, in parent, duplicate original, blocked-by, child, blocks, related,
+With `--context`, the root and its neighbors carry their ID, project, number, URL,
+title, lifecycle and full description. Use ordinary `get`
+for write metadata such as revision. Each `context` page
+contains up to three distinct neighbors, in parent, duplicate original, blocked-by, child, blocks, related,
 then duplicated-by order, sorted by canonical ID as text within each group.
 GitHub exposes the original on a duplicate issue. Jira and Vikunja also expose
 the reverse link on the original. A task reached by multiple links
@@ -100,7 +102,7 @@ The current task journal follows the usual `--no-comments`
 setting. Read a neighbor's journal with `tracker comments ID`.
 Use `--context-page N` with the returned `next_page` for more evidence.
 Pages reflect the current links at read time. If supplemental discovery fails
-after resolving the root, `discovery_error` explains the failure, `total` is
+after resolving the root, `discovery_errors` identifies each unavailable source, `total` is
 null and `known_total` counts the links read so far. Page numbers and
 `next_page` then cover those known links. Retry from page 1 to obtain a complete
 graph. A failed supplemental root journal is reported in `comments_error`.

@@ -91,7 +91,7 @@ class ResolutionTests(unittest.TestCase):
             self.assertEqual(blocker['id'], '322')
             self.assertEqual(missing['id'], '500')
             self.assertIn('404', missing['error'])
-            self.assertEqual([call.args[0] for call in read.call_args_list], ['21', '322', '500'])
+            self.assertEqual([call.args[0] for call in read.call_args_list], ['319', '21', '322', '500'])
         tail = self.get('#21', '--context-page', '2')['context']
         self.assertEqual([row['id'] for row in tail['tasks']], ['400'])
         self.assertEqual(tail['tasks'][0]['relations'], ['blocks', 'related', 'duplicated-by'])

@@ -1,6 +1,7 @@
 """GitHub Projects translates a project board and its issues; the core owns workflow decisions."""
 from __future__ import annotations
 
+from functools import partial
 import re
 import time
 from urllib.parse import urlsplit
@@ -369,25 +370,53 @@ class GitHubAdapter:
         repository, number = self.issue_ref(task_id)
         return self.normalize(api.issue(self.client, repository, number))
 
-    def context_neighbor(self, task_id):
+    def context_neighbor(self, task_id, *, scoped=False):
         repository, number = self.issue_ref(task_id)
         node = api.issue_node(self.client, repository, number, "ContextNeighbor")
         raw = api.issue_fields(node)
         task = self.evidence_task(raw)
         # Closure is authoritative on the issue even if the board is unreadable.
         fallback = self.issue_state(raw, None, None) if raw["state"] == "CLOSED" else ("Unknown", None)
-        with neighbor_lifecycle(task, fallback=fallback):
+        try:
             bound = self.bound_project() if self.binding else None
             items = api.neighbor_project_items(self.client, node["id"]) if bound else []
-            self.read_issue_state(task, raw, items, bound)
+        except TrackerError as exc:
+            if scoped:
+                raise
+            task.state, task.state_reason = fallback
+            reason = f"Project lifecycle unavailable: {exc}"
+            task.state_reason = f"{task.state_reason}; {reason}" if task.state_reason else reason
+        else:
+            with neighbor_lifecycle(task, fallback=fallback):
+                self.read_issue_state(task, raw, items, bound)
         return task
 
-    def extra_context_relations(self, task_id):
+    def context_relations(self, task_id, links):
         repository, number = self.issue_ref(task_id)
-        for kind, other in api.issue_context(self.client, repository, number):
-            yield kind, self.task_id(other)
 
-    def resolve(self, reference, project, recursive=False, *, title=False, canonical=False):
+        def read(operation):
+            return api.issue_node(self.client, repository, number, operation, partial_error=partial(links.report, operation))
+
+        def add(kind, node):
+            if isinstance(node, dict) and node.get("number") and (node.get("repository") or {}).get("nameWithOwner"):
+                links.add(kind, self.task_id(api.ref(node)))
+            else:
+                links.report(kind, TrackerError(f"GitHub returned an unreadable {kind} reference", "provider"))
+
+        with links.reading("parent and duplicate original"):
+            raw = read("ContextHierarchy")
+            for kind, field in (("parent", "parent"), ("duplicate", "duplicateOf")):
+                if raw.get(field):
+                    add(kind, raw[field])
+        with links.reading("issue connections"):
+            raw = read("ContextLinks")
+            for kind, field in (("blocked-by", "blockedBy"), ("child", "subIssues"),
+                                ("blocks", "blocking"), ("related", "relatesTo")):
+                with links.reading(field):
+                    for node in api.all_nodes(self.client, raw, field, partial_error=partial(links.report, field)):
+                        add(kind, node)
+
+    def resolve(self, reference, project, recursive=False, *, title=False, canonical=False, evidence=False):
         """Visible numbers are canonical IDs here, so a bare number has one reading.
 
         It names an issue of this repository; only the board check differs between
@@ -396,33 +425,57 @@ class GitHubAdapter:
         text = reference.strip()
         if not text:
             raise TrackerError("Pass a visible task number, exact title or task URL")
+
+        def read(repository, number):
+            if evidence:
+                return self.context_neighbor(self.task_id((repository, number)), scoped=True)
+            return self.found(repository, number)
+
+        if evidence and canonical and not recursive and not title and re.fullmatch(
+                r"(?:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#)?[0-9]+", text):
+            return self.context_neighbor(text)
         scope = set(self.subtree(project, recursive))
         if not title and text.startswith(("http://", "https://")):
             parts = urlsplit(text)
             match = re.fullmatch(r"/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/issues/([0-9]+)/?", parts.path)
             if (parts.hostname or "").casefold() != self.client.web_host.casefold() or not match:
                 raise TrackerError(f"Use an issue URL from {self.client.web_host}")
-            task = self.found(match[1], int(match[2]))
+            task = read(match[1], int(match[2]))
             if task.project not in scope:
                 raise TrackerError("Task URL is outside the selected project scope")
             return task
         if not title and re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+", text):
             # Another repository's issue is read by its canonical ID, never written.
-            return self.found(*self.issue_ref(text))
+            return read(*self.issue_ref(text))
         number = re.fullmatch(r"#?([0-9]+)", text) if not title else None
         if number:
-            task = self.found(self.repository(), int(number[1]))
+            task = read(self.repository(), int(number[1]))
             # A bare number given as a canonical ID reads like any other ID, on
             # the board or not; #N and resolve still name a card on the board.
             if task.project not in scope and not (canonical and not text.startswith("#")):
                 raise TrackerError(f"Issue #{number[1]} is not on project {', '.join(sorted(scope))}", "not-found")
             return task
-        matches = [task for task in self.search(project, text) if task.title == text]
+        if evidence:
+            nodes = api.pages(self.client, "ContextTitles", {"project": self.project(project)["node"], "query": None},
+                              ("node", "items"), "project items")
+            matches = []
+            for node in nodes:
+                row = node.get("content") or {}
+                if node["type"] == "ISSUE" and row.get("title") == text and (
+                        row["repository"]["nameWithOwner"].casefold() == self.repository().casefold()):
+                    matches.append(Task(str(row["number"]), project, text, number=row["number"], url=row["url"]))
+        else:
+            matches = [task for task in self.search(project, text) if task.title == text]
         if not matches:
             raise TrackerError("No exact task match; specify an exact title, issue number or URL", "not-found")
         if len(matches) > 1:
             raise TrackerError("Ambiguous task reference: " + "; ".join(
                 f"#{task.number} {task.title} ({task.url})" for task in matches) + ". Use the issue number", "conflict")
+        if evidence:
+            task = self.context_neighbor(matches[0].id, scoped=True)
+            if task.project not in scope or task.title != text:
+                raise TrackerError("The matching issue changed during resolution; reread the task", "conflict")
+            return task
         return matches[0]
 
     def found(self, repository, number):

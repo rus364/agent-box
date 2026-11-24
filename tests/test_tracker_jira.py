@@ -10,7 +10,8 @@ from unittest.mock import Mock, patch
 
 from agent_box.config import Config, TrackerConnection
 from agent_box.repo_binding import Binding
-from agent_box.tracker.core import STATES, TrackerError, claim, ready_tasks, set_checkboxes, task_context
+from agent_box.tracker import cli
+from agent_box.tracker.core import ContextLinks, STATES, TrackerError, claim, ready_tasks, set_checkboxes, task_context
 from agent_box.tracker.jira import JiraAdapter
 from agent_box.tracker.jira_api import JiraClient
 
@@ -100,8 +101,9 @@ class JiraContractTests(unittest.TestCase):
             {"type": {"outward": "duplicates"}, "outwardIssue": {"key": "TEST-2"}},
             {"type": {"outward": "duplicates"}, "inwardIssue": {"key": "OTHER-1"}},
             {"type": {"outward": "blocks"}, "outwardIssue": {"key": "OTHER-1"}}]
-        self.assertCountEqual(tracker.extra_context_relations("TEST-1"),
-                              [("duplicate", "TEST-2"), ("duplicated-by", "OTHER-1"), ("blocks", "OTHER-1")])
+        links = ContextLinks()
+        tracker.context_relations("TEST-1", links)
+        self.assertEqual(links.by_kind, {"duplicate": ["TEST-2"], "duplicated-by": ["OTHER-1"], "blocks": ["OTHER-1"]})
         self.assertEqual(fixture.writes, [])
 
     def test_context_keeps_neighbor_evidence_when_its_journal_is_unreadable(self):
@@ -116,6 +118,22 @@ class JiraContractTests(unittest.TestCase):
             journal.assert_not_called()
             with self.assertRaisesRegex(TrackerError, "rate limited"):
                 tracker.get("TEST-2")
+
+    def test_public_context_reads_root_and_parent_even_when_jira_comments_are_rate_limited(self):
+        """Root identity and the exact parent requirement do not require a writable Jira revision."""
+        tracker, fixture = adapter()
+        fixture.issues["TEST-1"]["fields"].update(parent={"key": "TEST-2"}, summary="Requested change")
+        with patch.object(cli, "context", return_value=(tracker, tracker.binding, None)), patch.object(
+                fixture, "pages", side_effect=TrackerError("Jira API HTTP 429", "transport", True)) as journal:
+            for ref in ("1", "TEST-1", "Requested change", fixture.url + "/browse/TEST-1"):
+                result = cli.dispatch(cli.parser().parse_args(["get", ref, "--context", "--no-comments"]))
+                self.assertEqual((result["id"], result["context"]["tasks"][0]["id"]), ("TEST-1", "TEST-2"))
+            journal.assert_not_called()
+            result = cli.dispatch(cli.parser().parse_args(["get", "TEST-1", "--context"]))
+            self.assertTrue(result["comments_error"]["retryable"])
+            journal.assert_called_once()
+            with self.assertRaisesRegex(TrackerError, "HTTP 429"):
+                cli.dispatch(cli.parser().parse_args(["get", "TEST-1"]))
 
     def test_context_preserves_jira_evidence_when_the_neighbor_project_is_unavailable(self):
         """A separate workflow status lookup cannot invalidate the linked issue's description."""

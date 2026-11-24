@@ -96,7 +96,7 @@ class FakeGitHub:
                 "duplicateOf": self.ref(raw["duplicateOf"]) if raw["duplicateOf"] else None,
                 **{name: self.connection(nodes) for name, nodes in self.lists(raw).items()}}
 
-    def graphql(self, query, variables=None):
+    def graphql(self, query, variables=None, **options):
         operation = re.match(r"\s*(?:query|mutation)\s+(\w+)", query)[1]
         variables = variables or {}
         self.operations.append((operation, variables))
@@ -127,6 +127,12 @@ class FakeGitHub:
         fields = ("id", "number", "title", "body", "state", "stateReason", "url", "updatedAt",
                   "repository")
         return {"repository": {"issue": {key: raw[key] for key in fields}}}
+
+    def op_ContextTitles(self, project, query, after):
+        return self.op_Items(project, query, after)
+
+    def op_ContextHierarchy(self, owner, name, number):
+        return self.op_Issue(owner, name, number)
 
     def op_ContextLinks(self, owner, name, number):
         return self.op_Issue(owner, name, number)
@@ -179,7 +185,7 @@ class WritableGitHub(FakeGitHub):
         self.labels = set(labels)
         self.writes = []
 
-    def graphql(self, query, variables=None):
+    def graphql(self, query, variables=None, **options):
         operation = re.match(r"\s*(query|mutation)\s+(\w+)", query)
         if operation[1] == "mutation":
             if operation[2] in self.fail:

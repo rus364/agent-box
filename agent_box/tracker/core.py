@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
-from typing import Callable, Iterable, Protocol
+from typing import Callable, Protocol
 
 from ..errors import AgentBoxError
 
@@ -80,9 +80,9 @@ class Adapter(Protocol):
 
     def get(self, task_id: str) -> Task: ...
     def context_neighbor(self, task_id: str) -> Task: ...
-    def extra_context_relations(self, task_id: str) -> Iterable[tuple[str, str]]: ...
+    def context_relations(self, task_id: str, links: ContextLinks) -> None: ...
     def resolve(self, reference: str, project: str, recursive: bool = False, *, title: bool = False,
-                canonical: bool = False) -> Task: ...
+                canonical: bool = False, evidence: bool = False) -> Task: ...
     def search(self, project: str, query: str = "", recursive: bool = False, *, open_only: bool = False) -> list[Task]: ...
     def update(self, task: Task, fields: dict) -> Task: ...
     def create(self, project: str, title: str, description: str = "", parent: str | None = None,
@@ -122,28 +122,48 @@ def neighbor_lifecycle(task, *, fallback=("Unknown", None)):
 CONTEXT_PAGE_SIZE = 3
 
 
+@dataclass
+class ContextLinks:
+    by_kind: dict[str, list[str]] = field(default_factory=dict)
+    errors: list[dict] = field(default_factory=list)
+
+    def add(self, kind, task_id):
+        self.by_kind.setdefault(kind, []).append(task_id)
+
+    def report(self, source, exc):
+        self.errors.append({"source": source, **error_detail(exc)})
+
+    @contextmanager
+    def reading(self, source):
+        """Independent link sources can fail after yielding useful records."""
+        try:
+            yield
+        except TrackerError as exc:
+            self.report(source, exc)
+
+
+def evidence_fields(task: Task) -> dict:
+    return {key: getattr(task, key) for key in
+            ("id", "project", "number", "url", "title", "state", "state_reason", "description")}
+
+
 def task_context(task: Task, adapter: Adapter, page: int) -> dict:
     """Bound provider reads to one hop and page; retain every reason a neighbor matters."""
     relations: dict[str, list[str]] = {}
-    links = {"parent": [task.parent] if task.parent else [], "blocked-by": task.blockers,
-             "child": task.children, "related": task.related}
     if page < 1:
         raise TrackerError(f"No context page {page} for task {task.id}; pages start at 1")
-    discovery_error = None
-    try:
-        for kind, neighbor in adapter.extra_context_relations(task.id):
-            links.setdefault(kind, []).append(neighbor)
-    except TrackerError as exc:
-        discovery_error = error_detail(exc)
+    links = ContextLinks()
+    with links.reading("task relations"):
+        adapter.context_relations(task.id, links)
     for kind in ("parent", "duplicate", "blocked-by", "child", "blocks", "related", "duplicated-by"):
-        ids = links.get(kind, [])
+        ids = links.by_kind.get(kind, [])
         for task_id in sorted(set(ids)):
             if task_id != task.id:
                 relations.setdefault(task_id, []).append(kind)
 
     total = len(relations)
     start = (page - 1) * CONTEXT_PAGE_SIZE
-    if page != 1 and start >= total and discovery_error is None:
+    if page != 1 and start >= total and not links.errors:
         raise TrackerError(f"No context page {page} for task {task.id} ({total} directly linked tasks)")
     end = start + CONTEXT_PAGE_SIZE
     entries = []
@@ -154,12 +174,11 @@ def task_context(task: Task, adapter: Adapter, page: int) -> dict:
         except TrackerError as exc:
             entry.update(error_detail(exc))
         else:
-            entry.update(project=linked.project, number=linked.number, url=linked.url, title=linked.title,
-                         state=linked.state, state_reason=linked.state_reason, description=linked.description)
+            entry.update(evidence_fields(linked))
         entries.append(entry)
     result = {"page": page, "total": total, "next_page": page + 1 if end < total else None, "tasks": entries}
-    if discovery_error is not None:
-        result.update(total=None, known_total=total, discovery_error=discovery_error)
+    if links.errors:
+        result.update(total=None, known_total=total, discovery_errors=links.errors)
     return result
 
 
