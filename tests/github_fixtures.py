@@ -122,6 +122,12 @@ class FakeGitHub:
                  for p in self.projects.values() if p["owner"]["login"].casefold() == owner.casefold()]
         return {"repositoryOwner": {"projectsV2": {"pageInfo": {"hasNextPage": False}, "nodes": nodes}}}
 
+    def op_ContextNeighbor(self, owner, name, number):
+        raw = self.op_Issue(owner, name, number)["repository"]["issue"]
+        fields = ("id", "number", "title", "body", "state", "stateReason", "url", "updatedAt",
+                  "repository", "duplicateOf", "projectItems")
+        return {"repository": {"issue": {key: raw[key] for key in fields}}}
+
     def op_ContextLinks(self, owner, name, number):
         return self.op_Issue(owner, name, number)
 

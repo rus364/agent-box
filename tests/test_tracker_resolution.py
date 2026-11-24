@@ -77,7 +77,7 @@ class ResolutionTests(unittest.TestCase):
             'subtask': [{'id': 500}], 'related': [{'id': 21}, {'id': 319}, {'id': 400}],
         }
         evidence = 'Retain the behavior in docs/policy.md#Exceptions.'
-        self.client.tasks[21].update(done=True, description=evidence, related_tasks={'related': [{'id': 900}]})
+        self.client.tasks[21].update(done=True, description=evidence, related_tasks={'parenttask': [{'id': 800}, {'id': 900}]})
         self.client.tasks[400]['done'] = True
         self.assertNotIn('context', self.get('#21'))
         with patch.object(self.adapter, 'context_neighbor', wraps=self.adapter.context_neighbor) as read:

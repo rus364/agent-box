@@ -87,6 +87,16 @@ class TaskShapeTests(unittest.TestCase):
             with self.assertRaisesRegex(TrackerError, "incomplete.*blocking"):
                 task_context(root, tracker, 1)
 
+    def test_context_keeps_neighbor_description_when_its_second_hop_is_unavailable(self):
+        """A direct blocker remains readable even if its own relations cannot be paged."""
+        tracker, client = adapter([issue(1, blocked_by=[2]), issue(2, body="Use blue.", status="Ready",
+                                                                   related=[3, 4])], list_page=1)
+        root = tracker.get("1")
+        with patch.object(client, "op_IssueRelatesTo", create=True, return_value={"node": None}) as second_hop:
+            row, = task_context(root, tracker, 1)["tasks"]
+            self.assertEqual((row.get("description"), row.get("state")), ("Use blue.", "Ready"))
+            second_hop.assert_not_called()
+
     def test_other_repository_issue_is_readable_but_outside_the_binding(self):
         tracker, _ = adapter([issue(2, repo="other/lib", status="Ready")])
         task = tracker.get("other/lib#2")

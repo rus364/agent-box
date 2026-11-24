@@ -308,27 +308,29 @@ class GitHubAdapter:
                                " run tracker resolve for user references")
         return match[1], int(match[2])
 
-    def normalize(self, raw, board=None):
+    def normalize(self, raw, board=None, *, context_only=False):
         """``board`` is the project a search reads; otherwise the bound one gives the column."""
         own = raw["repository"].casefold() == self.repository().casefold()
         bound = board or (self.bound_project() if self.binding else None)
         item = next((item for item in raw["items"] if bound and item["project"] == bound["node"]), None)
         state, reason = self.issue_state(raw, item, bound)
-        priority = 0
+        task = Task(self.task_id((raw["repository"], raw["number"])), bound["id"] if own and item else "",
+                    raw["title"], description=raw["body"], state=state, url=raw["url"], number=raw["number"],
+                    state_reason=reason)
+        if context_only:
+            return task
         if item:
             field, _ = self.single_select(bound, "Priority")
             value = item["values"].get(field["id"]) if field else None
-            priority = PRIORITY_VALUES.get((value or {}).get("name", "").casefold(), 0)
-        return Task(self.task_id((raw["repository"], raw["number"])),
-                    bound["id"] if own and item else "", raw["title"], description=raw["body"],
-                    state=state, assignees=list(raw["assignees"]),
-                    parent=self.task_id(raw["parent"]) if raw["parent"] else None,
-                    children=[self.task_id(child) for child in raw["children"]],
-                    blockers=[self.task_id(blocker) for blocker in raw["blocked_by"]],
-                    related=[self.task_id(other) for other in raw["related"]],
-                    labels=list(raw["labels"]), priority=priority,
-                    revision=f"{raw['updated_at']}|{item['updated_at'] if item else ''}",
-                    url=raw["url"], number=raw["number"], state_reason=reason)
+            task.priority = PRIORITY_VALUES.get((value or {}).get("name", "").casefold(), 0)
+        task.assignees = list(raw["assignees"])
+        task.parent = self.task_id(raw["parent"]) if raw["parent"] else None
+        task.children = [self.task_id(child) for child in raw["children"]]
+        task.blockers = [self.task_id(blocker) for blocker in raw["blocked_by"]]
+        task.related = [self.task_id(other) for other in raw["related"]]
+        task.labels = list(raw["labels"])
+        task.revision = f"{raw['updated_at']}|{item['updated_at'] if item else ''}"
+        return task
 
     def issue_state(self, raw, item, bound):
         """Closed means Done; an open issue's state is its Status option.
@@ -362,7 +364,10 @@ class GitHubAdapter:
         repository, number = self.issue_ref(task_id)
         return self.normalize(api.issue(self.client, repository, number))
 
-    context_neighbor = get
+    def context_neighbor(self, task_id):
+        repository, number = self.issue_ref(task_id)
+        node = api.issue_node(self.client, repository, number, "ContextNeighbor")
+        return self.normalize(api.evidence_record(self.client, node), context_only=True)
 
     def extra_context_relations(self, task_id):
         repository, number = self.issue_ref(task_id)

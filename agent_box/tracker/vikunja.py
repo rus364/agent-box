@@ -218,24 +218,26 @@ class VikunjaAdapter:
         from .vikunja_relations import preserve
         return preserve(self, relations, apply)
 
-    def normalize(self, raw):
-        related = raw.get("related_tasks") or {}
+    def evidence_task(self, raw):
         state, reason = self.board_state(raw)
+        return Task(str(raw["id"]), str(raw["project_id"]), raw["title"], description=raw.get("description") or "",
+                    state=state, state_reason=reason, url=f"{self.server}/tasks/{raw['id']}", number=raw.get("index"))
+
+    def normalize(self, raw):
+        task = self.evidence_task(raw)
+        related = raw.get("related_tasks") or {}
         parent = related.get("parenttask") or []
         if len(parent) > 1:
             raise TrackerError(f"Task {raw['id']} has multiple parents", "conflict")
-        return Task(str(raw["id"]), str(raw["project_id"]), raw["title"],
-                    description=raw.get("description") or "", state=state,
-                    assignees=[str(u["id"]) for u in raw.get("assignees") or []],
-                    parent=str(parent[0]["id"]) if parent else None,
-                    children=[str(t["id"]) for t in related.get("subtask") or []],
-                    blockers=[str(t["id"]) for t in related.get("blocked") or []],
-                    related=[str(t["id"]) for t in related.get("related") or []],
-                    labels=[label["title"] for label in raw.get("labels") or []],
-                    priority=raw.get("priority") or 0,
-                    revision=self.client.revisions.get(f"/tasks/{raw['id']}", ""),
-                    url=f"{self.server}/tasks/{raw['id']}",
-                    number=raw.get("index"), state_reason=reason)
+        task.assignees = [str(u["id"]) for u in raw.get("assignees") or []]
+        task.parent = str(parent[0]["id"]) if parent else None
+        task.children = [str(t["id"]) for t in related.get("subtask") or []]
+        task.blockers = [str(t["id"]) for t in related.get("blocked") or []]
+        task.related = [str(t["id"]) for t in related.get("related") or []]
+        task.labels = [label["title"] for label in raw.get("labels") or []]
+        task.priority = raw.get("priority") or 0
+        task.revision = self.client.revisions.get(f"/tasks/{raw['id']}", "")
+        return task
 
     def board_state(self, raw):
         """Where the card sits on its own project's board, and why that names no state.
@@ -266,7 +268,9 @@ class VikunjaAdapter:
             raise TrackerError("Use a canonical numeric Vikunja task ID; run tracker resolve for user references") from None
         return self.normalize(self.client.get(f"/tasks/{task_id}?format=markdown&expand=buckets&expand=subtasks"))
 
-    context_neighbor = get
+    def context_neighbor(self, task_id):
+        raw = self.client.get(f"/tasks/{int(task_id)}?format=markdown&expand=buckets")
+        return self.evidence_task(raw)
 
     def extra_context_relations(self, task_id):
         links = self.client.get(f"/tasks/{int(task_id)}").get("related_tasks") or {}
