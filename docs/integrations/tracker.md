@@ -99,7 +99,13 @@ unless the issue itself establishes closure.
 The current task journal follows the usual `--no-comments`
 setting. Read a neighbor's journal with `tracker comments ID`.
 Use `--context-page N` with the returned `next_page` for more evidence.
-Pages reflect the current links at read time. The traversal follows one hop.
+Pages reflect the current links at read time. If supplemental discovery fails
+after resolving the root, `discovery_error` explains the failure, `total` is
+null and `known_total` counts the links read so far. Page numbers and
+`next_page` then cover those known links. Retry from page 1 to obtain a complete
+graph. A failed supplemental root journal is reported in `comments_error`.
+An unresolved or ambiguous root still fails the command. The traversal follows
+one hop.
 For unlinked decisions, search by a relevant term with `--include-done`.
 
 - **Claiming** checks state, dependencies and assignees, then assigns you and

@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
-from typing import Callable, Protocol
+from typing import Callable, Iterable, Protocol
 
 from ..errors import AgentBoxError
 
@@ -18,6 +18,10 @@ class TrackerError(AgentBoxError):
         super().__init__(message)
         self.category = category
         self.retryable = retryable
+
+
+def error_detail(exc: TrackerError) -> dict:
+    return {"error": str(exc), "category": exc.category, "retryable": exc.retryable}
 
 
 def relation_key(task_id, kind, other):
@@ -76,7 +80,7 @@ class Adapter(Protocol):
 
     def get(self, task_id: str) -> Task: ...
     def context_neighbor(self, task_id: str) -> Task: ...
-    def extra_context_relations(self, task_id: str) -> dict[str, list[str]]: ...
+    def extra_context_relations(self, task_id: str) -> Iterable[tuple[str, str]]: ...
     def resolve(self, reference: str, project: str, recursive: bool = False, *, title: bool = False,
                 canonical: bool = False) -> Task: ...
     def search(self, project: str, query: str = "", recursive: bool = False, *, open_only: bool = False) -> list[Task]: ...
@@ -123,7 +127,14 @@ def task_context(task: Task, adapter: Adapter, page: int) -> dict:
     relations: dict[str, list[str]] = {}
     links = {"parent": [task.parent] if task.parent else [], "blocked-by": task.blockers,
              "child": task.children, "related": task.related}
-    links.update(adapter.extra_context_relations(task.id))
+    if page < 1:
+        raise TrackerError(f"No context page {page} for task {task.id}; pages start at 1")
+    discovery_error = None
+    try:
+        for kind, neighbor in adapter.extra_context_relations(task.id):
+            links.setdefault(kind, []).append(neighbor)
+    except TrackerError as exc:
+        discovery_error = error_detail(exc)
     for kind in ("parent", "duplicate", "blocked-by", "child", "blocks", "related", "duplicated-by"):
         ids = links.get(kind, [])
         for task_id in sorted(set(ids)):
@@ -132,7 +143,7 @@ def task_context(task: Task, adapter: Adapter, page: int) -> dict:
 
     total = len(relations)
     start = (page - 1) * CONTEXT_PAGE_SIZE
-    if page < 1 or (page != 1 and start >= total):
+    if page != 1 and start >= total and discovery_error is None:
         raise TrackerError(f"No context page {page} for task {task.id} ({total} directly linked tasks)")
     end = start + CONTEXT_PAGE_SIZE
     entries = []
@@ -141,12 +152,15 @@ def task_context(task: Task, adapter: Adapter, page: int) -> dict:
         try:
             linked = adapter.context_neighbor(task_id)
         except TrackerError as exc:
-            entry.update(error=str(exc), category=exc.category, retryable=exc.retryable)
+            entry.update(error_detail(exc))
         else:
             entry.update(project=linked.project, number=linked.number, url=linked.url, title=linked.title,
                          state=linked.state, state_reason=linked.state_reason, description=linked.description)
         entries.append(entry)
-    return {"page": page, "total": total, "next_page": page + 1 if end < total else None, "tasks": entries}
+    result = {"page": page, "total": total, "next_page": page + 1 if end < total else None, "tasks": entries}
+    if discovery_error is not None:
+        result.update(total=None, known_total=total, discovery_error=discovery_error)
+    return result
 
 
 def root_task(task: Task, get: Callable[[str], Task]) -> Task:

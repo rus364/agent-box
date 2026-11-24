@@ -81,11 +81,14 @@ class TaskShapeTests(unittest.TestCase):
 
     def test_unreadable_blocking_continuation_cannot_look_like_a_complete_graph(self):
         """A lost page can hide the very dependency the coordinator needs to inspect."""
-        tracker, client = adapter([issue(1, blocking=[2, 3]), issue(2), issue(3)], list_page=1)
+        tracker, client = adapter([issue(1, parent=4, blocking=[2, 3]), issue(2), issue(3), issue(4)], list_page=1)
         root = tracker.get("1")
         with patch.object(client, "op_IssueBlocking", create=True, return_value={"node": None}):
-            with self.assertRaisesRegex(TrackerError, "incomplete.*blocking"):
-                task_context(root, tracker, 1)
+            context = task_context(root, tracker, 1)
+        self.assertEqual([row["id"] for row in context["tasks"]], ["4", "2"])
+        self.assertIsNone(context["total"])
+        self.assertEqual(context["known_total"], 2)
+        self.assertIn("incomplete blocking", context["discovery_error"]["error"])
 
     def test_context_keeps_neighbor_description_when_its_second_hop_is_unavailable(self):
         """A direct blocker remains readable even if its own relations cannot be paged."""
@@ -313,6 +316,11 @@ class CommandTests(unittest.TestCase):
                          ("github", "octocat", "octo/2"))
         self.assertNotIn("move", status["capabilities"])
         self.assertEqual(status["lifecycle"][0]["problems"], [])
+
+    def test_comments_does_not_require_a_readable_project_board(self):
+        """A journal can supply the missing decision even if issue lifecycle is unavailable."""
+        with patch.object(GitHubAdapter, "get", side_effect=TrackerError("board forbidden")):
+            self.assertIsInstance(self.run_command("comments", "1"), list)
 
     def test_get_ready_and_next_work_through_the_portable_commands(self):
         self.assertEqual(self.run_command("get", "#1", "--no-comments")["title"], "One")

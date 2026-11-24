@@ -100,8 +100,8 @@ class JiraContractTests(unittest.TestCase):
             {"type": {"outward": "duplicates"}, "outwardIssue": {"key": "TEST-2"}},
             {"type": {"outward": "duplicates"}, "inwardIssue": {"key": "OTHER-1"}},
             {"type": {"outward": "blocks"}, "outwardIssue": {"key": "OTHER-1"}}]
-        self.assertEqual(tracker.extra_context_relations("TEST-1"),
-                         {"duplicate": ["TEST-2"], "duplicated-by": ["OTHER-1"], "blocks": ["OTHER-1"]})
+        self.assertCountEqual(tracker.extra_context_relations("TEST-1"),
+                              [("duplicate", "TEST-2"), ("duplicated-by", "OTHER-1"), ("blocks", "OTHER-1")])
         self.assertEqual(fixture.writes, [])
 
     def test_context_keeps_neighbor_evidence_when_its_journal_is_unreadable(self):

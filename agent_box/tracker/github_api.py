@@ -262,16 +262,16 @@ def complete(connection, what):
 def all_nodes(client, raw, name):
     """Every node of one of an issue's lists, following its cursor past the first page."""
     found = raw.get(name)
-    nodes, cursors = [], set()
+    cursors = set()
     operation = "Issue" + name[0].upper() + name[1:]
     for _ in range(10000):
         info = (found or {}).get("pageInfo") or {}
         rows = (found or {}).get("nodes")
         if not isinstance(rows, list) or None in rows or not isinstance(info.get("hasNextPage"), bool):
             raise TrackerError(f"GitHub returned an incomplete {name} connection", "provider")
-        nodes.extend(rows)
+        yield from rows
         if not info["hasNextPage"]:
-            return nodes
+            return
         after = info.get("endCursor")
         if not after or after in cursors:
             raise TrackerError(f"GitHub returned an incomplete {name} continuation", "provider")
@@ -377,8 +377,10 @@ def issue_context(client, repository, number):
     """Outgoing dependency pages are needed only for a context root, never for every search hit."""
     raw = issue_node(client, repository, number, "ContextLinks")
     original = ref(raw.get("duplicateOf"))
-    return {"duplicate": [original] if original else [],
-            "blocks": [ref(node) for node in all_nodes(client, raw, "blocking")]}
+    if original:
+        yield "duplicate", original
+    for node in all_nodes(client, raw, "blocking"):
+        yield "blocks", ref(node)
 
 
 def issue_node(client, repository, number, operation):

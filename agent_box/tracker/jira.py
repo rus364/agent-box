@@ -141,14 +141,12 @@ class JiraAdapter:
         raw = self.raw(task_id, fields="issuelinks")
         directions = {("blocks", "outwardIssue"): "blocks", ("duplicates", "outwardIssue"): "duplicate",
                       ("duplicates", "inwardIssue"): "duplicated-by"}
-        relations = {}
         for link in raw["fields"].get("issuelinks") or []:
             outward = link["type"].get("outward", "").casefold()
             for side in ("inwardIssue", "outwardIssue"):
                 kind = directions.get((outward, side))
                 if kind and side in link:
-                    relations.setdefault(kind, []).append(link[side]["key"])
-        return relations
+                    yield kind, link[side]["key"]
 
     def resolve(self, reference, project, recursive=False, *, title=False, canonical=False):
         scope = self.subtree(project, recursive)

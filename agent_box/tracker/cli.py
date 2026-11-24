@@ -13,7 +13,7 @@ from ..errors import AgentBoxError
 from ..paths import WORKFLOW_STATE
 from ..repo_binding import BINDING_FILE, Binding, repository_root, server_identity, write_setup
 from .audit import audit_project
-from .core import (NORMALIZED_LABEL, STATES, Task, TrackerError, checkboxes, claim, ready_tasks,
+from .core import (NORMALIZED_LABEL, STATES, Task, TrackerError, checkboxes, claim, error_detail, ready_tasks,
                    root_task, set_checkboxes, task_context)
 from .registry import make_adapter
 
@@ -385,6 +385,8 @@ def dispatch(args):
             tasks = ready_tasks(tasks, adapter.get, str(adapter.identity()["id"]))
         results = [task.to_dict(full=False) for task in tasks]
         return (results[0] if results else None) if args.command == "next" else results
+    if args.command == "comments":
+        return adapter.comments(args.task)
     if args.command == "normalized" and bool(args.task) == args.done:
         raise TrackerError("Mark the tasks you name, or pass --done for every completed task in scope")
     if args.command == "normalized" and args.done:
@@ -424,10 +426,13 @@ def dispatch(args):
         if args.context_page is not None:
             result["context"] = task_context(task, adapter, args.context_page)
         if args.comments:
-            result["comments"] = adapter.comments(task.id)
+            try:
+                result["comments"] = adapter.comments(task.id)
+            except TrackerError as exc:
+                if args.context_page is None:
+                    raise
+                result["comments_error"] = error_detail(exc)
         return result
-    if args.command == "comments":
-        return adapter.comments(task.id)
     if args.command == "checklist":
         return {"task": task.id, "revision": task.revision,
                 "items": [{key: item[key] for key in ("index", "checked", "text")}
@@ -522,5 +527,5 @@ def main(argv):
         print(json.dumps({"error": str(exc), "category": "input"}), file=sys.stderr)
         return 2
     except TrackerError as exc:
-        print(json.dumps({"error": str(exc), "category": exc.category, "retryable": exc.retryable}), file=sys.stderr)
+        print(json.dumps(error_detail(exc)), file=sys.stderr)
         return 2

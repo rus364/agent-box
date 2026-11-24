@@ -116,6 +116,18 @@ class ResolutionTests(unittest.TestCase):
         self.assertEqual((task.state, task.description), ('Unknown', '21:01 Reviewer problem'))
         self.assertIn('buckets forbidden', task.state_reason)
 
+    def test_unreadable_root_journal_preserves_resolved_context_only(self):
+        """The supplemental journal and linked descriptions can fail independently."""
+        with patch.object(cli, 'context', return_value=(self.adapter, self.binding, None)), \
+             patch.object(self.adapter, 'comments', side_effect=TrackerError('journal unavailable', 'transport', True)):
+            result = cli.dispatch(cli.parser().parse_args(['get', '#21', '--context']))
+            self.assertEqual(result['id'], '319')
+            self.assertEqual(result['comments_error']['retryable'], True)
+            self.assertNotIn('comments', result)
+            self.assertEqual(result['context']['total'], 0)
+            with self.assertRaisesRegex(TrackerError, 'journal unavailable'):
+                cli.dispatch(cli.parser().parse_args(['get', '#21']))
+
     def test_context_empty_and_invalid_pages_distinguish_absent_work_from_a_bad_cursor(self):
         """An isolated task has a complete first page; an invalid page cannot imply no relations."""
         self.assertEqual(self.get('#21', '--context')['context'],

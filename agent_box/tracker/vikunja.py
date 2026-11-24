@@ -281,7 +281,9 @@ class VikunjaAdapter:
     def extra_context_relations(self, task_id):
         links = self.client.get(f"/tasks/{int(task_id)}").get("related_tasks") or {}
         kinds = {"blocks": "blocking", "duplicate": "duplicateof", "duplicated-by": "duplicates"}
-        return {kind: [str(row["id"]) for row in links.get(native) or []] for kind, native in kinds.items()}
+        for kind, native in kinds.items():
+            for row in links.get(native) or []:
+                yield kind, str(row["id"])
 
     def resolve(self, reference, project, recursive=False, *, title=False, canonical=False):
         """User references resolve once; internal reads keep their canonical IDs.
