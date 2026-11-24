@@ -286,8 +286,7 @@ def ref(node):
     return (node["repository"]["nameWithOwner"], int(node["number"])) if node else None
 
 
-def evidence_record(client, raw):
-    """Context uses the issue and its lifecycle without depending on its own neighbors."""
+def issue_project_items(client, raw):
     items = []
     for item in all_nodes(client, raw, "projectItems"):
         values = {}
@@ -297,14 +296,18 @@ def evidence_record(client, raw):
                 values[field["id"]] = {"name": value.get("name") or "", "option": value["optionId"]}
         items.append({"id": item["id"], "project": item["project"]["id"],
                       "updated_at": item.get("updatedAt") or "", "values": values})
+    return items
+
+
+def issue_fields(raw):
     return {"id": raw["id"], "repository": raw["repository"]["nameWithOwner"], "number": int(raw["number"]),
             "title": raw.get("title") or "", "body": raw.get("body") or "", "state": raw["state"],
             "state_reason": raw.get("stateReason"), "url": raw.get("url") or "",
-            "updated_at": raw.get("updatedAt") or "", "duplicate_of": ref(raw.get("duplicateOf")), "items": items}
+            "updated_at": raw.get("updatedAt") or "", "duplicate_of": ref(raw.get("duplicateOf"))}
 
 
 def issue_record(client, raw):
-    return {**evidence_record(client, raw),
+    return {**issue_fields(raw), "items": issue_project_items(client, raw),
             "labels": [label["name"] for label in all_nodes(client, raw, "labels")],
             "assignees": [user["login"] for user in all_nodes(client, raw, "assignees")],
             "parent": ref(raw.get("parent")),

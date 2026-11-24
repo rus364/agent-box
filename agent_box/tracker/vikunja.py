@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 from urllib.parse import urlsplit
 
-from .core import NORMALIZED_LABEL, Task, TrackerError, STATES, root_task
+from .core import NORMALIZED_LABEL, Task, TrackerError, STATES, neighbor_lifecycle, root_task
 from . import vikunja_api as api
 
 
@@ -219,12 +219,12 @@ class VikunjaAdapter:
         return preserve(self, relations, apply)
 
     def evidence_task(self, raw):
-        state, reason = self.board_state(raw)
         return Task(str(raw["id"]), str(raw["project_id"]), raw["title"], description=raw.get("description") or "",
-                    state=state, state_reason=reason, url=f"{self.server}/tasks/{raw['id']}", number=raw.get("index"))
+                    url=f"{self.server}/tasks/{raw['id']}", number=raw.get("index"))
 
     def normalize(self, raw):
         task = self.evidence_task(raw)
+        task.state, task.state_reason = self.board_state(raw)
         related = raw.get("related_tasks") or {}
         parent = related.get("parenttask") or []
         if len(parent) > 1:
@@ -270,7 +270,10 @@ class VikunjaAdapter:
 
     def context_neighbor(self, task_id):
         raw = self.client.get(f"/tasks/{int(task_id)}?format=markdown&expand=buckets")
-        return self.evidence_task(raw)
+        task = self.evidence_task(raw)
+        with neighbor_lifecycle(task):
+            task.state, task.state_reason = self.board_state(raw)
+        return task
 
     def extra_context_relations(self, task_id):
         links = self.client.get(f"/tasks/{int(task_id)}").get("related_tasks") or {}

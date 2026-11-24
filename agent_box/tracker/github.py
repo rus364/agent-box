@@ -5,7 +5,7 @@ import re
 import time
 from urllib.parse import urlsplit
 
-from .core import NORMALIZED_LABEL, STATES, Task, TrackerError
+from .core import NORMALIZED_LABEL, STATES, Task, TrackerError, neighbor_lifecycle
 from . import github_api as api
 
 #: Priority options, highest first, as the board lists them: the board sorts and
@@ -308,17 +308,22 @@ class GitHubAdapter:
                                " run tracker resolve for user references")
         return match[1], int(match[2])
 
-    def normalize(self, raw, board=None, *, context_only=False):
+    def evidence_task(self, raw):
+        return Task(self.task_id((raw["repository"], raw["number"])), "", raw["title"],
+                    description=raw["body"], url=raw["url"], number=raw["number"])
+
+    def read_issue_state(self, task, raw, items, bound):
+        item = next((item for item in items if bound and item["project"] == bound["node"]), None)
+        if item and raw["repository"].casefold() == self.repository().casefold():
+            task.project = bound["id"]
+        task.state, task.state_reason = self.issue_state(raw, item, bound)
+        return item
+
+    def normalize(self, raw, board=None):
         """``board`` is the project a search reads; otherwise the bound one gives the column."""
-        own = raw["repository"].casefold() == self.repository().casefold()
+        task = self.evidence_task(raw)
         bound = board or (self.bound_project() if self.binding else None)
-        item = next((item for item in raw["items"] if bound and item["project"] == bound["node"]), None)
-        state, reason = self.issue_state(raw, item, bound)
-        task = Task(self.task_id((raw["repository"], raw["number"])), bound["id"] if own and item else "",
-                    raw["title"], description=raw["body"], state=state, url=raw["url"], number=raw["number"],
-                    state_reason=reason)
-        if context_only:
-            return task
+        item = self.read_issue_state(task, raw, raw["items"], bound)
         if item:
             field, _ = self.single_select(bound, "Priority")
             value = item["values"].get(field["id"]) if field else None
@@ -367,7 +372,12 @@ class GitHubAdapter:
     def context_neighbor(self, task_id):
         repository, number = self.issue_ref(task_id)
         node = api.issue_node(self.client, repository, number, "ContextNeighbor")
-        return self.normalize(api.evidence_record(self.client, node), context_only=True)
+        raw = api.issue_fields(node)
+        task = self.evidence_task(raw)
+        with neighbor_lifecycle(task):
+            bound = self.bound_project() if self.binding else None
+            self.read_issue_state(task, raw, api.issue_project_items(self.client, node), bound)
+        return task
 
     def extra_context_relations(self, task_id):
         repository, number = self.issue_ref(task_id)

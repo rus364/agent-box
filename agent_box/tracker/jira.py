@@ -6,7 +6,7 @@ import json
 import re
 from urllib.parse import quote, urlsplit
 
-from .core import NORMALIZED_LABEL, STATES, Task, TrackerError
+from .core import NORMALIZED_LABEL, STATES, Task, TrackerError, neighbor_lifecycle
 from .jira_api import JiraClient
 
 KEY = re.compile(r"[A-Z][A-Z0-9_]*-[1-9][0-9]*")
@@ -86,19 +86,28 @@ class JiraAdapter:
     def raw(self, task_id, *, fields="*all"):
         return self.client.request("GET", f"/issue/{self.task_key(task_id)}", params={"fields": fields})
 
-    def normalize(self, raw, *, with_revision=True):
+    def evidence_task(self, raw):
         fields, key = raw["fields"], raw["key"]
         description = fields.get("description") or ""
         if not isinstance(description, str):
             raise TrackerError("Jira REST v2 returned a non-text description; refusing a lossy conversion", "unsupported")
-        project = fields["project"]["key"]
-        board = self.lifecycle(project)
+        return Task(key, fields["project"]["key"], fields["summary"], description=description,
+                    url=f"{self.server}/browse/{key}", number=int(key.rsplit("-", 1)[1]))
+
+    def issue_state(self, fields):
+        board = self.lifecycle(fields["project"]["key"])
         state = next((s for s, ident in board["states"].items() if ident == str(fields["status"]["id"])), "Unknown")
         reason = None
         if board["problems"]:
             state, reason = "Unknown", "project workflow: " + "; ".join(board["problems"])
         elif state == "Unknown":
             reason = f"Status {fields['status']['name']!r} maps to no lifecycle state"
+        return state, reason
+
+    def normalize(self, raw):
+        fields = raw["fields"]
+        task = self.evidence_task(raw)
+        task.state, task.state_reason = self.issue_state(fields)
         blockers, related = [], []
         for link in fields.get("issuelinks") or []:
             kind = link["type"]
@@ -107,25 +116,26 @@ class JiraAdapter:
             if kind.get("outward", "").casefold() == "relates to":
                 related.append((link.get("inwardIssue") or link.get("outwardIssue"))["key"])
         assignee = fields.get("assignee")
-        assignees = [assignee["accountId"] if self.client.cloud else assignee["name"]] if assignee else []
+        task.assignees = [assignee["accountId"] if self.client.cloud else assignee["name"]] if assignee else []
+        task.parent = (fields.get("parent") or {}).get("key")
+        task.children = [row["key"] for row in fields.get("subtasks") or []]
+        task.blockers, task.related = blockers, related
+        task.labels = list(fields.get("labels") or [])
+        task.priority = PRIORITIES.get((fields.get("priority") or {}).get("name", "").casefold(), 0)
         # Jira comments may change independently of the issue timestamp.
-        revision = ""
-        if with_revision:
-            journal = self.comments(key)
-            revision = hashlib.sha256(json.dumps([fields.get("updated"), journal], sort_keys=True).encode()).hexdigest()
-        return Task(id=key, project=project, title=fields["summary"], description=description, state=state,
-                    assignees=assignees, parent=(fields.get("parent") or {}).get("key"),
-                    children=[row["key"] for row in fields.get("subtasks") or []], blockers=blockers, related=related,
-                    labels=list(fields.get("labels") or []), priority=PRIORITIES.get(
-                        (fields.get("priority") or {}).get("name", "").casefold(), 0), revision=revision,
-                    url=f"{self.server}/browse/{key}", number=int(key.rsplit("-", 1)[1]), state_reason=reason)
+        journal = self.comments(task.id)
+        task.revision = hashlib.sha256(json.dumps([fields.get("updated"), journal], sort_keys=True).encode()).hexdigest()
+        return task
 
     def get(self, task_id):
         return self.normalize(self.raw(task_id))
 
     def context_neighbor(self, task_id):
         raw = self.raw(task_id, fields="project,status,summary,description")
-        return self.normalize(raw, with_revision=False)
+        task = self.evidence_task(raw)
+        with neighbor_lifecycle(task):
+            task.state, task.state_reason = self.issue_state(raw["fields"])
+        return task
 
     def extra_context_relations(self, task_id):
         raw = self.raw(task_id, fields="issuelinks")

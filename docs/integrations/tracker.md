@@ -93,7 +93,9 @@ GitHub exposes the original on a duplicate issue. Jira and Vikunja also expose
 the reverse link on the original. A task reached by multiple links
 appears once with all its relation types. Each entry carries the source ID, URL,
 state and full description, including document references. Failed neighbor reads
-carry their error. The current task journal follows the usual `--no-comments`
+carry their error. A readable neighbor whose lifecycle lookup fails keeps its
+description and source, with state `Unknown` and the cause in `state_reason`.
+The current task journal follows the usual `--no-comments`
 setting. Read a neighbor's journal with `tracker comments ID`.
 Use `--context-page N` with the returned `next_page` for more evidence.
 Pages reflect the current links at read time. The traversal follows one hop.

@@ -98,6 +98,15 @@ class ResolutionTests(unittest.TestCase):
         self.assertIsNone(tail['next_page'])
         self.assertEqual(self.client.writes, [])
 
+    def test_context_preserves_vikunja_evidence_when_the_neighbor_board_is_unavailable(self):
+        """The linked task and its URL are still useful when its board status is unavailable."""
+        with patch.object(self.adapter, 'lifecycle', side_effect=TrackerError('bucket service unavailable')):
+            task = self.adapter.context_neighbor('21')
+            self.assertEqual((task.number, task.state, task.description), (8, 'Unknown', '21:01 Reviewer problem'))
+            self.assertIn('bucket service unavailable', task.state_reason)
+            with self.assertRaises(TrackerError):
+                self.adapter.get('21')
+
     def test_context_empty_and_invalid_pages_distinguish_absent_work_from_a_bad_cursor(self):
         """An isolated task has a complete first page; an invalid page cannot imply no relations."""
         self.assertEqual(self.get('#21', '--context')['context'],

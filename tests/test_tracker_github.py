@@ -97,6 +97,16 @@ class TaskShapeTests(unittest.TestCase):
             self.assertEqual((row.get("description"), row.get("state")), ("Use blue.", "Ready"))
             second_hop.assert_not_called()
 
+    def test_context_preserves_github_evidence_when_the_board_lookup_fails(self):
+        """Project metadata can disappear while the linked issue and its references stay readable."""
+        tracker, _ = adapter([issue(1, status="Ready", body="docs/safety.md#Labels")])
+        with patch.object(tracker, "lifecycle", side_effect=TrackerError("status service unavailable")):
+            task = tracker.context_neighbor("1")
+            self.assertEqual((task.project, task.state, task.description), ("octo/2", "Unknown", "docs/safety.md#Labels"))
+            self.assertIn("status service unavailable", task.state_reason)
+            with self.assertRaises(TrackerError):
+                tracker.get("1")
+
     def test_other_repository_issue_is_readable_but_outside_the_binding(self):
         tracker, _ = adapter([issue(2, repo="other/lib", status="Ready")])
         task = tracker.get("other/lib#2")

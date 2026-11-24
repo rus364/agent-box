@@ -117,6 +117,17 @@ class JiraContractTests(unittest.TestCase):
             with self.assertRaisesRegex(TrackerError, "rate limited"):
                 tracker.get("TEST-2")
 
+    def test_context_preserves_jira_evidence_when_the_neighbor_project_is_unavailable(self):
+        """A separate workflow status lookup cannot invalidate the linked issue's description."""
+        tracker, fixture = adapter()
+        fixture.issues["OTHER-1"]["fields"]["description"] = "docs/safety.md#Labels"
+        with patch.object(tracker, "lifecycle", side_effect=TrackerError("status service unavailable")):
+            task = tracker.context_neighbor("OTHER-1")
+            self.assertEqual((task.project, task.state, task.description), ("OTHER", "Unknown", "docs/safety.md#Labels"))
+            self.assertIn("status service unavailable", task.state_reason)
+            with self.assertRaises(TrackerError):
+                tracker.get("OTHER-1")
+
     def test_bad_workflow_is_visible_as_unknown_and_blocks_writes(self):
         """A default Jira workflow lacks Ready and must never be silently treated as the full lifecycle."""
         tracker, fixture = adapter()

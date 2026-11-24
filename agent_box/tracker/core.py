@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from typing import Callable, Protocol
 
@@ -101,6 +102,16 @@ class Adapter(Protocol):
     def clone_project_tree(self, source: str, title: str, progress: dict,
                            checkpoint: Callable[[dict], None], apply=False) -> dict: ...
     def preserve_external_relations(self, relations: list[dict], apply=False) -> list[dict]: ...
+
+
+@contextmanager
+def neighbor_lifecycle(task):
+    """A missing board may obscure lifecycle without invalidating readable issue evidence."""
+    try:
+        yield
+    except TrackerError as exc:
+        task.state = "Unknown"
+        task.state_reason = f"Lifecycle unavailable: {exc}"
 
 
 CONTEXT_PAGE_SIZE = 3
