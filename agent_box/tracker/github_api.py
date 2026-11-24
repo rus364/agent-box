@@ -82,7 +82,7 @@ QUERIES = {
 }}""",
     "ContextMemberships": """query ContextMemberships($id: ID!, $after: String) {
   node(id: $id) { ... on Issue { projectItems(first: 100, after: $after, includeArchived: false) {
-    pageInfo { hasNextPage endCursor } nodes { id project { id } }
+    totalCount pageInfo { hasNextPage endCursor } nodes { id project { id } }
   } } }
 }""",
     "ContextItem": f"""query ContextItem($id: ID!) {{ node(id: $id) {{ ... on ProjectV2Item {{ {ITEM} }} }} }}""",
@@ -90,17 +90,17 @@ QUERIES = {
   repository(owner: $owner, name: $name) {{ issue(number: $number) {{ duplicateOf {{ {REF} }} }} }}
 }}""",
     "ContextHierarchy": f"""query ContextHierarchy($owner: String!, $name: String!, $number: Int!) {{
-  repository(owner: $owner, name: $name) {{ issue(number: $number) {{ parent {{ {REF} }} duplicateOf {{ {REF} }} }} }}
+  repository(owner: $owner, name: $name) {{ issue(number: $number) {{ state stateReason parent {{ {REF} }} duplicateOf {{ {REF} }} }} }}
 }}""",
     "ContextLinks": f"""query ContextLinks($owner: String!, $name: String!, $number: Int!) {{
   repository(owner: $owner, name: $name) {{ issue(number: $number) {{
-    id blocking(first: 100) {{ pageInfo {{ hasNextPage endCursor }} nodes {{ {REF} }} }}
+    id blocking(first: 100) {{ totalCount pageInfo {{ hasNextPage endCursor }} nodes {{ {REF} }} }}
     {" ".join(connection(name).replace(", after: $after", "") for name in ("subIssues", "blockedBy", "relatesTo"))}
   }} }}
 }}""",
     "IssueBlocking": f"""query IssueBlocking($id: ID!, $after: String) {{
   node(id: $id) {{ ... on Issue {{ blocking(first: 100, after: $after) {{
-    pageInfo {{ hasNextPage endCursor }} nodes {{ {REF} }}
+    totalCount pageInfo {{ hasNextPage endCursor }} nodes {{ {REF} }}
   }} }} }}
 }}""",
     "Items": items_query("Items", ISSUE),
@@ -288,11 +288,16 @@ def all_nodes(client, raw, name, *, operation=None, partial_error=None):
     """Every node of one of an issue's lists, following its cursor past the first page."""
     found = raw.get(name)
     cursors = set()
+    reported_counts = set()
+    received = 0
     operation = operation or "Issue" + name[0].upper() + name[1:]
     for _ in range(10000):
         info = (found or {}).get("pageInfo") or {}
         rows = (found or {}).get("nodes")
+        if partial_error and (found or {}).get("totalCount") is not None:
+            reported_counts.add(found["totalCount"])
         if isinstance(rows, list):
+            received += len(rows)
             for row in rows:
                 if row is not None:
                     yield row
@@ -303,6 +308,9 @@ def all_nodes(client, raw, name, *, operation=None, partial_error=None):
         if not isinstance(rows, list) or not isinstance(info.get("hasNextPage"), bool):
             raise TrackerError(f"GitHub returned an incomplete {name} connection", "provider")
         if not info["hasNextPage"]:
+            if reported_counts and reported_counts != {received}:
+                partial_error(TrackerError(f"GitHub returned {received} {name} entries; "
+                                           f"reported counts: {sorted(reported_counts)}", "provider"))
             return
         after = info.get("endCursor")
         if not after or after in cursors:

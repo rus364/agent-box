@@ -92,7 +92,7 @@ for write metadata such as revision. Each `context` page
 contains up to three distinct neighbors, in parent, duplicate original, blocked-by, child, blocks, related,
 then duplicated-by order, sorted by canonical ID as text within each group.
 GitHub exposes the original on a duplicate issue. A linked GitHub duplicate
-names that original in its closure reason. Jira and Vikunja also expose
+names that original in its closure reason, or reports an unavailable reference. Jira and Vikunja also expose
 the reverse link on the original. A task reached by multiple links
 appears once with all its relation types. Each entry carries the source ID, URL,
 state and full description, including document references. Failed neighbor reads

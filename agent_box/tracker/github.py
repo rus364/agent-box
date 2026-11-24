@@ -46,6 +46,13 @@ def repository_from_url(url, web_host):
     return path
 
 
+def duplicate_original(raw, *, expected):
+    original = raw.get("duplicateOf")
+    if expected and not original:
+        raise TrackerError("GitHub marks the issue as a duplicate but supplied no original reference", "provider")
+    return original
+
+
 class GitHubAdapter:
     """A binding names one project; its tasks are the issues of this repository on it.
 
@@ -385,7 +392,7 @@ class GitHubAdapter:
         if describe_original and raw["state"] == "CLOSED" and raw["state_reason"] == "DUPLICATE":
             try:
                 original = api.issue_node(self.client, repository, number, "ContextOriginal")
-                raw["duplicate_of"] = api.ref(original.get("duplicateOf"))
+                raw["duplicate_of"] = api.ref(duplicate_original(original, expected=True))
             except TrackerError as exc:
                 original_error = exc
         # Closure is authoritative on the issue even if the board is unreadable.
@@ -416,9 +423,12 @@ class GitHubAdapter:
 
         with links.reading("parent and duplicate original"):
             raw = read("ContextHierarchy")
-            for kind, field in (("parent", "parent"), ("duplicate", "duplicateOf")):
-                if raw.get(field):
-                    add(kind, raw[field])
+            if raw.get("parent"):
+                add("parent", raw["parent"])
+            with links.reading("duplicateOf"):
+                original = duplicate_original(raw, expected=raw.get("state") == "CLOSED" and raw.get("stateReason") == "DUPLICATE")
+                if original:
+                    add("duplicate", original)
         with links.reading("issue connections"):
             raw = read("ContextLinks")
             for kind, field in (("blocked-by", "blockedBy"), ("child", "subIssues"),

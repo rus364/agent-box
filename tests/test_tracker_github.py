@@ -137,6 +137,30 @@ class TaskShapeTests(unittest.TestCase):
                          ("Done", "closed as a duplicate of other/lib#3", "Previous design."))
         self.assertFalse(any(variables.get("number") == 3 for _, variables in client.operations))
 
+    def test_missing_duplicate_reference_is_visible_for_root_and_neighbor(self):
+        """GitHub can report duplicate closure without returning the original issue reference."""
+        tracker, _ = adapter([issue(1, related=[2]), issue(2, state="CLOSED", reason="DUPLICATE", body="Decision")])
+        with patch.object(cli, "context", return_value=(tracker, tracker.binding, None)):
+            first = cli.dispatch(cli.parser().parse_args(["get", "1", "--context", "--no-comments"]))
+            second = cli.dispatch(cli.parser().parse_args(["get", "2", "--context", "--no-comments"]))
+        row, = first["context"]["tasks"]
+        self.assertEqual((row["state"], row["description"]), ("Done", "Decision"))
+        self.assertIn("no original", row["state_reason"])
+        self.assertIsNone(second["context"]["total"])
+        self.assertIn("no original", second["context"]["discovery_errors"][0]["error"])
+
+    def test_terminal_page_count_mismatch_preserves_visible_links_and_marks_discovery_incomplete(self):
+        """The last page can contradict the provider's own count after pagination or access changes."""
+        tracker, client = adapter([issue(1, blocked_by=[2, 3]), issue(2), issue(3)], list_page=1)
+        response = client.op_ContextLinks(*REPO.split("/"), 1)
+        response["repository"]["issue"]["blockedBy"]["pageInfo"]["hasNextPage"] = False
+        with patch.object(client, "op_ContextLinks", return_value=response), patch.object(
+                cli, "context", return_value=(tracker, tracker.binding, None)):
+            root = cli.dispatch(cli.parser().parse_args(["get", "1", "--context", "--no-comments"]))
+        graph = root["context"]
+        self.assertEqual((graph["known_total"], graph["total"], graph["tasks"][0]["id"]), (1, None, "2"))
+        self.assertIn("blockedBy", graph["discovery_errors"][0]["error"])
+
     def test_unreadable_duplicate_original_preserves_the_closed_neighbor(self):
         """An unavailable original cannot erase the direct source or its independently known closure."""
         tracker, client = adapter([issue(1, state="CLOSED", reason="DUPLICATE", body="Previous design.")])
