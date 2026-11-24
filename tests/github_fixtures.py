@@ -143,6 +143,9 @@ class FakeGitHub:
     def op_ContextTitles(self, project, query, after):
         return self.op_Items(project, query, after)
 
+    def op_ContextOriginal(self, owner, name, number):
+        return self.op_Issue(owner, name, number)
+
     def op_ContextHierarchy(self, owner, name, number):
         return self.op_Issue(owner, name, number)
 

@@ -281,6 +281,8 @@ class VikunjaAdapter:
             task.state, task.state_reason = self.board_state(raw)
         return task
 
+    context_root = context_neighbor
+
     def context_relations(self, task_id, links):
         path = f"/tasks/{int(task_id)}?format=markdown"
         try:

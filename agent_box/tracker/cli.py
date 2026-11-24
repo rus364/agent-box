@@ -405,7 +405,7 @@ def dispatch(args):
                  and (NORMALIZED_LABEL in found.labels) == args.undo]
     elif args.command == "get" and args.context_page is not None:
         task = (adapter.resolve(args.task, binding.project, binding.recursive, canonical=True, evidence=True)
-                if binding else adapter.context_neighbor(args.task))
+                if binding else adapter.context_root(args.task))
         result = evidence_fields(task)
         result["context"] = task_context(task, adapter, args.context_page)
         if args.comments:

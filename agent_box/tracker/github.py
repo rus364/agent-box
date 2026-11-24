@@ -371,11 +371,23 @@ class GitHubAdapter:
         repository, number = self.issue_ref(task_id)
         return self.normalize(api.issue(self.client, repository, number))
 
-    def context_neighbor(self, task_id, *, scoped=False):
+    def context_neighbor(self, task_id):
+        return self.context_root(task_id, describe_original=True)
+
+    def context_root(self, task_id, *, scoped=False, describe_original=False):
         repository, number = self.issue_ref(task_id)
         node = api.issue_node(self.client, repository, number, "ContextNeighbor")
         raw = api.issue_fields(node)
         task = self.evidence_task(raw)
+        # The root discovers its original with the other links. A terminal duplicate
+        # still needs that reference to explain closure, without fetching the original.
+        original_error = None
+        if describe_original and raw["state"] == "CLOSED" and raw["state_reason"] == "DUPLICATE":
+            try:
+                original = api.issue_node(self.client, repository, number, "ContextOriginal")
+                raw["duplicate_of"] = api.ref(original.get("duplicateOf"))
+            except TrackerError as exc:
+                original_error = exc
         # Closure is authoritative on the issue even if the board is unreadable.
         fallback = self.issue_state(raw, None, None) if raw["state"] == "CLOSED" else ("Unknown", None)
         with nullcontext() if scoped else neighbor_lifecycle(task, fallback=fallback):
@@ -386,6 +398,8 @@ class GitHubAdapter:
             with neighbor_lifecycle(task, fallback=fallback):
                 item = api.context_item(self.client, membership) if membership and raw["state"] != "CLOSED" else None
                 task.state, task.state_reason = self.issue_state(raw, item, bound)
+        if original_error:
+            task.state_reason = f"{task.state_reason}; duplicate original unavailable: {original_error}"
         return task
 
     def context_relations(self, task_id, links):
@@ -425,12 +439,12 @@ class GitHubAdapter:
 
         def read(repository, number):
             if evidence:
-                return self.context_neighbor(self.task_id((repository, number)), scoped=True)
+                return self.context_root(self.task_id((repository, number)), scoped=True)
             return self.found(repository, number)
 
         if evidence and canonical and not recursive and not title and re.fullmatch(
                 r"(?:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#)?[0-9]+", text):
-            return self.context_neighbor(text)
+            return self.context_root(text)
         scope = set(self.subtree(project, recursive))
         if not title and text.startswith(("http://", "https://")):
             parts = urlsplit(text)
@@ -469,7 +483,7 @@ class GitHubAdapter:
             raise TrackerError("Ambiguous task reference: " + "; ".join(
                 f"#{task.number} {task.title} ({task.url})" for task in matches) + ". Use the issue number", "conflict")
         if evidence:
-            task = self.context_neighbor(matches[0].id, scoped=True)
+            task = self.context_root(matches[0].id, scoped=True)
             if task.project not in scope or task.title != text:
                 raise TrackerError("The matching issue changed during resolution; reread the task", "conflict")
             return task

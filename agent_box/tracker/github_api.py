@@ -86,6 +86,9 @@ QUERIES = {
   } } }
 }""",
     "ContextItem": f"""query ContextItem($id: ID!) {{ node(id: $id) {{ ... on ProjectV2Item {{ {ITEM} }} }} }}""",
+    "ContextOriginal": f"""query ContextOriginal($owner: String!, $name: String!, $number: Int!) {{
+  repository(owner: $owner, name: $name) {{ issue(number: $number) {{ duplicateOf {{ {REF} }} }} }}
+}}""",
     "ContextHierarchy": f"""query ContextHierarchy($owner: String!, $name: String!, $number: Int!) {{
   repository(owner: $owner, name: $name) {{ issue(number: $number) {{ parent {{ {REF} }} duplicateOf {{ {REF} }} }} }}
 }}""",

@@ -137,6 +137,8 @@ class JiraAdapter:
             task.state, task.state_reason = self.issue_state(raw["fields"])
         return task
 
+    context_root = context_neighbor
+
     def context_relations(self, task_id, links):
         fields = self.raw(task_id, fields="parent,subtasks,issuelinks")["fields"]
         if fields.get("parent"):

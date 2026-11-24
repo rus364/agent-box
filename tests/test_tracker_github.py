@@ -126,6 +126,25 @@ class TaskShapeTests(unittest.TestCase):
             with self.assertRaisesRegex(TrackerError, "unavailable next project page"):
                 cli.dispatch(cli.parser().parse_args(["get", "#3", "--context"]))
 
+    def test_linked_duplicate_names_its_original_without_hydrating_a_second_hop(self):
+        """The original is closure provenance even when only the direct neighbor's body should be fetched."""
+        tracker, client = adapter([issue(1, related=[2]), issue(2, state="CLOSED", reason="DUPLICATE",
+                                                                 duplicate_of=("other/lib", 3), body="Previous design.")])
+        with patch.object(cli, "context", return_value=(tracker, tracker.binding, None)):
+            root = cli.dispatch(cli.parser().parse_args(["get", "1", "--context", "--no-comments"]))
+        row, = root["context"]["tasks"]
+        self.assertEqual((row["state"], row["state_reason"], row["description"]),
+                         ("Done", "closed as a duplicate of other/lib#3", "Previous design."))
+        self.assertFalse(any(variables.get("number") == 3 for _, variables in client.operations))
+
+    def test_unreadable_duplicate_original_preserves_the_closed_neighbor(self):
+        """An unavailable original cannot erase the direct source or its independently known closure."""
+        tracker, client = adapter([issue(1, state="CLOSED", reason="DUPLICATE", body="Previous design.")])
+        with patch.object(client, "op_ContextOriginal", side_effect=TrackerError("reference unavailable")):
+            neighbor = tracker.context_neighbor("1")
+        self.assertEqual((neighbor.state, neighbor.description), ("Done", "Previous design."))
+        self.assertIn("reference unavailable", neighbor.state_reason)
+
     def test_root_duplicate_survives_an_unavailable_github_connections_query(self):
         """The original decision is independently readable when the list-valued fields are forbidden."""
         tracker, client = adapter([issue(1, state="CLOSED", reason="DUPLICATE", duplicate_of=2),
