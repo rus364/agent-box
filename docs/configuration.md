@@ -60,9 +60,11 @@ not availability checks.
 **Behavior version.** Workflow → Behavior selects `workflow.behavior_version`:
 `v1` preserves earlier engineering guidance; `v2` adds impact analysis,
 appropriate reuse, maintainability, evidence-based disagreement and investigation
-proportionate to risk and effort; `v3` (default) also offers only viable
+proportionate to risk and effort; `v3` also offers only viable
 alternatives, described as fairly as the recommendation, and states a settled
-choice instead of padding a question with strawman options. Projects may override the global choice.
+choice instead of padding a question with strawman options. The default `v4`
+also directs the coordinator to inspect relevant task relations and project
+evidence before an engineering recommendation. Projects may override the global choice.
 This setting does not change models, permissions, review frequency or budgets.
 `agent-box workflow behavior --role coordinator|worker|reviewer|scout|sync`
 reads the effective instructions without a task or tracker connection. New

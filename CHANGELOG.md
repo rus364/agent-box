@@ -1,5 +1,12 @@
 # Release notes
 
+## Unreleased
+
+- `tracker get REFERENCE --context` includes pages of directly linked task
+  descriptions and document references. Workflow behavior v4, the new default,
+  directs coordinators to check this evidence before recommending a design.
+  Saved explicit versions keep their existing guidance.
+
 ## 0.3.0
 
 - Paste PNG images with Ctrl+V in local interactive container Codex and Claude

@@ -354,7 +354,7 @@ expected. A cleanup failure never undoes the merge or Done.
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `workflow.enabled` | off | Install and allow the workflow (global only) |
-| `workflow.behavior_version` | `v3` | Engineering guidance: `v1` preserves previous rules; `v2` adds consistent impact analysis, reuse and evidence-based disagreement; `v3` also offers only viable, fairly described alternatives |
+| `workflow.behavior_version` | `v4` | Engineering guidance: `v1` preserves previous rules; `v2` adds consistent impact analysis, reuse and evidence-based disagreement; `v3` also offers only viable, fairly described alternatives; `v4` grounds coordinator recommendations in task and project evidence |
 | `workflow.merge_mode` | `github` | `github` pull request or `local` fast-forward |
 | `workflow.auto_push` | on | Publish the parent (GitHub) or the landed base (local) |
 | `workflow.pause_push` | off | Publish and verify unfinished task branches on an explicit pause |
@@ -504,7 +504,7 @@ not universal limits or live semantic acceptance; rerun the fixture after CLI up
 
 ## Engineering guidance
 
-Coordinator skills load `agent-box workflow behavior --role coordinator` before work.
+Coordinators load `agent-box workflow behavior --role coordinator` before engineering recommendations, planning or implementation.
 The role is required; omission or an unknown role fails and lists accepted roles.
 Delegates use the behavior in their assignment, or explicitly request their own
 role with `--role worker|reviewer|scout|sync`, never coordinator behavior. Native and
@@ -512,8 +512,12 @@ managed assignments carry the chosen role's instructions, including GitHub revie
 requests. Shared installed profiles do not store a project's version. v1 retains
 the earlier local review safeguards; v2 extends the common reasoning policy across
 roles without changing ownership or requiring speculative refactors; v3 adds that
-offered alternatives must be viable and fairly described. Read-only
-reviewers describe necessary executable checks for the coordinator to perform.
+offered alternatives must be viable and fairly described. In v4 the coordinator
+starts a material recommendation about an existing task with
+`tracker get REFERENCE --context`, including during design discussion. It follows relevant journals and referenced documents until the
+remaining uncertainty cannot change the decision. Other roles retain their v3
+guidance. Read-only reviewers describe necessary executable checks for the
+coordinator to perform.
 
 After a package update, the first host launch applies shared integrations. Each
 bound repository adopts changed workflow guidance when next opened with workflow

@@ -101,6 +101,37 @@ class Adapter(Protocol):
     def preserve_external_relations(self, relations: list[dict], apply=False) -> list[dict]: ...
 
 
+CONTEXT_PAGE_SIZE = 3
+
+
+def task_context(task: Task, get: Callable[[str], Task], page: int) -> dict:
+    """Bound provider reads to one hop and page; retain every reason a neighbor matters."""
+    relations: dict[str, list[str]] = {}
+    for kind, ids in (("parent", [task.parent] if task.parent else []), ("blocked-by", task.blockers),
+                      ("child", task.children), ("related", task.related)):
+        for task_id in sorted(set(ids)):
+            if task_id != task.id:
+                relations.setdefault(task_id, []).append(kind)
+
+    total = len(relations)
+    start = (page - 1) * CONTEXT_PAGE_SIZE
+    if page < 1 or (page != 1 and start >= total):
+        raise TrackerError(f"No context page {page} for task {task.id} ({total} directly linked tasks)")
+    end = start + CONTEXT_PAGE_SIZE
+    entries = []
+    for task_id in list(relations)[start:end]:
+        entry = {"id": task_id, "relations": relations[task_id]}
+        try:
+            linked = get(task_id)
+        except TrackerError as exc:
+            entry.update(error=str(exc), category=exc.category, retryable=exc.retryable)
+        else:
+            entry.update(project=linked.project, number=linked.number, url=linked.url, title=linked.title,
+                         state=linked.state, state_reason=linked.state_reason, description=linked.description)
+        entries.append(entry)
+    return {"page": page, "total": total, "next_page": page + 1 if end < total else None, "tasks": entries}
+
+
 def root_task(task: Task, get: Callable[[str], Task]) -> Task:
     seen = {task.id}
     while task.parent:

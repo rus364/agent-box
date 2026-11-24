@@ -32,7 +32,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .atomicio import read_json
-from . import migrations, networking
+from . import migrations, networking, workflow_behavior
 from .paths import CONFIG_FILE
 from .external_config import API_EFFORTS, ExternalProvider, parse_connections, valid_name
 
@@ -1023,7 +1023,7 @@ class WorkflowConfig:
     enabled: bool = False
     merge_mode: str = "github"
     #: Engineering guidance only; permissions and review/model policy are independent.
-    behavior_version: str = "v3"
+    behavior_version: str = "v4"
     #: Global: a whole delivered text, independent of page size or provider tokens.
     text_max_bytes: int = 65536
     #: Global: each temporary text keeps the expiry chosen when it was created.
@@ -1105,8 +1105,8 @@ class WorkflowConfig:
         errors = self.balance.validate(external_apis)
         if self.merge_mode not in ("github", "local"):
             errors.append("workflow.merge_mode must be github or local")
-        if self.behavior_version not in ("v1", "v2", "v3"):
-            errors.append("workflow.behavior_version must be v1, v2 or v3")
+        if self.behavior_version not in workflow_behavior.VERSIONS:
+            errors.append("workflow.behavior_version must be one of: " + ", ".join(workflow_behavior.VERSIONS))
         for name in ("text_max_bytes", "text_retention_days"):
             value = getattr(self, name)
             if type(value) is not int or value < 1:

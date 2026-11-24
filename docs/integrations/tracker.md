@@ -74,6 +74,7 @@ Output is JSON. `get` accepts what a user would type: a visible number such as
 ```bash
 agent-box tracker ready                            # Ready tasks you may claim
 agent-box tracker get "#21"                        # full task, with comments
+agent-box tracker get "#21" --context              # add directly linked task descriptions
 agent-box tracker get 123 --no-comments
 agent-box tracker search "login" --include-done    # open tasks; --include-done adds finished ones
 agent-box tracker claim 123                        # assign yourself and enter In progress
@@ -84,6 +85,17 @@ agent-box tracker create --title "..." --description-file task.md --parent 120
 agent-box tracker relation 124 blocked-by 123
 agent-box tracker state 123 Done --reason "Superseded by #130"
 ```
+
+With `--context`, the ordinary task output gains a `context` object. Each page
+reads up to three distinct neighbors, in parent, blocked-by, child, related order,
+then by canonical ID as text within each group. A task reached by multiple links
+appears once with all its relation types. Each entry carries the source ID, URL,
+state and full description, including document references. Failed neighbor reads
+carry their error. The current task journal follows the usual `--no-comments`
+setting. Read a neighbor's journal with `tracker comments ID`.
+Use `--context-page N` with the returned `next_page` for more evidence.
+Pages reflect the current links at read time. The traversal follows one hop.
+For unlinked decisions, search by a relevant term with `--include-done`.
 
 - **Claiming** checks state, dependencies and assignees, then assigns you and
   moves the task to In progress. Assignment is a cooperative lock, not a

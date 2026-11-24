@@ -14,7 +14,7 @@ from ..paths import WORKFLOW_STATE
 from ..repo_binding import BINDING_FILE, Binding, repository_root, server_identity, write_setup
 from .audit import audit_project
 from .core import (NORMALIZED_LABEL, STATES, Task, TrackerError, checkboxes, claim, ready_tasks,
-                   root_task, set_checkboxes)
+                   root_task, set_checkboxes, task_context)
 from .registry import make_adapter
 
 
@@ -74,6 +74,11 @@ def parser():
                          help="Visible number, exact title, task URL or canonical ID" if name == "get"
                          else "Canonical task ID returned by resolve/get/search")
         if name == "get":
+            pages = cmd.add_mutually_exclusive_group()
+            pages.add_argument("--context", dest="context_page", action="store_const", const=1,
+                               help="Include the first page of directly linked task descriptions")
+            pages.add_argument("--context-page", type=int, metavar="N",
+                               help="Read page N of directly linked tasks (starts at 1)")
             cmd.add_argument("--comments", action=argparse.BooleanOptionalAction, default=True,
                              help="Include the task journal in output (default); Jira also reads comments for revision checks with --no-comments")
         elif name == "claim":
@@ -416,6 +421,8 @@ def dispatch(args):
                                "Relations must stay inside the repository binding", "conflict")
     if args.command == "get":
         result = task.to_dict()
+        if args.context_page is not None:
+            result["context"] = task_context(task, adapter.get, args.context_page)
         if args.comments:
             result["comments"] = adapter.comments(task.id)
         return result

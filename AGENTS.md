@@ -1,6 +1,6 @@
-<!-- BEGIN AGENT-BOX workflow sha256=fea3ab48f543f6c5fc33bfc4e23e7a3b95133c45355a7f6a44ec4a35b8759c97 -->
+<!-- BEGIN AGENT-BOX workflow sha256=be4bd53f1f3acfb75b3ae14228ff0e65139c25751f165b33ef185350f68980e0 -->
 Read the tracked task before work; .agent-box.json binds this repository to its tracker project.
-Coordinators: before planning or implementation, read `agent-box workflow behavior --role coordinator` and follow its effective instructions and startup guidance notice. Delegates follow their own role's behavior supplied in the assignment; never load coordinator behavior.
+Coordinators: before engineering recommendations, planning or implementation, read `agent-box workflow behavior --role coordinator` and follow its effective instructions and startup guidance notice. Delegates follow their own role's behavior supplied in the assignment; never load coordinator behavior.
 Use agent-box tracker for task state, progress and dependencies; read related history when context is missing.
 Use ab-interview, ab-plan, ab-work, ab-sync, ab-review, ab-pr, and ab-land as needed. ab-setup maintains this binding and ab-adopt brings an existing project in line with the workflow; ab-normalize processes unmarked tasks in a bound project.
 The coordinator owns branches, commits, lifecycle, dependencies, and GitHub actions. Follow `workflow inspect` for worker and scout routes. Delegate implementation sequentially and allow scouts to run in parallel. On `self` (empty list or delegation off), the coordinator does the work in its own session.

@@ -185,7 +185,7 @@ class CloudReviewTests(LandingCase):
         """Both bots judge engineering text using project policy, regardless of tracker or global language."""
         from agent_box import project_config
         original = self.config
-        versions = ("v1", "v2", "v3")
+        versions = ("v1", "v2", "v3", "v4")
         original.workflow.review.max_rounds = 2 * len(versions)
         original.workflow.language = "Deutsch"
         original.workflow.tracker_language = "日本語"

@@ -35,7 +35,7 @@ class RepositoryGuidanceTests(unittest.TestCase):
         self.assertEqual(result["status"], "updated")
         self.assertIn("installed package", result["message"])
         data = self.path.read_bytes()
-        self.assertIn(b"Coordinators: before planning", data)
+        self.assertIn(b"Coordinators: before engineering recommendations, planning or implementation", data)
         self.assertIn(b"workflow behavior --role coordinator", data)
         self.assertIn(b"Delegates follow their own role's behavior", data)
         self.assertTrue(data.startswith(b"User prefix\n"))

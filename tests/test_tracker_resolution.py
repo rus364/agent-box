@@ -42,10 +42,10 @@ class ResolutionTests(unittest.TestCase):
         with patch.object(cli, 'context', return_value=(self.adapter, self.binding, None)):
             return cli.dispatch(cli.parser().parse_args(['resolve', *arguments]))
 
-    def get(self, reference):
+    def get(self, reference, *options):
         with patch.object(cli, 'context', return_value=(self.adapter, self.binding, None)), \
              patch.object(self.adapter, 'comments', return_value=[]):
-            return cli.dispatch(cli.parser().parse_args(['get', reference]))
+            return cli.dispatch(cli.parser().parse_args(['get', reference, *options]))
 
     def test_get_reads_a_user_reference_without_a_separate_resolve(self):
         """A copied number, title or URL reads its task; canonical IDs keep working."""
@@ -68,6 +68,41 @@ class ResolutionTests(unittest.TestCase):
             result = cli.dispatch(cli.parser().parse_args(['get', '#21']))
             self.assertEqual(result['comments'], [{'comment': 'History'}])
             comments.assert_called_once_with('319')
+
+    def test_context_follows_canonical_links_once_across_pages_including_done_tasks(self):
+        """Visible #21 is not ID 21; the completed parent's constraint must survive that collision."""
+        self.client.tasks[319]['related_tasks'] = {
+            'parenttask': [{'id': 21}], 'blocked': [{'id': 322}, {'id': 21}],
+            'subtask': [{'id': 500}], 'related': [{'id': 21}, {'id': 319}, {'id': 400}],
+        }
+        evidence = 'Retain the behavior in docs/policy.md#Exceptions.'
+        self.client.tasks[21].update(done=True, description=evidence, related_tasks={'related': [{'id': 900}]})
+        self.client.tasks[400]['done'] = True
+        self.assertNotIn('context', self.get('#21'))
+        with patch.object(self.adapter, 'get', wraps=self.adapter.get) as read:
+            first = self.get('#21', '--context', '--no-comments')
+            self.assertNotIn('comments', first)
+            context = first['context']
+            self.assertEqual((context['total'], context['next_page']), (4, 2))
+            parent, blocker, missing = context['tasks']
+            self.assertEqual((parent['id'], parent['relations'], parent['state'], parent['description']),
+                             ('21', ['parent', 'blocked-by', 'related'], 'Done', evidence))
+            self.assertEqual(blocker['id'], '322')
+            self.assertEqual(missing['id'], '500')
+            self.assertIn('404', missing['error'])
+            self.assertEqual([call.args[0] for call in read.call_args_list], ['319', '21', '322', '500'])
+        tail = self.get('#21', '--context-page', '2')['context']
+        self.assertEqual([row['id'] for row in tail['tasks']], ['400'])
+        self.assertIsNone(tail['next_page'])
+        self.assertEqual(self.client.writes, [])
+
+    def test_context_empty_and_invalid_pages_distinguish_absent_work_from_a_bad_cursor(self):
+        """An isolated task has a complete first page; an invalid page cannot imply no relations."""
+        self.assertEqual(self.get('#21', '--context')['context'],
+                         {'page': 1, 'total': 0, 'next_page': None, 'tasks': []})
+        for page in ('0', '-1', '2'):
+            with self.subTest(page=page), self.assertRaisesRegex(TrackerError, 'No context page'):
+                self.get('#21', '--context-page', page)
 
     def inspect(self, reference):
         config = Config()

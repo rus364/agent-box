@@ -1,7 +1,7 @@
 """Versioned engineering guidance; role permissions and execution policy stay separate."""
 from .errors import AgentBoxError
 
-VERSIONS = ("v1", "v2", "v3")
+VERSIONS = ("v1", "v2", "v3", "v4")
 ROLES = ("coordinator", "worker", "reviewer", "scout", "sync")
 
 COMMON = """Before proposing or changing an implementation, trace the relevant callers, dependencies and contracts: public interfaces, configuration readers/writers/defaults, persisted data, generated/installed artifacts, tests and documentation. Cover additions, modifications and deletions, including indirect consumers and obsolete cleanup. Follow evidenced dependencies outside the diff; bound research by impact, risk and uncertainty, not every imaginable connection.
@@ -15,7 +15,10 @@ Scale investigation and validation with risk, not line count. Flag a small benef
 CHOICES = """When offering alternatives or asking the user to choose, include only viable options: each one a competent engineer could pick here, with its real cost and the case where it wins. Describe alternatives as fairly as the recommendation and never pad to reach a count. If only one option is reasonable, state it as a decision or assumption instead of offering a choice.
 """
 
-GUIDANCE = {"v1": "", "v2": COMMON, "v3": COMMON + CHOICES}
+GUIDANCE = {"v1": "", "v2": COMMON, "v3": COMMON + CHOICES, "v4": COMMON + CHOICES}
+
+COORDINATOR_DISCOVERY = """During engineering discussion as well as planning and implementation, test the proposed approach against the goal and project constraints before endorsing it. Before a material recommendation about an existing task, start with `agent-box tracker get REFERENCE --context` to read the current requirements and inspect its direct links, including completed work. Follow relevant context pages, task journals, repository instructions, referenced document sections and code to the evidence that could change the decision. Search for unlinked prior decisions with `tracker search QUERY --include-done` when needed. Explain a material conflict and recommend the better-supported approach. Surface missing decisive evidence; stop when further reading cannot change the recommendation.
+"""
 
 ROLE_RULES = {
     "coordinator": "Discuss material scope/requirement alternatives with the user; routine implementation choices need no extra approval. Verify delegated claims and close required executable checks.\n",
@@ -29,12 +32,14 @@ ROLE_RULES = {
 def instructions(version, role):
     """Global profiles cannot hold a project's choice; each assignment carries it."""
     if version not in VERSIONS:
-        raise AgentBoxError("workflow.behavior_version must be v1, v2 or v3")
+        raise AgentBoxError("workflow.behavior_version must be one of: " + ", ".join(VERSIONS))
     if role not in ROLES:
         raise AgentBoxError("Unknown workflow behavior role")
     text = f"Workflow behavior: {version} ({role}).\n"
     if GUIDANCE[version]:
         text += GUIDANCE[version] + ROLE_RULES[role]
+    if version == "v4" and role == "coordinator":
+        text += COORDINATOR_DISCOVERY
     return text
 
 
