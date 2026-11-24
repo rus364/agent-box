@@ -74,6 +74,7 @@ class Adapter(Protocol):
     capabilities: frozenset[str]
 
     def get(self, task_id: str) -> Task: ...
+    def context_neighbor(self, task_id: str) -> Task: ...
     def extra_context_relations(self, task_id: str) -> dict[str, list[str]]: ...
     def resolve(self, reference: str, project: str, recursive: bool = False, *, title: bool = False,
                 canonical: bool = False) -> Task: ...
@@ -126,7 +127,7 @@ def task_context(task: Task, adapter: Adapter, page: int) -> dict:
     for task_id in list(relations)[start:end]:
         entry = {"id": task_id, "relations": relations[task_id]}
         try:
-            linked = adapter.get(task_id)
+            linked = adapter.context_neighbor(task_id)
         except TrackerError as exc:
             entry.update(error=str(exc), category=exc.category, retryable=exc.retryable)
         else:

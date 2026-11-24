@@ -258,16 +258,23 @@ def complete(connection, what):
 
 def all_nodes(client, raw, name):
     """Every node of one of an issue's lists, following its cursor past the first page."""
-    found = raw.get(name) or {}
-    nodes, info = list(found.get("nodes") or []), found.get("pageInfo") or {}
+    found = raw.get(name)
+    nodes, cursors = [], set()
     operation = "Issue" + name[0].upper() + name[1:]
     for _ in range(10000):
-        if not info.get("hasNextPage"):
+        info = (found or {}).get("pageInfo") or {}
+        rows = (found or {}).get("nodes")
+        if not isinstance(rows, list) or None in rows or not isinstance(info.get("hasNextPage"), bool):
+            raise TrackerError(f"GitHub returned an incomplete {name} connection", "provider")
+        nodes.extend(rows)
+        if not info["hasNextPage"]:
             return nodes
-        data = client.graphql(QUERIES[operation], {"id": raw["id"], "after": info.get("endCursor")})
-        found = ((data.get("node") or {}).get(name)) or {}
-        nodes.extend(found.get("nodes") or [])
-        info = found.get("pageInfo") or {}
+        after = info.get("endCursor")
+        if not after or after in cursors:
+            raise TrackerError(f"GitHub returned an incomplete {name} continuation", "provider")
+        cursors.add(after)
+        data = client.graphql(QUERIES[operation], {"id": raw["id"], "after": after})
+        found = (data.get("node") or {}).get(name)
     raise APIError(200, f"pagination of an issue's {name} did not converge")
 
 

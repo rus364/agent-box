@@ -80,7 +80,7 @@ class ResolutionTests(unittest.TestCase):
         self.client.tasks[21].update(done=True, description=evidence, related_tasks={'related': [{'id': 900}]})
         self.client.tasks[400]['done'] = True
         self.assertNotIn('context', self.get('#21'))
-        with patch.object(self.adapter, 'get', wraps=self.adapter.get) as read:
+        with patch.object(self.adapter, 'context_neighbor', wraps=self.adapter.context_neighbor) as read:
             first = self.get('#21', '--context', '--no-comments')
             self.assertNotIn('comments', first)
             context = first['context']
@@ -91,7 +91,7 @@ class ResolutionTests(unittest.TestCase):
             self.assertEqual(blocker['id'], '322')
             self.assertEqual(missing['id'], '500')
             self.assertIn('404', missing['error'])
-            self.assertEqual([call.args[0] for call in read.call_args_list], ['319', '21', '322', '500'])
+            self.assertEqual([call.args[0] for call in read.call_args_list], ['21', '322', '500'])
         tail = self.get('#21', '--context-page', '2')['context']
         self.assertEqual([row['id'] for row in tail['tasks']], ['400'])
         self.assertEqual(tail['tasks'][0]['relations'], ['blocks', 'related', 'duplicated-by'])

@@ -266,6 +266,8 @@ class VikunjaAdapter:
             raise TrackerError("Use a canonical numeric Vikunja task ID; run tracker resolve for user references") from None
         return self.normalize(self.client.get(f"/tasks/{task_id}?format=markdown&expand=buckets&expand=subtasks"))
 
+    context_neighbor = get
+
     def extra_context_relations(self, task_id):
         links = self.client.get(f"/tasks/{int(task_id)}").get("related_tasks") or {}
         kinds = {"blocks": "blocking", "duplicate": "duplicateof", "duplicated-by": "duplicates"}

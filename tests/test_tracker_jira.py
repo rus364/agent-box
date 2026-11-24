@@ -10,7 +10,7 @@ from unittest.mock import Mock, patch
 
 from agent_box.config import Config, TrackerConnection
 from agent_box.repo_binding import Binding
-from agent_box.tracker.core import STATES, TrackerError, claim, ready_tasks, set_checkboxes
+from agent_box.tracker.core import STATES, TrackerError, claim, ready_tasks, set_checkboxes, task_context
 from agent_box.tracker.jira import JiraAdapter
 from agent_box.tracker.jira_api import JiraClient
 
@@ -103,6 +103,19 @@ class JiraContractTests(unittest.TestCase):
         self.assertEqual(tracker.extra_context_relations("TEST-1"),
                          {"duplicate": ["TEST-2"], "duplicated-by": ["OTHER-1"], "blocks": ["OTHER-1"]})
         self.assertEqual(fixture.writes, [])
+
+    def test_context_keeps_neighbor_evidence_when_its_journal_is_unreadable(self):
+        """The neighbor's journal revision is only needed if it becomes the target of an ordinary get."""
+        tracker, fixture = adapter()
+        fixture.issues["TEST-1"]["fields"]["parent"] = {"key": "TEST-2"}
+        fixture.issues["TEST-2"] = issue("TEST-2", "Done", description="Retain black ink.")
+        root = tracker.get("TEST-1")
+        with patch.object(tracker, "comments", side_effect=TrackerError("rate limited", "transport", True)) as journal:
+            evidence, = task_context(root, tracker, 1)["tasks"]
+            self.assertEqual((evidence["id"], evidence.get("description")), ("TEST-2", "Retain black ink."))
+            journal.assert_not_called()
+            with self.assertRaisesRegex(TrackerError, "rate limited"):
+                tracker.get("TEST-2")
 
     def test_bad_workflow_is_visible_as_unknown_and_blocks_writes(self):
         """A default Jira workflow lacks Ready and must never be silently treated as the full lifecycle."""

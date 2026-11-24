@@ -79,6 +79,14 @@ class TaskShapeTests(unittest.TestCase):
                          [("2", ["blocks"]), ("3", ["blocks"])])
         self.assertIn("IssueBlocking", [name for name, _ in client.operations])
 
+    def test_unreadable_blocking_continuation_cannot_look_like_a_complete_graph(self):
+        """A lost page can hide the very dependency the coordinator needs to inspect."""
+        tracker, client = adapter([issue(1, blocking=[2, 3]), issue(2), issue(3)], list_page=1)
+        root = tracker.get("1")
+        with patch.object(client, "op_IssueBlocking", create=True, return_value={"node": None}):
+            with self.assertRaisesRegex(TrackerError, "incomplete.*blocking"):
+                task_context(root, tracker, 1)
+
     def test_other_repository_issue_is_readable_but_outside_the_binding(self):
         tracker, _ = adapter([issue(2, repo="other/lib", status="Ready")])
         task = tracker.get("other/lib#2")

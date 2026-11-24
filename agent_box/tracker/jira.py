@@ -83,10 +83,10 @@ class JiraAdapter:
             raise TrackerError("Use a canonical Jira issue key such as PROJ-123; run tracker resolve for user references")
         return str(task_id)
 
-    def raw(self, task_id):
-        return self.client.request("GET", f"/issue/{self.task_key(task_id)}", params={"fields": "*all"})
+    def raw(self, task_id, *, fields="*all"):
+        return self.client.request("GET", f"/issue/{self.task_key(task_id)}", params={"fields": fields})
 
-    def normalize(self, raw):
+    def normalize(self, raw, *, with_revision=True):
         fields, key = raw["fields"], raw["key"]
         description = fields.get("description") or ""
         if not isinstance(description, str):
@@ -109,8 +109,10 @@ class JiraAdapter:
         assignee = fields.get("assignee")
         assignees = [assignee["accountId"] if self.client.cloud else assignee["name"]] if assignee else []
         # Jira comments may change independently of the issue timestamp.
-        journal = self.comments(key)
-        revision = hashlib.sha256(json.dumps([fields.get("updated"), journal], sort_keys=True).encode()).hexdigest()
+        revision = ""
+        if with_revision:
+            journal = self.comments(key)
+            revision = hashlib.sha256(json.dumps([fields.get("updated"), journal], sort_keys=True).encode()).hexdigest()
         return Task(id=key, project=project, title=fields["summary"], description=description, state=state,
                     assignees=assignees, parent=(fields.get("parent") or {}).get("key"),
                     children=[row["key"] for row in fields.get("subtasks") or []], blockers=blockers, related=related,
@@ -121,8 +123,12 @@ class JiraAdapter:
     def get(self, task_id):
         return self.normalize(self.raw(task_id))
 
+    def context_neighbor(self, task_id):
+        raw = self.raw(task_id, fields="project,status,summary,description")
+        return self.normalize(raw, with_revision=False)
+
     def extra_context_relations(self, task_id):
-        raw = self.client.request("GET", f"/issue/{self.task_key(task_id)}", params={"fields": "issuelinks"})
+        raw = self.raw(task_id, fields="issuelinks")
         directions = {("blocks", "outwardIssue"): "blocks", ("duplicates", "outwardIssue"): "duplicate",
                       ("duplicates", "inwardIssue"): "duplicated-by"}
         relations = {}

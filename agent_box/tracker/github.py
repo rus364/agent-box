@@ -362,6 +362,8 @@ class GitHubAdapter:
         repository, number = self.issue_ref(task_id)
         return self.normalize(api.issue(self.client, repository, number))
 
+    context_neighbor = get
+
     def extra_context_relations(self, task_id):
         repository, number = self.issue_ref(task_id)
         raw = api.issue_context(self.client, repository, number)
