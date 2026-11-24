@@ -128,6 +128,18 @@ class FakeGitHub:
                   "repository")
         return {"repository": {"issue": {key: raw[key] for key in fields}}}
 
+    def op_ContextMemberships(self, id, after):
+        raw = next(row for row in self.issues.values() if f"N-{row['repo']}-{row['number']}" == id)
+        items = [{"id": item["id"], "project": item["project"]} for item in self.lists(raw)["projectItems"]]
+        return {"node": {"projectItems": self.connection(items, after)}}
+
+    def op_ContextItem(self, id):
+        for raw in self.issues.values():
+            for item in self.lists(raw)["projectItems"]:
+                if item["id"] == id:
+                    return {"node": item}
+        return {"node": None}
+
     def op_ContextTitles(self, project, query, after):
         return self.op_Items(project, query, after)
 

@@ -1,6 +1,7 @@
 """GitHub Projects translates a project board and its issues; the core owns workflow decisions."""
 from __future__ import annotations
 
+from contextlib import nullcontext
 from functools import partial
 import re
 import time
@@ -377,18 +378,14 @@ class GitHubAdapter:
         task = self.evidence_task(raw)
         # Closure is authoritative on the issue even if the board is unreadable.
         fallback = self.issue_state(raw, None, None) if raw["state"] == "CLOSED" else ("Unknown", None)
-        try:
+        with nullcontext() if scoped else neighbor_lifecycle(task, fallback=fallback):
             bound = self.bound_project() if self.binding else None
-            items = api.neighbor_project_items(self.client, node["id"]) if bound else []
-        except TrackerError as exc:
-            if scoped:
-                raise
-            task.state, task.state_reason = fallback
-            reason = f"Project lifecycle unavailable: {exc}"
-            task.state_reason = f"{task.state_reason}; {reason}" if task.state_reason else reason
-        else:
+            membership = api.context_membership(self.client, node["id"], bound["node"]) if bound else None
+            if membership and repository.casefold() == self.repository().casefold():
+                task.project = bound["id"]
             with neighbor_lifecycle(task, fallback=fallback):
-                self.read_issue_state(task, raw, items, bound)
+                item = api.context_item(self.client, membership) if membership and raw["state"] != "CLOSED" else None
+                task.state, task.state_reason = self.issue_state(raw, item, bound)
         return task
 
     def context_relations(self, task_id, links):

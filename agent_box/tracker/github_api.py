@@ -80,6 +80,12 @@ QUERIES = {
     "ContextNeighbor": f"""query ContextNeighbor($owner: String!, $name: String!, $number: Int!) {{
   repository(owner: $owner, name: $name) {{ issue(number: $number) {{ {ISSUE_EVIDENCE} }} }}
 }}""",
+    "ContextMemberships": """query ContextMemberships($id: ID!, $after: String) {
+  node(id: $id) { ... on Issue { projectItems(first: 100, after: $after, includeArchived: false) {
+    pageInfo { hasNextPage endCursor } nodes { id project { id } }
+  } } }
+}""",
+    "ContextItem": f"""query ContextItem($id: ID!) {{ node(id: $id) {{ ... on ProjectV2Item {{ {ITEM} }} }} }}""",
     "ContextHierarchy": f"""query ContextHierarchy($owner: String!, $name: String!, $number: Int!) {{
   repository(owner: $owner, name: $name) {{ issue(number: $number) {{ parent {{ {REF} }} duplicateOf {{ {REF} }} }} }}
 }}""",
@@ -275,11 +281,11 @@ def complete(connection, what):
     return nodes
 
 
-def all_nodes(client, raw, name, *, partial_error=None):
+def all_nodes(client, raw, name, *, operation=None, partial_error=None):
     """Every node of one of an issue's lists, following its cursor past the first page."""
     found = raw.get(name)
     cursors = set()
-    operation = "Issue" + name[0].upper() + name[1:]
+    operation = operation or "Issue" + name[0].upper() + name[1:]
     for _ in range(10000):
         info = (found or {}).get("pageInfo") or {}
         rows = (found or {}).get("nodes")
@@ -309,23 +315,42 @@ def ref(node):
     return (node["repository"]["nameWithOwner"], int(node["number"])) if node else None
 
 
+def project_item(item):
+    values = {}
+    for value in complete(item.get("fieldValues"), "a project item's field values"):
+        field = (value or {}).get("field") or {}
+        if field.get("id") and value.get("optionId"):
+            values[field["id"]] = {"name": value.get("name") or "", "option": value["optionId"]}
+    return {"id": item["id"], "project": item["project"]["id"],
+            "updated_at": item.get("updatedAt") or "", "values": values}
+
+
 def issue_project_items(client, raw):
-    items = []
-    for item in all_nodes(client, raw, "projectItems"):
-        values = {}
-        for value in complete(item.get("fieldValues"), "a project item's field values"):
-            field = (value or {}).get("field") or {}
-            if field.get("id") and value.get("optionId"):
-                values[field["id"]] = {"name": value.get("name") or "", "option": value["optionId"]}
-        items.append({"id": item["id"], "project": item["project"]["id"],
-                      "updated_at": item.get("updatedAt") or "", "values": values})
-    return items
+    return [project_item(item) for item in all_nodes(client, raw, "projectItems")]
 
 
-def neighbor_project_items(client, node_id):
-    """Keep errors from the first projectItems page separate from the issue's text and state."""
-    page = client.graphql(QUERIES["IssueProjectItems"], {"id": node_id, "after": None})
-    return issue_project_items(client, {"id": node_id, **(page.get("node") or {})})
+def context_membership(client, node_id, project_id):
+    """A positive membership is conclusive; only a complete read can establish absence."""
+    errors = []
+    query = "ContextMemberships"
+    page = client.graphql(QUERIES[query], {"id": node_id, "after": None}, partial_error=errors.append)
+    raw = {"id": node_id, **(page.get("node") or {})}
+    for item in all_nodes(client, raw, "projectItems", operation=query, partial_error=errors.append):
+        project = (item.get("project") or {}).get("id")
+        if project == project_id:
+            return item
+        if not project:
+            errors.append(TrackerError("GitHub returned an unidentified project card", "provider"))
+    if errors:
+        raise errors[0]
+    return None
+
+
+def context_item(client, membership):
+    raw = client.graphql(QUERIES["ContextItem"], {"id": membership["id"]}).get("node")
+    if not raw or raw.get("id") != membership["id"] or raw.get("project") != membership["project"]:
+        raise TrackerError("GitHub project card changed during the context read", "conflict")
+    return project_item(raw)
 
 
 def issue_fields(raw):

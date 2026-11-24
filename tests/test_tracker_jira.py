@@ -135,6 +135,17 @@ class JiraContractTests(unittest.TestCase):
             with self.assertRaisesRegex(TrackerError, "HTTP 429"):
                 cli.dispatch(cli.parser().parse_args(["get", "TEST-1"]))
 
+    def test_cloud_context_rejects_a_title_that_became_ambiguous_since_indexing(self):
+        """The search index enumerates keys, but a newer title on either issue decides uniqueness."""
+        tracker, fixture = adapter(cloud=True)
+        snapshot = fixture.search("")
+        snapshot[1]["fields"]["summary"] = "Old name"
+        with patch.object(fixture, "search", return_value=snapshot), patch.object(
+                cli, "context", return_value=(tracker, tracker.binding, None)):
+            for options in ([], ["--context"]):
+                with self.assertRaisesRegex(TrackerError, "Ambiguous title.*TEST-1, TEST-2"):
+                    cli.dispatch(cli.parser().parse_args(["get", "A task", "--no-comments", *options]))
+
     def test_context_preserves_jira_evidence_when_the_neighbor_project_is_unavailable(self):
         """A separate workflow status lookup cannot invalidate the linked issue's description."""
         tracker, fixture = adapter()

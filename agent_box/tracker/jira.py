@@ -179,14 +179,22 @@ class JiraAdapter:
             return task
         if evidence:
             rows = self.client.search(f'project = "{scope[0]}" ORDER BY key ASC')
-            matches = [read(row["key"]) for row in rows if row["fields"]["summary"] == text]
-            matches = [task for task in matches if task.project in scope and task.title == text]
+            # On Cloud even a nonmatching indexed title may have become an exact match.
+            if self.client.cloud:
+                rows = (self.raw(row["key"], fields="project,summary") for row in rows)
+            matches = [self.evidence_task(row) for row in rows
+                       if row["fields"]["summary"] == text and row["fields"]["project"]["key"] in scope]
         else:
             matches = [task for task in self.search(scope[0], text) if task.title == text]
         if len(matches) != 1:
             raise TrackerError("No exact task match" if not matches else
                                "Ambiguous title; use an issue key: " + ", ".join(t.id for t in matches),
                                "not-found" if not matches else "conflict")
+        if evidence:
+            task = read(matches[0].id)
+            if task.title != text or task.project not in scope:
+                raise TrackerError("The matching issue changed during resolution; reread the task", "conflict")
+            return task
         return matches[0]
 
     def search(self, project, query="", recursive=False, *, open_only=False):

@@ -106,6 +106,26 @@ class TaskShapeTests(unittest.TestCase):
             with self.assertRaisesRegex(TrackerError, "incomplete blockedBy"):
                 cli.dispatch(cli.parser().parse_args(["get", "#1"]))
 
+    def test_scoped_context_stops_after_finding_the_bound_card(self):
+        """Later projects cannot invalidate membership, while a failed search before the match cannot prove it."""
+        tracker, client = adapter([issue(1, on=[2, 9], status="Ready", parent=2), issue(2),
+                                   issue(3, on=[9, 2], status="Ready")],
+                                  projects={2: project(), 9: project(number=9)}, list_page=1)
+        fetch = client.graphql
+
+        def lose_continuation(query, variables, **options):
+            if "projectItems(" in query and variables.get("after"):
+                raise TrackerError("unavailable next project page", "transport", True)
+            return fetch(query, variables, **options)
+
+        with patch.object(client, "graphql", side_effect=lose_continuation), patch.object(
+                cli, "context", return_value=(tracker, tracker.binding, None)):
+            for ref in ("#1", "https://github.com/" + REPO + "/issues/1"):
+                root = cli.dispatch(cli.parser().parse_args(["get", ref, "--context", "--no-comments"]))
+                self.assertEqual((root["state"], root["context"]["tasks"][0]["id"]), ("Ready", "2"))
+            with self.assertRaisesRegex(TrackerError, "unavailable next project page"):
+                cli.dispatch(cli.parser().parse_args(["get", "#3", "--context"]))
+
     def test_root_duplicate_survives_an_unavailable_github_connections_query(self):
         """The original decision is independently readable when the list-valued fields are forbidden."""
         tracker, client = adapter([issue(1, state="CLOSED", reason="DUPLICATE", duplicate_of=2),
@@ -144,10 +164,10 @@ class TaskShapeTests(unittest.TestCase):
                                     reason="NOT_PLANNED", body="Superseded plan")])
         fetch = client.graphql
 
-        def board_unavailable(query, variables):
+        def board_unavailable(query, variables, **options):
             if "projectItems(" in query:
                 raise api.APIError(200, "project items unavailable", kind="FORBIDDEN")
-            return fetch(query, variables)
+            return fetch(query, variables, **options)
 
         with patch.object(client, "graphql", side_effect=board_unavailable):
             current = tracker.context_neighbor("1")
