@@ -125,11 +125,15 @@ CONTEXT_PAGE_SIZE = 3
 
 @dataclass
 class ContextLinks:
-    by_kind: dict[str, list[str]] = field(default_factory=dict)
+    by_kind: dict[str, set[str]] = field(default_factory=dict)
     errors: list[dict] = field(default_factory=list)
 
     def add(self, kind, task_id):
-        self.by_kind.setdefault(kind, []).append(task_id)
+        neighbors = self.by_kind.setdefault(kind, set())
+        if task_id in neighbors:
+            return False
+        neighbors.add(task_id)
+        return True
 
     def report(self, source, exc):
         self.errors.append({"source": source, **error_detail(exc)})
@@ -158,7 +162,7 @@ def task_context(task: Task, adapter: Adapter, page: int) -> dict:
         adapter.context_relations(task.id, links)
     for kind in ("parent", "duplicate", "blocked-by", "child", "blocks", "related", "duplicated-by"):
         ids = links.by_kind.get(kind, [])
-        for task_id in sorted(set(ids)):
+        for task_id in sorted(ids):
             if task_id != task.id:
                 relations.setdefault(task_id, []).append(kind)
 

@@ -103,8 +103,19 @@ class JiraContractTests(unittest.TestCase):
             {"type": {"outward": "blocks"}, "outwardIssue": {"key": "OTHER-1"}}]
         links = ContextLinks()
         tracker.context_relations("TEST-1", links)
-        self.assertEqual(links.by_kind, {"duplicate": ["TEST-2"], "duplicated-by": ["OTHER-1"], "blocks": ["OTHER-1"]})
+        self.assertEqual(links.by_kind, {"duplicate": {"TEST-2"}, "duplicated-by": {"OTHER-1"}, "blocks": {"OTHER-1"}})
         self.assertEqual(fixture.writes, [])
+
+    def test_unreadable_jira_link_endpoints_do_not_hide_readable_requirements(self):
+        """Jira may omit a link's endpoint, while other links on the same issue still name their sources."""
+        tracker, fixture = adapter()
+        for endpoint in ({}, {"outwardIssue": None}, {"inwardIssue": {}}):
+            fixture.issues["TEST-1"]["fields"]["issuelinks"] = [
+                {"type": {"outward": "duplicates"}, **endpoint},
+                {"type": {"outward": "blocks"}, "inwardIssue": {"key": "TEST-2"}}]
+            graph = task_context(tracker.context_root("TEST-1"), tracker, 1)
+            self.assertEqual((graph["known_total"], graph["total"], graph["tasks"][0]["id"]), (1, None, "TEST-2"))
+            self.assertTrue(graph["discovery_errors"])
 
     def test_context_keeps_neighbor_evidence_when_its_journal_is_unreadable(self):
         """The neighbor's journal revision is only needed if it becomes the target of an ordinary get."""

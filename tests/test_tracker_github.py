@@ -149,6 +149,15 @@ class TaskShapeTests(unittest.TestCase):
         self.assertIsNone(second["context"]["total"])
         self.assertIn("no original", second["context"]["discovery_errors"][0]["error"])
 
+    def test_repeated_blocker_on_a_later_page_cannot_prove_a_complete_connection(self):
+        """A changing paged list can agree with its count while returning the same issue twice."""
+        tracker, client = adapter([issue(1, blocked_by=[2, 3]), issue(2), issue(3)], list_page=1)
+        repeated = client.connection([client.ref(2), client.ref(2)], after="1")
+        with patch.object(client, "op_IssueBlockedBy", create=True, return_value={"node": {"blockedBy": repeated}}):
+            graph = task_context(tracker.context_root("1"), tracker, 1)
+        self.assertEqual((graph["known_total"], graph["total"], graph["tasks"][0]["id"]), (1, None, "2"))
+        self.assertIn("repeated", graph["discovery_errors"][0]["error"])
+
     def test_terminal_page_count_mismatch_preserves_visible_links_and_marks_discovery_incomplete(self):
         """The last page can contradict the provider's own count after pagination or access changes."""
         tracker, client = adapter([issue(1, blocked_by=[2, 3]), issue(2), issue(3)], list_page=1)

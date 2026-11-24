@@ -141,19 +141,33 @@ class JiraAdapter:
 
     def context_relations(self, task_id, links):
         fields = self.raw(task_id, fields="parent,subtasks,issuelinks")["fields"]
-        if fields.get("parent"):
-            links.add("parent", fields["parent"]["key"])
+
+        def add(kind, endpoint):
+            key = endpoint.get("key") if isinstance(endpoint, dict) else None
+            if isinstance(key, str) and KEY.fullmatch(key):
+                links.add(kind, key)
+            else:
+                links.report(kind, TrackerError(f"Jira returned a {kind} link without a readable issue key", "provider"))
+
+        if fields.get("parent") is not None:
+            add("parent", fields["parent"])
         for child in fields.get("subtasks") or []:
-            links.add("child", child["key"])
-        directions = {("blocks", "outwardIssue"): "blocks", ("blocks", "inwardIssue"): "blocked-by",
-                      ("duplicates", "outwardIssue"): "duplicate", ("duplicates", "inwardIssue"): "duplicated-by",
-                      ("relates to", "inwardIssue"): "related", ("relates to", "outwardIssue"): "related"}
+            add("child", child)
+        directions = {"blocks": {"inwardIssue": "blocked-by", "outwardIssue": "blocks"},
+                      "duplicates": {"inwardIssue": "duplicated-by", "outwardIssue": "duplicate"},
+                      "relates to": {"inwardIssue": "related", "outwardIssue": "related"}}
         for link in fields.get("issuelinks") or []:
-            outward = link["type"].get("outward", "").casefold()
-            for side in ("inwardIssue", "outwardIssue"):
-                kind = directions.get((outward, side))
-                if kind and side in link:
-                    links.add(kind, link[side]["key"])
+            outward = ((link or {}).get("type") or {}).get("outward", "").casefold()
+            if not outward:
+                links.report("issuelinks", TrackerError("Jira returned a link without a readable type", "provider"))
+                continue
+            if outward in directions:
+                sides = directions[outward]
+                if sides.keys().isdisjoint(link):
+                    links.report(outward, TrackerError(f"Jira returned a {outward} link without an endpoint", "provider"))
+                for side, kind in sides.items():
+                    if side in link:
+                        add(kind, link[side])
 
     def resolve(self, reference, project, recursive=False, *, title=False, canonical=False, evidence=False):
         text = str(reference).strip()

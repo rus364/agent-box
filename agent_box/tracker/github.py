@@ -417,7 +417,9 @@ class GitHubAdapter:
 
         def add(kind, node):
             if isinstance(node, dict) and node.get("number") and (node.get("repository") or {}).get("nameWithOwner"):
-                links.add(kind, self.task_id(api.ref(node)))
+                task_id = self.task_id(api.ref(node))
+                if not links.add(kind, task_id):
+                    links.report(kind, TrackerError(f"GitHub repeated issue {task_id} in the {kind} connection", "provider"))
             else:
                 links.report(kind, TrackerError(f"GitHub returned an unreadable {kind} reference", "provider"))
 
