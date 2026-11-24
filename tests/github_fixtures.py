@@ -125,7 +125,7 @@ class FakeGitHub:
     def op_ContextNeighbor(self, owner, name, number):
         raw = self.op_Issue(owner, name, number)["repository"]["issue"]
         fields = ("id", "number", "title", "body", "state", "stateReason", "url", "updatedAt",
-                  "repository", "duplicateOf", "projectItems")
+                  "repository")
         return {"repository": {"issue": {key: raw[key] for key in fields}}}
 
     def op_ContextLinks(self, owner, name, number):

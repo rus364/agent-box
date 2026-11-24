@@ -94,7 +94,8 @@ the reverse link on the original. A task reached by multiple links
 appears once with all its relation types. Each entry carries the source ID, URL,
 state and full description, including document references. Failed neighbor reads
 carry their error. A readable neighbor whose lifecycle lookup fails keeps its
-description and source, with state `Unknown` and the cause in `state_reason`.
+description and source, with the cause in `state_reason`. Its state is `Unknown`
+unless the issue itself establishes closure.
 The current task journal follows the usual `--no-comments`
 setting. Read a neighbor's journal with `tracker comments ID`.
 Use `--context-page N` with the returned `next_page` for more evidence.

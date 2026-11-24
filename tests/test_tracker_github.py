@@ -107,6 +107,27 @@ class TaskShapeTests(unittest.TestCase):
             with self.assertRaises(TrackerError):
                 tracker.get("1")
 
+    def test_initial_project_items_failure_preserves_the_issue_and_native_closure(self):
+        """A failed project field must never discard the successful issue read or reopen a closed issue."""
+        tracker, client = adapter([issue(1, status="Ready", body="docs/spec.md#decision"), issue(2, state="CLOSED",
+                                    reason="NOT_PLANNED", body="Superseded plan")])
+        fetch = client.graphql
+
+        def board_unavailable(query, variables):
+            if "projectItems(" in query:
+                raise api.APIError(200, "project items unavailable", kind="FORBIDDEN")
+            return fetch(query, variables)
+
+        with patch.object(client, "graphql", side_effect=board_unavailable):
+            current = tracker.context_neighbor("1")
+            self.assertEqual((current.state, current.description), ("Unknown", "docs/spec.md#decision"))
+            closed = tracker.context_neighbor("2")
+            self.assertEqual((closed.state, closed.description), ("Done", "Superseded plan"))
+            self.assertIn("closed as not planned", closed.state_reason)
+            for task in (current, closed):
+                self.assertIn("project items unavailable", task.state_reason)
+                self.assertTrue(task.url.endswith("/" + task.id))
+
     def test_other_repository_issue_is_readable_but_outside_the_binding(self):
         tracker, _ = adapter([issue(2, repo="other/lib", status="Ready")])
         task = tracker.get("other/lib#2")

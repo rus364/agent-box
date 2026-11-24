@@ -374,9 +374,12 @@ class GitHubAdapter:
         node = api.issue_node(self.client, repository, number, "ContextNeighbor")
         raw = api.issue_fields(node)
         task = self.evidence_task(raw)
-        with neighbor_lifecycle(task):
+        # Closure is authoritative on the issue even if the board is unreadable.
+        fallback = self.issue_state(raw, None, None) if raw["state"] == "CLOSED" else ("Unknown", None)
+        with neighbor_lifecycle(task, fallback=fallback):
             bound = self.bound_project() if self.binding else None
-            self.read_issue_state(task, raw, api.issue_project_items(self.client, node), bound)
+            items = api.neighbor_project_items(self.client, node["id"]) if bound else []
+            self.read_issue_state(task, raw, items, bound)
         return task
 
     def extra_context_relations(self, task_id):

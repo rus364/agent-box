@@ -107,6 +107,15 @@ class ResolutionTests(unittest.TestCase):
             with self.assertRaises(TrackerError):
                 self.adapter.get('21')
 
+    def test_context_keeps_vikunja_text_when_optional_bucket_expansion_fails(self):
+        """A bucket permission error must not remove an open neighbor's readable requirements."""
+        raw = dict(self.client.tasks[21])
+        raw.pop('buckets')
+        with patch.object(self.client, 'get', side_effect=[raw, TrackerError('buckets forbidden')]):
+            task = self.adapter.context_neighbor('21')
+        self.assertEqual((task.state, task.description), ('Unknown', '21:01 Reviewer problem'))
+        self.assertIn('buckets forbidden', task.state_reason)
+
     def test_context_empty_and_invalid_pages_distinguish_absent_work_from_a_bad_cursor(self):
         """An isolated task has a complete first page; an invalid page cannot imply no relations."""
         self.assertEqual(self.get('#21', '--context')['context'],

@@ -39,10 +39,9 @@ def connection(name):
             f"{{ totalCount pageInfo {{ hasNextPage endCursor }} nodes {{ {selection} }} }}")
 
 
-ISSUE_EVIDENCE = ("id number title body state stateReason url updatedAt repository { nameWithOwner } "
-                  f"duplicateOf {{ {REF} }} " + connection("projectItems").replace(", after: $after", ""))
-ISSUE = (ISSUE_EVIDENCE + f" parent {{ {REF} }} "
-         + " ".join(connection(name).replace(", after: $after", "") for name in CONNECTIONS if name != "projectItems"))
+ISSUE_EVIDENCE = "id number title body state stateReason url updatedAt repository { nameWithOwner }"
+ISSUE = (ISSUE_EVIDENCE + f" parent {{ {REF} }} duplicateOf {{ {REF} }} "
+         + " ".join(connection(name).replace(", after: $after", "") for name in CONNECTIONS))
 PROJECT = """
 id number title url closed
 owner { ... on User { login } ... on Organization { login } }
@@ -297,6 +296,12 @@ def issue_project_items(client, raw):
         items.append({"id": item["id"], "project": item["project"]["id"],
                       "updated_at": item.get("updatedAt") or "", "values": values})
     return items
+
+
+def neighbor_project_items(client, node_id):
+    """Keep errors from the first projectItems page separate from the issue's text and state."""
+    page = client.graphql(QUERIES["IssueProjectItems"], {"id": node_id, "after": None})
+    return issue_project_items(client, {"id": node_id, **(page.get("node") or {})})
 
 
 def issue_fields(raw):

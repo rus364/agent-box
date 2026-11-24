@@ -105,13 +105,14 @@ class Adapter(Protocol):
 
 
 @contextmanager
-def neighbor_lifecycle(task):
+def neighbor_lifecycle(task, *, fallback=("Unknown", None)):
     """A missing board may obscure lifecycle without invalidating readable issue evidence."""
     try:
         yield
     except TrackerError as exc:
-        task.state = "Unknown"
-        task.state_reason = f"Lifecycle unavailable: {exc}"
+        task.state, reason = fallback
+        diagnostic = f"Project lifecycle unavailable: {exc}"
+        task.state_reason = f"{reason}; {diagnostic}" if reason else diagnostic
 
 
 CONTEXT_PAGE_SIZE = 3

@@ -269,9 +269,12 @@ class VikunjaAdapter:
         return self.normalize(self.client.get(f"/tasks/{task_id}?format=markdown&expand=buckets&expand=subtasks"))
 
     def context_neighbor(self, task_id):
-        raw = self.client.get(f"/tasks/{int(task_id)}?format=markdown&expand=buckets")
+        path = f"/tasks/{int(task_id)}?format=markdown"
+        raw = self.client.get(path)
         task = self.evidence_task(raw)
         with neighbor_lifecycle(task):
+            if not raw.get("done") and not raw.get("buckets"):
+                raw = self.client.get(path + "&expand=buckets")
             task.state, task.state_reason = self.board_state(raw)
         return task
 
