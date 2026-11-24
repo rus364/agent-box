@@ -74,6 +74,7 @@ class Adapter(Protocol):
     capabilities: frozenset[str]
 
     def get(self, task_id: str) -> Task: ...
+    def extra_context_relations(self, task_id: str) -> dict[str, list[str]]: ...
     def resolve(self, reference: str, project: str, recursive: bool = False, *, title: bool = False,
                 canonical: bool = False) -> Task: ...
     def search(self, project: str, query: str = "", recursive: bool = False, *, open_only: bool = False) -> list[Task]: ...
@@ -104,11 +105,14 @@ class Adapter(Protocol):
 CONTEXT_PAGE_SIZE = 3
 
 
-def task_context(task: Task, get: Callable[[str], Task], page: int) -> dict:
+def task_context(task: Task, adapter: Adapter, page: int) -> dict:
     """Bound provider reads to one hop and page; retain every reason a neighbor matters."""
     relations: dict[str, list[str]] = {}
-    for kind, ids in (("parent", [task.parent] if task.parent else []), ("blocked-by", task.blockers),
-                      ("child", task.children), ("related", task.related)):
+    links = {"parent": [task.parent] if task.parent else [], "blocked-by": task.blockers,
+             "child": task.children, "related": task.related}
+    links.update(adapter.extra_context_relations(task.id))
+    for kind in ("parent", "duplicate", "blocked-by", "child", "blocks", "related", "duplicated-by"):
+        ids = links.get(kind, [])
         for task_id in sorted(set(ids)):
             if task_id != task.id:
                 relations.setdefault(task_id, []).append(kind)
@@ -122,7 +126,7 @@ def task_context(task: Task, get: Callable[[str], Task], page: int) -> dict:
     for task_id in list(relations)[start:end]:
         entry = {"id": task_id, "relations": relations[task_id]}
         try:
-            linked = get(task_id)
+            linked = adapter.get(task_id)
         except TrackerError as exc:
             entry.update(error=str(exc), category=exc.category, retryable=exc.retryable)
         else:

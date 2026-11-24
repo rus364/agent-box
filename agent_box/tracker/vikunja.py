@@ -266,6 +266,11 @@ class VikunjaAdapter:
             raise TrackerError("Use a canonical numeric Vikunja task ID; run tracker resolve for user references") from None
         return self.normalize(self.client.get(f"/tasks/{task_id}?format=markdown&expand=buckets&expand=subtasks"))
 
+    def extra_context_relations(self, task_id):
+        links = self.client.get(f"/tasks/{int(task_id)}").get("related_tasks") or {}
+        kinds = {"blocks": "blocking", "duplicate": "duplicateof", "duplicated-by": "duplicates"}
+        return {kind: [str(row["id"]) for row in links.get(native) or []] for kind, native in kinds.items()}
+
     def resolve(self, reference, project, recursive=False, *, title=False, canonical=False):
         """User references resolve once; internal reads keep their canonical IDs.
 

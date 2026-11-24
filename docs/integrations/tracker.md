@@ -87,8 +87,10 @@ agent-box tracker state 123 Done --reason "Superseded by #130"
 ```
 
 With `--context`, the ordinary task output gains a `context` object. Each page
-reads up to three distinct neighbors, in parent, blocked-by, child, related order,
-then by canonical ID as text within each group. A task reached by multiple links
+reads up to three distinct neighbors, in parent, duplicate original, blocked-by, child, blocks, related,
+then duplicated-by order, sorted by canonical ID as text within each group.
+GitHub exposes the original on a duplicate issue. Jira and Vikunja also expose
+the reverse link on the original. A task reached by multiple links
 appears once with all its relation types. Each entry carries the source ID, URL,
 state and full description, including document references. Failed neighbor reads
 carry their error. The current task journal follows the usual `--no-comments`

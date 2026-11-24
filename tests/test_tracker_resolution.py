@@ -73,6 +73,7 @@ class ResolutionTests(unittest.TestCase):
         """Visible #21 is not ID 21; the completed parent's constraint must survive that collision."""
         self.client.tasks[319]['related_tasks'] = {
             'parenttask': [{'id': 21}], 'blocked': [{'id': 322}, {'id': 21}],
+            'duplicateof': [{'id': 21}], 'blocking': [{'id': 400}], 'duplicates': [{'id': 400}],
             'subtask': [{'id': 500}], 'related': [{'id': 21}, {'id': 319}, {'id': 400}],
         }
         evidence = 'Retain the behavior in docs/policy.md#Exceptions.'
@@ -86,13 +87,14 @@ class ResolutionTests(unittest.TestCase):
             self.assertEqual((context['total'], context['next_page']), (4, 2))
             parent, blocker, missing = context['tasks']
             self.assertEqual((parent['id'], parent['relations'], parent['state'], parent['description']),
-                             ('21', ['parent', 'blocked-by', 'related'], 'Done', evidence))
+                             ('21', ['parent', 'duplicate', 'blocked-by', 'related'], 'Done', evidence))
             self.assertEqual(blocker['id'], '322')
             self.assertEqual(missing['id'], '500')
             self.assertIn('404', missing['error'])
             self.assertEqual([call.args[0] for call in read.call_args_list], ['319', '21', '322', '500'])
         tail = self.get('#21', '--context-page', '2')['context']
         self.assertEqual([row['id'] for row in tail['tasks']], ['400'])
+        self.assertEqual(tail['tasks'][0]['relations'], ['blocks', 'related', 'duplicated-by'])
         self.assertIsNone(tail['next_page'])
         self.assertEqual(self.client.writes, [])
 

@@ -422,7 +422,7 @@ def dispatch(args):
     if args.command == "get":
         result = task.to_dict()
         if args.context_page is not None:
-            result["context"] = task_context(task, adapter.get, args.context_page)
+            result["context"] = task_context(task, adapter, args.context_page)
         if args.comments:
             result["comments"] = adapter.comments(task.id)
         return result

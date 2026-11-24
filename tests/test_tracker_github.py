@@ -8,7 +8,7 @@ from unittest.mock import patch
 from agent_box.config import Config
 from agent_box.repo_binding import Binding
 from agent_box.tracker import github_api as api
-from agent_box.tracker.core import TrackerError
+from agent_box.tracker.core import TrackerError, task_context
 from agent_box.tracker.github import GitHubAdapter, repository_from_url
 from github_fixtures import REPO, adapter, issue, project
 
@@ -64,6 +64,20 @@ class TaskShapeTests(unittest.TestCase):
         self.assertEqual((task.id, task.number, task.project), ("5", 5, "octo/2"))
         self.assertEqual((task.parent, task.children, task.blockers, task.related),
                          ("1", ["6", "other/lib#6"], ["other/lib#2"], ["7"]))
+
+    def test_context_finds_the_duplicate_original_and_every_issue_it_blocks(self):
+        """A closed duplicate can carry no ordinary task links; retain the original's decision."""
+        tracker, client = adapter([issue(1, state="CLOSED", reason="DUPLICATE", duplicate_of=("other/lib", 4),
+                                         blocking=[3, 2]), issue(2), issue(3),
+                                   issue(4, repo="other/lib", body="Keep black ink.")], list_page=1)
+        root = tracker.get("1")
+        self.assertNotIn("ContextLinks", [name for name, _ in client.operations])
+        original, first, second = task_context(root, tracker, 1)["tasks"]
+        self.assertEqual((original["id"], original["relations"], original["description"]),
+                         ("other/lib#4", ["duplicate"], "Keep black ink."))
+        self.assertEqual([(row["id"], row["relations"]) for row in (first, second)],
+                         [("2", ["blocks"]), ("3", ["blocks"])])
+        self.assertIn("IssueBlocking", [name for name, _ in client.operations])
 
     def test_other_repository_issue_is_readable_but_outside_the_binding(self):
         tracker, _ = adapter([issue(2, repo="other/lib", status="Ready")])

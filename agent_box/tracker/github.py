@@ -362,6 +362,11 @@ class GitHubAdapter:
         repository, number = self.issue_ref(task_id)
         return self.normalize(api.issue(self.client, repository, number))
 
+    def extra_context_relations(self, task_id):
+        repository, number = self.issue_ref(task_id)
+        raw = api.issue_context(self.client, repository, number)
+        return {kind: [self.task_id(other) for other in refs] for kind, refs in raw.items()}
+
     def resolve(self, reference, project, recursive=False, *, title=False, canonical=False):
         """Visible numbers are canonical IDs here, so a bare number has one reading.
 

@@ -65,6 +65,16 @@ QUERIES = {
     "Issue": f"""query Issue($owner: String!, $name: String!, $number: Int!) {{
   repository(owner: $owner, name: $name) {{ issue(number: $number) {{ {ISSUE} }} }}
 }}""",
+    "ContextLinks": f"""query ContextLinks($owner: String!, $name: String!, $number: Int!) {{
+  repository(owner: $owner, name: $name) {{ issue(number: $number) {{
+    id duplicateOf {{ {REF} }} blocking(first: 100) {{ pageInfo {{ hasNextPage endCursor }} nodes {{ {REF} }} }}
+  }} }}
+}}""",
+    "IssueBlocking": f"""query IssueBlocking($id: ID!, $after: String) {{
+  node(id: $id) {{ ... on Issue {{ blocking(first: 100, after: $after) {{
+    pageInfo {{ hasNextPage endCursor }} nodes {{ {REF} }}
+  }} }} }}
+}}""",
     "Items": f"""query Items($project: ID!, $query: String, $after: String) {{
   node(id: $project) {{ ... on ProjectV2 {{ items(first: 50, after: $after, query: $query) {{
     pageInfo {{ hasNextPage endCursor }}
@@ -341,13 +351,25 @@ def projects(client, owner):
              "title": node.get("title") or "", "closed": bool(node.get("closed")), "parent": ""} for node in nodes]
 
 
-def issue(client, repository, number):
+def issue_context(client, repository, number):
+    """Outgoing dependency pages are needed only for a context root, never for every search hit."""
+    raw = issue_node(client, repository, number, "ContextLinks")
+    original = ref(raw.get("duplicateOf"))
+    return {"duplicate": [original] if original else [],
+            "blocks": [ref(node) for node in all_nodes(client, raw, "blocking")]}
+
+
+def issue_node(client, repository, number, operation):
     owner, name = repository.split("/", 1)
-    data = client.graphql(QUERIES["Issue"], {"owner": owner, "name": name, "number": int(number)})
+    data = client.graphql(QUERIES[operation], {"owner": owner, "name": name, "number": int(number)})
     raw = (data.get("repository") or {}).get("issue")
     if not raw:
         raise APIError(404, f"issue {repository}#{number} not found", kind="NOT_FOUND")
-    return issue_record(client, raw)
+    return raw
+
+
+def issue(client, repository, number):
+    return issue_record(client, issue_node(client, repository, number, "Issue"))
 
 
 def project_issues(client, project_node, query=""):

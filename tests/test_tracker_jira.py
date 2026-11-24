@@ -93,6 +93,17 @@ class JiraContractTests(unittest.TestCase):
             with self.assertRaisesRegex(TrackerError, "changed"):
                 tracker.update(changed, {"description": "stale overwrite"})
 
+    def test_context_distinguishes_the_original_from_issues_that_duplicate_it(self):
+        """Confusing the sides of native links would steer the coordinator toward superseded work."""
+        tracker, fixture = adapter()
+        fixture.issues["TEST-1"]["fields"]["issuelinks"] = [
+            {"type": {"outward": "duplicates"}, "outwardIssue": {"key": "TEST-2"}},
+            {"type": {"outward": "duplicates"}, "inwardIssue": {"key": "OTHER-1"}},
+            {"type": {"outward": "blocks"}, "outwardIssue": {"key": "OTHER-1"}}]
+        self.assertEqual(tracker.extra_context_relations("TEST-1"),
+                         {"duplicate": ["TEST-2"], "duplicated-by": ["OTHER-1"], "blocks": ["OTHER-1"]})
+        self.assertEqual(fixture.writes, [])
+
     def test_bad_workflow_is_visible_as_unknown_and_blocks_writes(self):
         """A default Jira workflow lacks Ready and must never be silently treated as the full lifecycle."""
         tracker, fixture = adapter()

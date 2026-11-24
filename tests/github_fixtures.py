@@ -39,7 +39,7 @@ def issue(number, repo=REPO, **values):
             "stateReason": values.get("reason"), "updatedAt": values.get("updated", "2026-01-01T00:00:00Z"),
             "labels": values.get("labels", []), "assignees": values.get("assignees", []),
             "parent": values.get("parent"), "children": values.get("children", []),
-            "blockedBy": values.get("blocked_by", []), "relatesTo": values.get("related", []),
+            "blocking": values.get("blocking", []), "blockedBy": values.get("blocked_by", []), "relatesTo": values.get("related", []),
             "duplicateOf": values.get("duplicate_of"), "on": values.get("on", [2] if "status" in values else []),
             "status": values.get("status"), "priority": values.get("priority"),
             "itemUpdatedAt": values.get("item_updated", "2026-01-01T00:00:00Z")}
@@ -76,6 +76,7 @@ class FakeGitHub:
                           "project": {"id": self.projects[number]["id"]},
                           "fieldValues": {"totalCount": len(values), "nodes": values}})
         return {"labels": [{"name": n} for n in raw["labels"]], "assignees": [{"login": n} for n in raw["assignees"]],
+                "blocking": [self.ref(v) for v in raw["blocking"]],
                 "subIssues": [self.ref(v) for v in raw["children"]], "blockedBy": [self.ref(v) for v in raw["blockedBy"]],
                 "relatesTo": [self.ref(v) for v in raw["relatesTo"]], "projectItems": items}
 
@@ -120,6 +121,9 @@ class FakeGitHub:
         nodes = [{"number": p["number"], "title": p["title"], "closed": p["closed"], "owner": p["owner"]}
                  for p in self.projects.values() if p["owner"]["login"].casefold() == owner.casefold()]
         return {"repositoryOwner": {"projectsV2": {"pageInfo": {"hasNextPage": False}, "nodes": nodes}}}
+
+    def op_ContextLinks(self, owner, name, number):
+        return self.op_Issue(owner, name, number)
 
     def op_Issue(self, owner, name, number):
         raw = self.issues.get((f"{owner}/{name}", number))

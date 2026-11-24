@@ -121,6 +121,19 @@ class JiraAdapter:
     def get(self, task_id):
         return self.normalize(self.raw(task_id))
 
+    def extra_context_relations(self, task_id):
+        raw = self.client.request("GET", f"/issue/{self.task_key(task_id)}", params={"fields": "issuelinks"})
+        directions = {("blocks", "outwardIssue"): "blocks", ("duplicates", "outwardIssue"): "duplicate",
+                      ("duplicates", "inwardIssue"): "duplicated-by"}
+        relations = {}
+        for link in raw["fields"].get("issuelinks") or []:
+            outward = link["type"].get("outward", "").casefold()
+            for side in ("inwardIssue", "outwardIssue"):
+                kind = directions.get((outward, side))
+                if kind and side in link:
+                    relations.setdefault(kind, []).append(link[side]["key"])
+        return relations
+
     def resolve(self, reference, project, recursive=False, *, title=False, canonical=False):
         scope = self.subtree(project, recursive)
         text = str(reference).strip()
