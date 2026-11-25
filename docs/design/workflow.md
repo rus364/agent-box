@@ -286,9 +286,13 @@ with existing-only branch switching. It never recreates lost work from base.
   `ab-worker-N`, `ab-sync-N`, `ab-reviewer-N` for nonempty tiers), each from
   that CLI's first built-in-API candidate. Inspection and launch verify the
   installed file against the rendering from the saved list at the effective
-  path. An empty project tier selects the saved role profile. A nonempty
-  project tier needs a matching saved tier profile. Agent-box removes intact
-  profiles it no longer defines. The CLI confirms live support when it spawns
+  path. An empty project tier selects the saved role profile. A project Codex
+  reviewer can use `ab-reviewer-project` when the shared profile does not match.
+  It pins the reviewer's instructions and leaves model and effort unset so
+  Codex can apply the review handoff's explicit spawn options. The round
+  checks both settings when the answer is submitted. Other roles and CLIs
+  require a matching saved profile. Agent-box removes intact profiles it no
+  longer defines. The CLI confirms live support when it spawns
   the agent. Sessions launched through `ext` use managed runs to restore the
   built-in environment because native children inherit the external API.
   Effort `default` omits the override; it is not a literal provider value.

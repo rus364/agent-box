@@ -163,6 +163,13 @@ empty.
   Inspection and launch check the installed profile against its ownership
   digest and the current rendering from the saved list at the effective role or
   tier path. Missing, symlinked, edited or stale profiles leave the route managed.
+  A project-specific Codex reviewer can also use the installed
+  `ab-reviewer-project` profile when the shared profile pins a different
+  choice or no shared profile exists for that list. The review handoff supplies
+  `spawn_options` with the exact model and reasoning effort. Use `--managed`
+  if the current Codex tool cannot select the profile and pass both options.
+  This profile is installed with the other workflow profiles on configuration
+  application or the first host launch after upgrading agent-box.
   Claude picks also run managed if `CLAUDE_CODE_EFFORT_LEVEL` or
   `CLAUDE_CODE_SUBAGENT_MODEL` is nonempty because either can override the profile.
   Safe mode hides custom profiles, so Claude picks also stay managed in

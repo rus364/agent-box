@@ -12,6 +12,7 @@ from .speed import configuration_error, native_limitation
 
 
 PROFILE_SUFFIXES = {"codex": ".toml", "claude": ".md"}
+PROJECT_REVIEWER_TIER = "project"
 
 
 def _codex_field(value):
@@ -26,6 +27,9 @@ def _codex_field(value):
 
 def profile_name(role, tier=None):
     return f"ab-{role}" + (f"-{tier}" if tier is not None else "")
+
+
+PROJECT_REVIEWER_PROFILE = profile_name("reviewer", PROJECT_REVIEWER_TIER)
 
 
 def describe(provider, role, tier, spec, position=None):
@@ -43,14 +47,18 @@ def describe(provider, role, tier, spec, position=None):
 
 def body(provider, role, tier, spec, position=None):
     name = profile_name(role, tier)
-    description = describe(provider, role, tier, spec, position)
+    description = ("agent-box reviewer with model and effort supplied by the review launch. Spawn only when "
+                   "agent-box workflow review returns this profile and spawn_options"
+                   if spec is None else describe(provider, role, tier, spec, position))
     instructions = profile_instructions(role)
     if provider == "codex":
-        fields = {"name": name, "description": description, "model": spec["model"],
-                  "model_reasoning_effort": spec["effort"], "sandbox_mode": "workspace-write" if role == "worker" else "read-only",
-                  "developer_instructions": instructions}
-        if spec["effort"] == "default":
-            fields.pop("model_reasoning_effort")
+        fields = {"name": name, "description": description}
+        if spec is not None:
+            fields["model"] = spec["model"]
+            if spec["effort"] != "default":
+                fields["model_reasoning_effort"] = spec["effort"]
+        fields.update(sandbox_mode="workspace-write" if role == "worker" else "read-only",
+                      developer_instructions=instructions)
         suffix = ""
         if role == "sync":
             fields.pop("sandbox_mode")
@@ -71,7 +79,8 @@ def body(provider, role, tier, spec, position=None):
 
 
 def content_for(provider, role, tier, spec, models):
-    return body(provider, role, tier, spec, (models.index(spec) + 1, len(models)))
+    position = (models.index(spec) + 1, len(models)) if spec is not None else None
+    return body(provider, role, tier, spec, position)
 
 
 def profile_lists(config):
@@ -141,11 +150,14 @@ def sync(config, codex_home, claude_home):
         suffix = PROFILE_SUFFIXES[provider]
         desired = {profile_name(role, tier) + suffix: (role, tier, models)
                    for role, tier, models in profile_lists(config)}
+        if provider == "codex":
+            # Codex applies role pins after spawn overrides. Leave both fields unset for project picks.
+            desired[PROJECT_REVIEWER_PROFILE + suffix] = ("reviewer", PROJECT_REVIEWER_TIER, None)
         # A profile agent-box no longer defines is removed like a disabled one, and only while intact.
         owned = {marker.name.removesuffix(".agent-box") for marker in directory.glob(f"ab-*{suffix}.agent-box")}
         for name in [*desired, *sorted(owned - desired.keys())]:
             role, tier, models = desired.get(name, (None, None, []))
-            spec = profile_candidate(models, provider)
+            spec = profile_candidate(models, provider) if models is not None else None
             path = directory / name
             marker = directory / (path.name + ".agent-box")
             digests = ownership_digests(marker)
@@ -157,15 +169,12 @@ def sync(config, codex_home, claude_home):
             if path.is_symlink() or marker.is_symlink() or (path.exists() or marker.exists()) and not intact:
                 messages.append(f"Preserved user-owned or edited agent profile: {path}")
                 continue
-            enabled = config.workflow.enabled and bool(spec["model"]) and not spec.get("api_provider")
-            error = configuration_error(provider, spec)
-            if enabled and error:
-                messages.append(f"{path.name}: {error}; native profile disabled")
-                enabled = False
-            limitation = native_limitation(provider, spec.get("speed", "inherit"))
-            if enabled and limitation:
-                messages.append(f"{path.name}: {limitation}; native profile disabled")
-                enabled = False
+            enabled = config.workflow.enabled and (spec is None or bool(spec["model"]))
+            if enabled and spec is not None:
+                limitation = configuration_error(provider, spec) or native_limitation(provider, spec.get("speed", "inherit"))
+                if limitation:
+                    messages.append(f"{path.name}: {limitation}; native profile disabled")
+                    enabled = False
             if not enabled:
                 if intact:
                     path.unlink(missing_ok=True)

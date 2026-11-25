@@ -339,7 +339,8 @@ A changed endpoint, a deleted or disabled connection or a missing key fails
 before anything runs. An empty reviewer list still allows a fresh native
 reviewer on the coordinator's own API.
 
-Native profiles use only built-in candidates and are removed when none remain.
+Pinned native profiles use only built-in candidates and are removed when none
+remain. The project Codex reviewer profile also requires a built-in API pick.
 Existing role contracts, the reviewer's verdict format, review budgets
 and fallback rules still apply. Candidate order keeps its meaning; subscription
 usage and exhaustion are ignored for external candidates. Subscription fast mode

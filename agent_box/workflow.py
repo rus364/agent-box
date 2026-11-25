@@ -30,6 +30,7 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+from .agent_profiles import PROJECT_REVIEWER_PROFILE, PROJECT_REVIEWER_TIER
 from .atomicio import atomic_write_bytes, atomic_write_text
 from . import migrations
 from .config import effective_config, effective_config_source, vendor
@@ -1875,7 +1876,7 @@ def native_profile(config, role, tier, candidate):
     from . import runtime
     from .agent_profiles import installed_profile_matches, profile_candidate, profile_name
     from .speed import configuration_error
-    path, _ = config.workflow.models_for(role, tier)
+    path, effective_models = config.workflow.models_for(role, tier)
     provider = candidate["provider"]
     if (path.startswith("--") or not config.workflow.enabled or candidate.get("api_provider")
             or configuration_error(provider, candidate)
@@ -1891,11 +1892,13 @@ def native_profile(config, role, tier, candidate):
         models = saved.tiers.get(str(profile_tier), []) if isinstance(saved.tiers, dict) else []
     profile = profile_candidate(models, provider)
     fields = (("model", ""), ("effort", "default"), ("speed", "inherit"))
-    if not profile["model"] or any(candidate.get(key, default) != profile.get(key, default) for key, default in fields):
-        return None
     home = runtime.CODEX_HOME if provider == "codex" else runtime.CLAUDE_HOME
-    if installed_profile_matches(home, provider, role, profile_tier, profile, models):
+    if (profile["model"] and all(candidate.get(key, default) == profile.get(key, default) for key, default in fields)
+            and installed_profile_matches(home, provider, role, profile_tier, profile, models)):
         return profile_name(role, profile_tier)
+    if (role == "reviewer" and provider == "codex" and effective_models != models
+            and installed_profile_matches(home, provider, role, PROJECT_REVIEWER_TIER, None, None)):
+        return PROJECT_REVIEWER_PROFILE
     return None
 
 
@@ -2201,18 +2204,25 @@ def review(args, root, binding, adapter, config, task, parent, tasks, base, fing
             except BaseException:
                 cleanup_review_evidence(review_evidence_path(root, task.id, round_id))
                 raise
+        spawn_options = ({"model": expected["model"], "reasoning_effort": expected["effort"]}
+                         if expected and expected["profile"] == PROJECT_REVIEWER_PROFILE else None)
         return {"task": task.id, "round": round_id, "scope": fingerprint, "review_budget": budget,
                 "launch": "native", "route": route,
                 "message": bootstrap("reviewer", artifact), "input": artifact,
                 **({"profile": expected["profile"]} if expected else {}),
+                **({"spawn_options": spawn_options} if spawn_options else {}),
                 "instructions": "Start a new read-only reviewer in fresh context without the parent's history"
                                 + (f" on profile {expected['profile']}" if expected else "")
-                                + " and pass message as its whole initial prompt. Save its final message unchanged to a "
+                                + " and pass message as its whole initial prompt. "
+                                + ("Pass both spawn_options explicitly; use the managed route if the tool cannot apply them. "
+                                   if spawn_options else "")
+                                + "Save its final message unchanged to a "
                                 "file outside the working tree and record it with result_command, naming the provider "
                                 "and model that ran. A new commit before then makes the verdict stale.",
                 "result_command": f"agent-box workflow review {task.id} --result FILE "
-                                  + (f"--provider {expected['provider']} --model {expected['model']}" if expected
-                                     else "--provider PROVIDER --model MODEL")}
+                                  + (f"--provider {expected['provider']} --model {shlex.quote(expected['model'])}" if expected
+                                     else "--provider PROVIDER --model MODEL")
+                                  + (f" --effort {expected['effort']}" if spawn_options else "")}
     if args.native:
         tier = config.workflow.effective_tier(task.tier)
         authors = author_vendors(config, getattr(args, "author", None))
@@ -2312,6 +2322,8 @@ def native_result(args, root, binding, adapter, config, task):
     # A damaged input means the reviewer may have read something else; nothing is spent on it.
     read_delegation_input(root, descriptor)
     if expected := descriptor.get("native"):
+        if expected["profile"] == PROJECT_REVIEWER_PROFILE and not args.effort:
+            raise AgentBoxError(f"Round {round_id} requires --effort to name the project reviewer's actual reasoning effort")
         named = {"provider": args.provider, "model": args.model, **({"effort": args.effort} if args.effort else {})}
         if any(expected[key] != value for key, value in named.items()):
             raise AgentBoxError(

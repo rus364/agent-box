@@ -141,8 +141,15 @@ class AgentProfileTests(unittest.TestCase):
             config.workflow.review.tiers["3"] = [entry("codex", "reviewer-tier3", "high")]
             sync(config, codex, claude)
             self.assertEqual(sorted(path.name for path in (codex / "agents").glob("*.toml")),
-                             ["ab-reviewer-3.toml", "ab-reviewer.toml", "ab-scout.toml", "ab-worker.toml"])
+                             ["ab-reviewer-3.toml", "ab-reviewer-project.toml", "ab-reviewer.toml",
+                              "ab-scout.toml", "ab-worker.toml"])
             self.assertEqual(tomllib.loads((codex / "agents/ab-reviewer-3.toml").read_text())["model"], "reviewer-tier3")
+            project = tomllib.loads((codex / "agents/ab-reviewer-project.toml").read_text())
+            shared = tomllib.loads((codex / "agents/ab-reviewer.toml").read_text())
+            self.assertNotIn("model", project)
+            self.assertNotIn("model_reasoning_effort", project)
+            self.assertEqual(project["sandbox_mode"], "read-only")
+            self.assertEqual(project["developer_instructions"], shared["developer_instructions"])
             self.assertTrue(tomllib.loads((codex / "agents/ab-scout.toml").read_text())["description"].startswith(
                 "agent-box scout on codex scout-model, candidate 1 of 1."))
 
