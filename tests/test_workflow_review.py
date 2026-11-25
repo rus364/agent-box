@@ -243,7 +243,7 @@ class ReviewWorkflowTests(WorkflowCase):
             route = self.run_workflow("inspect", "1")["execution"]["reviewer"]
             self.assertEqual(route["for_this_session"], "native")
             self.assertEqual(route["native"], {"codex": "ab-reviewer-project"})
-            for flags in ((), ("--native",)):
+            for flags in (("--project-native",), ("--native", "--project-native")):
                 with self.subTest(flags=flags):
                     opened = self.run_workflow("review", "1", *flags)
                     self.assertEqual(opened["profile"], "ab-reviewer-project")
@@ -268,9 +268,9 @@ class ReviewWorkflowTests(WorkflowCase):
             with patch.object(workflow, "usage_snapshot", side_effect=lambda provider, **_: {
                     "windows": [{"remaining": 5, "reset_at": 4102444800}]} if provider == "codex" else {}):
                 with self.assertRaisesRegex(AgentBoxError, "5% usage reserve"):
-                    self.native_round()
+                    self.native_round("--project-native")
                 self.assertEqual(self.run_workflow("review", "1")["route"]["provider"], "claude")
-            opened = self.native_round("--brief", str(self.review_brief))
+            opened = self.native_round("--project-native", "--brief", str(self.review_brief))
             self.assertEqual(opened["profile"], "ab-reviewer-project")
             retry = shlex.split(opened["managed_retry"])
             self.assertEqual(retry[-3:], ["--brief", str(self.review_brief), "--managed"])
@@ -292,10 +292,28 @@ class ReviewWorkflowTests(WorkflowCase):
             self.assertEqual(recorded["route"]["effort"], "high")
             with patch.object(workflow, "usage_snapshot", return_value={
                     "windows": [{"remaining": 5, "reset_at": 4102444800, "models": ["gpt-6.2-sol"]}]}):
-                fallback = self.run_workflow("review", "1")
+                fallback = self.run_workflow("review", "1", "--project-native")
             self.assertEqual(fallback["profile"], "ab-reviewer-project")
             self.assertEqual(fallback["spawn_options"], {"model": "gpt-6-luna", "reasoning_effort": "max"})
             run.assert_not_called()
+
+    def test_project_reviewer_without_native_tool_support_can_still_run_after_a_failure(self):
+        """A known missing capability must not open a round and consume the last allowed retry."""
+        self.set_project_review_models([candidate("codex", "gpt-6-luna", "max")])
+        with routing_session("codex"), patch.object(workflow, "run", side_effect=managed_runner(lambda *a, **k: answer())) as run:
+            self.native_round("--project-native")
+            self.report.write_text("No verdict.\n")
+            with self.assertRaisesRegex(AgentBoxError, "round ended as failure 1"):
+                self.run_workflow("review", "1", "--result", str(self.report), "--provider", "codex",
+                                  "--model", "gpt-6-luna", "--effort", "max")
+            with self.assertRaisesRegex(AgentBoxError, "Pass --project-native.*review 1 --managed"):
+                self.native_round()
+            self.assertEqual(self.budget()["failures"], 1)
+            self.assertNotIn("pending_round", self.run_workflow("inspect", "1")["review"])
+            result = self.run_workflow("review", "1")
+            self.assertEqual((result["route"]["model"], result["verdict"]), ("gpt-6-luna", "PASS"))
+            self.assertEqual(self.budget()["failures"], 0)
+            run.assert_called_once()
 
     def test_balanced_reviewer_without_a_detected_session_runs_managed(self):
         """Unknown session identity must not turn a weighted pick into an arbitrary native profile."""

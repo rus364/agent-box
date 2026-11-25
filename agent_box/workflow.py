@@ -1718,6 +1718,8 @@ def parser():
             mode.add_argument("--managed", action="store_true",
                               help="Run configured local reviewer candidates as managed CLIs, bypassing native and cloud review")
             mode.add_argument("--result", metavar="FILE", help="Record the pending native round's Markdown answer")
+            cmd.add_argument("--project-native", action="store_true",
+                             help="Allow the project Codex profile when this session's spawn tool accepts the profile, model and effort")
             cmd.add_argument("--provider", choices=("codex", "claude"),
                              help="With --native: " + SESSION_PROVIDER_HELP + "; with --result: the provider that ran")
             cmd.add_argument("--model", help="Model that ran the native reviewer")
@@ -2214,7 +2216,7 @@ def review(args, root, binding, adapter, config, task, parent, tasks, base, fing
                 "instructions": "Start a new read-only reviewer in fresh context without the parent's history"
                                 + (f" on profile {expected['profile']}" if expected else "")
                                 + " and pass message as its whole initial prompt. "
-                                + ("Pass both spawn_options explicitly; run managed_retry if the tool cannot apply them. "
+                                + ("Pass both spawn_options explicitly. Run managed_retry if spawning fails before work starts. "
                                    if spawn_options else "")
                                 + "Save its final message unchanged to a "
                                 "file outside the working tree and record it with result_command, naming the provider "
@@ -2231,10 +2233,14 @@ def review(args, root, binding, adapter, config, task, parent, tasks, base, fing
         if route["mode"] != "native":
             # An empty list takes any fresh native reviewer; a configured one only its opening candidate.
             provider = native_provider(route, args.provider)
+            profile = route["native"][provider]
+            if profile == PROJECT_REVIEWER_PROFILE and not args.project_native:
+                raise AgentBoxError("Pass --project-native only if this Codex tool accepts the project profile, model "
+                                    f"and effort; otherwise run {route['managed']} --managed")
             first = config.workflow.models_for("reviewer", tier, authors or ())[1][0]
             require_native_reserve(config.workflow, route, first)
             expected = {"provider": provider, "model": first["model"], "effort": first["effort"],
-                        "profile": route["native"][provider]}
+                        "profile": profile}
         return open_native(route, expected)
     if not args.managed and cloud_review(config, task, parent):
         prepare(config)
@@ -2254,9 +2260,10 @@ def review(args, root, binding, adapter, config, task, parent, tasks, base, fing
     require_review_budget(task, read_review_budget(root, binding, task, limit))
     selected = candidates(config, "reviewer", tier, authors=authors or ())
     route = None if args.managed else launch_native_route(config, "reviewer", tier, task.id, selected, authors)
-    if route:
+    profile = route["native"][selected["provider"]] if route else None
+    if profile and (profile != PROJECT_REVIEWER_PROFILE or args.project_native):
         expected = {key: selected[key] for key in ("provider", "model", "effort")}
-        expected["profile"] = route["native"][selected["provider"]]
+        expected["profile"] = profile
         return open_native(route, expected)
     selected, preflight_failures = managed_review_route(selected)
     output = None

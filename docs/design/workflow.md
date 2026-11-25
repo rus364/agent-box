@@ -289,7 +289,9 @@ with existing-only branch switching. It never recreates lost work from base.
   path. An empty project tier selects the saved role profile. A project Codex
   reviewer can use `ab-reviewer-project` when the shared profile does not match.
   It pins the reviewer's instructions and leaves model and effort unset so
-  Codex can apply the review handoff's explicit spawn options. The round
+  Codex can apply the review handoff's explicit spawn options. The coordinator
+  confirms the tool supports both options with `--project-native` before a
+  project-profile round can open. The round
   checks both settings when the answer is submitted. Other roles and CLIs
   require a matching saved profile. Agent-box removes intact profiles it no
   longer defines. The CLI confirms live support when it spawns
