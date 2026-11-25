@@ -1718,8 +1718,8 @@ def parser():
             mode.add_argument("--managed", action="store_true",
                               help="Run configured local reviewer candidates as managed CLIs, bypassing native and cloud review")
             mode.add_argument("--result", metavar="FILE", help="Record the pending native round's Markdown answer")
-            cmd.add_argument("--project-native", action="store_true",
-                             help="Allow the project Codex profile when this session's spawn tool accepts the profile, model and effort")
+            cmd.add_argument("--project-native", action="append", nargs=2, metavar=("MODEL", "EFFORT"), default=[],
+                             help="Allow a model and effort pair verified for the project Codex spawn tool; repeatable")
             cmd.add_argument("--provider", choices=("codex", "claude"),
                              help="With --native: " + SESSION_PROVIDER_HELP + "; with --result: the provider that ran")
             cmd.add_argument("--model", help="Model that ran the native reviewer")
@@ -1949,7 +1949,13 @@ def execution(config, role, tier, task_id, authors=None):
     if not balanced and (profile := native_profile(config, role, tier, first)):
         native[first["provider"]] = profile
     provider = session_provider()
+    project_options = []
+    if role == "reviewer" and path in getattr(config, "_project_review_lists", ()):
+        project_options = [{"model": spec["model"], "reasoning_effort": spec["effort"]} for spec in models
+                           if spec["provider"] == "codex"
+                           and native_profile(config, role, tier, spec) == PROJECT_REVIEWER_PROFILE]
     return {"mode": "delegate", "models": path, "native": native,
+            **({"project_spawn_options": project_options} if project_options else {}),
             **({"balanced": True} if balanced else {}),
             **({"native_limitation": limitation} if limitation and not balanced else {}),
             **({"for_this_session": "balanced" if balanced else "native" if provider in native else "managed"}
@@ -2179,6 +2185,7 @@ def review(args, root, binding, adapter, config, task, parent, tasks, base, fing
             save_evidence(root, task, saved)
         return {**saved, "review_budget": read_review_budget(root, binding, task, config.workflow.review.max_rounds)}
     brief = read_brief(args.brief) if args.brief else None
+    supported_spawns = {tuple(pair) for pair in args.project_native}
     from .text_delivery import prepare
     limit = config.workflow.review.max_rounds
     round_id = secrets.token_urlsafe(18)
@@ -2234,10 +2241,10 @@ def review(args, root, binding, adapter, config, task, parent, tasks, base, fing
             # An empty list takes any fresh native reviewer; a configured one only its opening candidate.
             provider = native_provider(route, args.provider)
             profile = route["native"][provider]
-            if profile == PROJECT_REVIEWER_PROFILE and not args.project_native:
-                raise AgentBoxError("Pass --project-native only if this Codex tool accepts the project profile, model "
-                                    f"and effort; otherwise run {route['managed']} --managed")
             first = config.workflow.models_for("reviewer", tier, authors or ())[1][0]
+            if profile == PROJECT_REVIEWER_PROFILE and (first["model"], first["effort"]) not in supported_spawns:
+                raise AgentBoxError("Pass --project-native MODEL EFFORT for the opening candidate only if "
+                                    f"the Codex tool supports the pair; otherwise run {route['managed']} --managed")
             require_native_reserve(config.workflow, route, first)
             expected = {"provider": provider, "model": first["model"], "effort": first["effort"],
                         "profile": profile}
@@ -2261,7 +2268,7 @@ def review(args, root, binding, adapter, config, task, parent, tasks, base, fing
     selected = candidates(config, "reviewer", tier, authors=authors or ())
     route = None if args.managed else launch_native_route(config, "reviewer", tier, task.id, selected, authors)
     profile = route["native"][selected["provider"]] if route else None
-    if profile and (profile != PROJECT_REVIEWER_PROFILE or args.project_native):
+    if profile and (profile != PROJECT_REVIEWER_PROFILE or (selected["model"], selected["effort"]) in supported_spawns):
         expected = {key: selected[key] for key in ("provider", "model", "effort")}
         expected["profile"] = profile
         return open_native(route, expected)

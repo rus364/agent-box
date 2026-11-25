@@ -290,7 +290,7 @@ with existing-only branch switching. It never recreates lost work from base.
   reviewer can use `ab-reviewer-project` when the shared profile does not match.
   It pins the reviewer's instructions and leaves model and effort unset so
   Codex can apply the review handoff's explicit spawn options. The coordinator
-  confirms the tool supports both options with `--project-native` before a
+  confirms the supported pairs with `--project-native MODEL EFFORT` before a
   project-profile round can open. The round
   checks both settings when the answer is submitted. Other roles and CLIs
   require a matching saved profile. Agent-box removes intact profiles it no

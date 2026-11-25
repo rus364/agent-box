@@ -165,11 +165,12 @@ empty.
   tier path. Missing, symlinked, edited or stale profiles leave the route managed.
   A project-specific Codex reviewer can also use the installed
   `ab-reviewer-project` profile when the shared profile pins a different
-  choice or no shared profile exists for that list. The coordinator passes
-  `--project-native` after checking that the current Codex tool can select the
-  profile and pass both model and reasoning effort. The native handoff supplies
-  those values in `spawn_options` and a `managed_retry` for a failed spawn.
-  The plain launch without that flag can run the project pick as managed.
+  choice or no shared profile exists for that list. Inspect lists possible
+  pairs in `project_spawn_options`. The coordinator passes one
+  `--project-native MODEL EFFORT` per pair the current Codex tool supports on
+  that profile in fresh context. The native handoff supplies the selected
+  `spawn_options` and a `managed_retry` for a failed spawn. A plain launch
+  without a matching option can run the project pick as managed.
   This profile is installed with the other workflow profiles on configuration
   application or the first host launch after upgrading agent-box.
   Claude picks also run managed if `CLAUDE_CODE_EFFORT_LEVEL` or
