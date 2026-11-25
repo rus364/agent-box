@@ -1876,7 +1876,7 @@ def native_profile(config, role, tier, candidate):
     from . import runtime
     from .agent_profiles import installed_profile_matches, profile_candidate, profile_name
     from .speed import configuration_error
-    path, effective_models = config.workflow.models_for(role, tier)
+    path, _ = config.workflow.models_for(role, tier)
     provider = candidate["provider"]
     if (path.startswith("--") or not config.workflow.enabled or candidate.get("api_provider")
             or configuration_error(provider, candidate)
@@ -1896,7 +1896,7 @@ def native_profile(config, role, tier, candidate):
     if (profile["model"] and all(candidate.get(key, default) == profile.get(key, default) for key, default in fields)
             and installed_profile_matches(home, provider, role, profile_tier, profile, models)):
         return profile_name(role, profile_tier)
-    if (role == "reviewer" and provider == "codex" and effective_models != models
+    if (role == "reviewer" and provider == "codex" and path in getattr(config, "_project_review_lists", ())
             and installed_profile_matches(home, provider, role, PROJECT_REVIEWER_TIER, None, None)):
         return PROJECT_REVIEWER_PROFILE
     return None
@@ -2182,6 +2182,8 @@ def review(args, root, binding, adapter, config, task, parent, tasks, base, fing
     round_id = secrets.token_urlsafe(18)
 
     def open_native(route, expected):
+        retry_options = ["--brief", args.brief] if args.brief else []
+        managed_retry = route["managed"] + " " + shlex.join([*retry_options, "--managed"]) if expected else None
         with lock(root, "review"):
             if scope(root, base) != fingerprint:
                 raise AgentBoxError("Code or base changed before review; start a review of the current head")
@@ -2194,9 +2196,7 @@ def review(args, root, binding, adapter, config, task, parent, tasks, base, fing
                                           text_settings=config.workflow, text_config=config)
                 descriptor = review_descriptor(identity, task, fingerprint, round_id)
                 if expected:
-                    retry_options = ["--brief", args.brief] if args.brief else []
-                    managed = route["managed"] + " " + shlex.join([*retry_options, "--managed"])
-                    descriptor["native"] = {**expected, "managed": managed}
+                    descriptor["native"] = {**expected, "managed": managed_retry}
                 bind_delegation_input(root, descriptor, prompt, local_evidence=True)
                 from .text_delivery import publish
                 artifact = publish(prompt, config)
@@ -2209,20 +2209,20 @@ def review(args, root, binding, adapter, config, task, parent, tasks, base, fing
         return {"task": task.id, "round": round_id, "scope": fingerprint, "review_budget": budget,
                 "launch": "native", "route": route,
                 "message": bootstrap("reviewer", artifact), "input": artifact,
-                **({"profile": expected["profile"]} if expected else {}),
+                **({"profile": expected["profile"], "managed_retry": managed_retry} if expected else {}),
                 **({"spawn_options": spawn_options} if spawn_options else {}),
                 "instructions": "Start a new read-only reviewer in fresh context without the parent's history"
                                 + (f" on profile {expected['profile']}" if expected else "")
                                 + " and pass message as its whole initial prompt. "
-                                + ("Pass both spawn_options explicitly; use the managed route if the tool cannot apply them. "
+                                + ("Pass both spawn_options explicitly; run managed_retry if the tool cannot apply them. "
                                    if spawn_options else "")
                                 + "Save its final message unchanged to a "
                                 "file outside the working tree and record it with result_command, naming the provider "
-                                "and model that ran. A new commit before then makes the verdict stale.",
+                                "and model that ran, and the effort for a configured reviewer. "
+                                "A new commit before then makes the verdict stale.",
                 "result_command": f"agent-box workflow review {task.id} --result FILE "
-                                  + (f"--provider {expected['provider']} --model {shlex.quote(expected['model'])}" if expected
-                                     else "--provider PROVIDER --model MODEL")
-                                  + (f" --effort {expected['effort']}" if spawn_options else "")}
+                                  + (f"--provider {expected['provider']} --model {shlex.quote(expected['model'])} "
+                                     f"--effort {expected['effort']}" if expected else "--provider PROVIDER --model MODEL")}
     if args.native:
         tier = config.workflow.effective_tier(task.tier)
         authors = author_vendors(config, getattr(args, "author", None))
@@ -2345,7 +2345,8 @@ def native_result(args, root, binding, adapter, config, task):
         raise AgentBoxError(f"{exc}; the round ended as failure {state.get('failures', 0)} of "
                             f"{REVIEW_FAILURE_LIMIT} in a row without spending an attempt. Rerun the reviewer "
                             f"via agent-box workflow inspect {task.id}") from None
-    route = {"provider": args.provider, "model": args.model, **({"effort": args.effort} if args.effort else {}),
+    effort = args.effort or (expected["effort"] if expected else None)
+    route = {"provider": args.provider, "model": args.model, **({"effort": effort} if effort else {}),
              "backend": "native"}
     store_review_result(root, binding, task, descriptor, {"route": route, "report": report,
                                                           "diagnostics": {"usage": None}}, "native")

@@ -166,8 +166,8 @@ empty.
   A project-specific Codex reviewer can also use the installed
   `ab-reviewer-project` profile when the shared profile pins a different
   choice or no shared profile exists for that list. The review handoff supplies
-  `spawn_options` with the exact model and reasoning effort. Use `--managed`
-  if the current Codex tool cannot select the profile and pass both options.
+  `spawn_options` with the exact model and reasoning effort. Run the returned
+  `managed_retry` if the current tool cannot select the profile and pass both.
   This profile is installed with the other workflow profiles on configuration
   application or the first host launch after upgrading agent-box.
   Claude picks also run managed if `CLAUDE_CODE_EFFORT_LEVEL` or

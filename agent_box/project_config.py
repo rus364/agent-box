@@ -192,6 +192,12 @@ def apply(config, data):
     result = Config.from_dict(merge(config.to_dict(), data))
     # Preserve the selected account's address before overlaying project identity.
     result._project_base = getattr(config, '_project_base', config)
+    review = data.get("workflow", {}).get("review", {})
+    # An explicit list is still an override when its values equal the saved list.
+    review_lists = {f"workflow.review.tiers.{tier}" for tier in review.get("tiers", ())}
+    if "models" in review:
+        review_lists.add("workflow.review.models")
+    result._project_review_lists = frozenset(review_lists)
     errors = result.workflow.validate(result.agents.external_apis)
     if errors:
         raise AgentBoxError(errors[0])

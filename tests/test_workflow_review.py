@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from agent_box import git_workflow as gw
-from agent_box import provider_runner
+from agent_box import project_config, provider_runner
 from agent_box import runtime, workflow
 from agent_box import workflow_state
 from agent_box.config import BalanceConfig, WorkflowConfig
@@ -48,6 +48,12 @@ class ReviewWorkflowTests(WorkflowCase):
     def budget(self):
         return workflow.read_review_budget(self.root, BINDING, self.task, self.config.workflow.review.max_rounds)
 
+    def set_project_review_models(self, models):
+        overlay = {"workflow": {"review": {"models": models}}}
+        effective = project_config.apply(copy.deepcopy(self.config), overlay)
+        self.config.__dict__.update(vars(effective))
+        install_profiles(self.config)
+
     def test_edited_reviewer_profile_uses_managed_and_records_the_actual_model(self):
         """The review round must not bind a native reviewer whose installed profile was edited."""
         path = runtime.CLAUDE_HOME / "agents/ab-reviewer.md"
@@ -78,7 +84,7 @@ class ReviewWorkflowTests(WorkflowCase):
                                                    "profile": "ab-reviewer",
                                                    "managed": "agent-box workflow review 1 --managed"})
             self.assertIn(opened["input"]["path"], opened["message"])
-            self.assertTrue(opened["result_command"].endswith("--provider codex --model selected"))
+            self.assertTrue(opened["result_command"].endswith("--provider codex --model selected --effort high"))
             with self.assertRaisesRegex(AgentBoxError, "expects profile ab-reviewer on codex selected.*"
                                                        "agent-box workflow review 1 --managed$"):
                 self.native_result()
@@ -147,7 +153,7 @@ class ReviewWorkflowTests(WorkflowCase):
         run.assert_not_called()
         self.assertEqual((opened["launch"], opened["profile"]), ("native", "ab-reviewer"))
         self.assertEqual((opened["route"]["model"], opened["route"]["native"]), ("opus", {"claude": "ab-reviewer"}))
-        self.assertEqual(opened["result_command"], "agent-box workflow review 1 --result FILE --provider claude --model opus")
+        self.assertEqual(opened["result_command"], "agent-box workflow review 1 --result FILE --provider claude --model opus --effort high")
         self.report.write_text("Verdict: PASS\n\nReviewed.\n")
         result = self.run_workflow("review", "1", "--result", str(self.report), "--provider", "claude", "--model", "opus")
         self.assertEqual((result["verdict"], result["reconciliation"]["status"]), ("PASS", "applied"))
@@ -229,13 +235,11 @@ class ReviewWorkflowTests(WorkflowCase):
 
     def test_a_project_codex_reviewer_uses_its_own_model_and_effort_natively(self):
         """Both launch paths bind Luna to the round without reconfiguring another repository's Sol profile."""
-        saved = copy.deepcopy(self.config)
-        saved.workflow.review.models = [candidate("codex", "gpt-6.2-sol", "high")]
-        self.config._project_base = saved
-        self.config.workflow.review.models = [candidate("codex", "gpt-6-luna", "max")]
-        install_profiles(self.config)
+        self.config.workflow.review.models = [candidate("codex", "gpt-6.2-sol", "high")]
+        self.set_project_review_models([candidate("codex", "gpt-6-luna", "max")])
         with routing_session("codex"), patch.object(workflow, "run") as run:
-            self.assertEqual(workflow.execution(saved, "reviewer", None, "1")["native"], {"codex": "ab-reviewer"})
+            saved_route = workflow.execution(self.config._project_base, "reviewer", None, "1")
+            self.assertEqual(saved_route["native"], {"codex": "ab-reviewer"})
             route = self.run_workflow("inspect", "1")["execution"]["reviewer"]
             self.assertEqual(route["for_this_session"], "native")
             self.assertEqual(route["native"], {"codex": "ab-reviewer-project"})
@@ -259,19 +263,39 @@ class ReviewWorkflowTests(WorkflowCase):
 
     def test_a_project_codex_reviewer_keeps_the_reserve_and_the_managed_escape(self):
         """The project profile cannot bypass reserve, and rejecting explicit spawn options keeps the same pick managed."""
-        self.config._project_base = copy.deepcopy(self.config)
-        self.config.workflow.review.models.insert(0, candidate("codex", "gpt-6-luna", "max"))
-        install_profiles(self.config)
+        self.set_project_review_models([candidate("codex", "gpt-6-luna", "max"), *self.config.workflow.review.models])
         with routing_session("codex"), patch.object(workflow, "run", side_effect=managed_runner(lambda *a, **k: answer())):
             with patch.object(workflow, "usage_snapshot", side_effect=lambda provider, **_: {
                     "windows": [{"remaining": 5, "reset_at": 4102444800}]} if provider == "codex" else {}):
                 with self.assertRaisesRegex(AgentBoxError, "5% usage reserve"):
                     self.native_round()
                 self.assertEqual(self.run_workflow("review", "1")["route"]["provider"], "claude")
-            self.assertEqual(self.native_round()["profile"], "ab-reviewer-project")
-            result = self.run_workflow("review", "1", "--managed")
+            opened = self.native_round("--brief", str(self.review_brief))
+            self.assertEqual(opened["profile"], "ab-reviewer-project")
+            retry = shlex.split(opened["managed_retry"])
+            self.assertEqual(retry[-3:], ["--brief", str(self.review_brief), "--managed"])
+            result = self.run_workflow(*retry[2:])
             self.assertEqual((result["route"]["model"], result["route"]["effort"]), ("gpt-6-luna", "max"))
             self.assertEqual(json.loads(Path(result["result_path"]).read_text())["backend"], "managed")
+
+    def test_an_identical_project_list_can_hand_a_model_reserve_fallback_to_the_project_profile(self):
+        """List ownership survives equal values, and a matching shared pin still records the configured effort."""
+        models = [candidate("codex", "gpt-6.2-sol", "high"), candidate("codex", "gpt-6-luna", "max")]
+        self.config.workflow.review.models = models
+        self.set_project_review_models(models)
+        with routing_session("codex"), patch.object(workflow, "run") as run:
+            pinned = self.native_round()
+            self.assertEqual(pinned["profile"], "ab-reviewer")
+            self.assertTrue(pinned["result_command"].endswith("--model gpt-6.2-sol --effort high"))
+            recorded = self.run_workflow("review", "1", "--result", str(self.report), "--provider", "codex",
+                                         "--model", "gpt-6.2-sol")
+            self.assertEqual(recorded["route"]["effort"], "high")
+            with patch.object(workflow, "usage_snapshot", return_value={
+                    "windows": [{"remaining": 5, "reset_at": 4102444800, "models": ["gpt-6.2-sol"]}]}):
+                fallback = self.run_workflow("review", "1")
+            self.assertEqual(fallback["profile"], "ab-reviewer-project")
+            self.assertEqual(fallback["spawn_options"], {"model": "gpt-6-luna", "reasoning_effort": "max"})
+            run.assert_not_called()
 
     def test_balanced_reviewer_without_a_detected_session_runs_managed(self):
         """Unknown session identity must not turn a weighted pick into an arbitrary native profile."""
@@ -403,7 +427,7 @@ class ReviewWorkflowTests(WorkflowCase):
             self.native_round()
         opened = self.native_round("--provider", "codex")
         self.assertEqual(opened["profile"], "ab-reviewer")
-        self.assertTrue(opened["result_command"].endswith("--provider codex --model sol"))
+        self.assertTrue(opened["result_command"].endswith("--provider codex --model sol --effort high"))
 
     def test_an_answer_from_another_candidate_is_not_recorded_and_leaves_the_round_open(self):
         """A wrong model leaves the round open and the managed retry keeps the declared authors."""
