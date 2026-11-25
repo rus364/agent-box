@@ -125,11 +125,15 @@ def parse_result(provider, returncode, output, stderr, *, metadata=None):
                        provider == "claude" and (isinstance(subtype, str) and subtype.startswith("error_") or envelope.get("errors")))
     if returncode or failed_envelope:
         # Error details are used for classification locally but never interpolated into evidence.
-        lowered = (str(envelope.get("result", "")) + str(envelope.get("errors", "")) + stderr).lower()
+        message = str(envelope.get("result", ""))
+        lowered = (message + str(envelope.get("errors", "")) + stderr).lower()
+        claude_account_hold = (provider == "claude" and envelope.get("is_error") is True
+                               and message.startswith("Your account is on hold and can't use Claude Code."))
         category = "provider-error"
         if envelope.get("api_error_status") == 404 or "model" in lowered and any(s in lowered for s in ("not found", "unavailable", "not supported", "does not exist")):
             category = "model-unavailable"
-        elif envelope.get("api_error_status") in (401, 403) or any(s in lowered for s in ("unauthorized", "authentication", "authenticate", "login")):
+        elif (claude_account_hold or envelope.get("api_error_status") in (401, 403)
+              or any(s in lowered for s in ("unauthorized", "authentication", "authenticate", "login"))):
             category = "authentication"
         elif envelope.get("api_error_status") == 429 or any(s in lowered for s in ("rate limit", "quota", "usage limit")):
             category = "quota"

@@ -27,6 +27,27 @@ def configure(policy, role, tier, models):
 
 
 class ExternalRoutingTests(unittest.TestCase):
+    def test_claude_account_hold_without_http_status_advances_managed_review(self):
+        """An account hold makes Claude unavailable even when its error envelope omits the HTTP status."""
+        config = external_config()
+        external = {**candidate(), "tier": None, **external_launch.route_identity(config, "deepseek", "codex")}
+        selected = {"provider": "claude", "model": "haiku", "effort": "max", "tier": None,
+                    "fallbacks": [external]}
+        envelope = json.dumps({"type": "result", "subtype": "success", "is_error": True,
+                               "result": "Your account is on hold and can't use Claude Code. "
+                                         "View details or appeal: https://claude.ai/restricted"})
+
+        def run(route, *_args, **_kwargs):
+            if route["provider"] == "claude":
+                return provider_runner.parse_result("claude", 1, envelope, "")
+            return workflow_fixtures.answer()
+
+        with patch.object(workflow, "run", side_effect=run) as runner:
+            output = workflow.execute(config.workflow, selected, "reviewer", Path.cwd(), "review")
+        self.assertEqual([call.args[0].get("api_provider") for call in runner.call_args_list], [None, "deepseek"])
+        self.assertEqual(output["route"], external)
+        self.assertEqual(output["failures"], [{"provider": "claude", "category": "authentication"}])
+
     def test_reviewer_fallback_preserves_each_candidates_api_identity(self):
         """Fallback may change CLI/API, but the accepted evidence must identify the one that ran."""
         config = external_config()
