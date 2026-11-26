@@ -320,6 +320,19 @@ class LoadTests(unittest.TestCase):
         routes['/models'] = (200, body)
         self.assertEqual(api_models.load(spec, require_complete=True), ({'new': {}}, None))
 
+    def test_inconsistent_cursor_boundaries_cannot_skip_unseen_models(self):
+        """A cursor naming a model outside its page must never advance an exact catalog mirror."""
+        first = {'data': [{'id': 'A'}], 'first_id': 'A', 'last_id': 'A', 'has_more': True}
+        last = {'data': [{'id': 'C'}], 'first_id': 'C', 'last_id': 'C', 'has_more': False}
+        routes = {'/models?after_id=B': (200, last), '/models?after_id=A': (200, last)}
+        server = self.serve(routes)
+        for cursor in ('first_id', 'last_id'):
+            routes['/models'] = (200, {**first, cursor: 'B'})
+            models, error = api_models.load(provider(server.url), require_complete=True)
+            self.assertFalse(models)
+            self.assertIn(cursor, error)
+            self.assertEqual(server.requests[-1][0], '/models')
+
     def test_unreadable_nested_json_allows_a_models_menu_retry(self):
         """A decoder nesting error must follow the recoverable diagnostic path for the configuration draft."""
         server = self.serve({'/models': (200, {'data': [{'id': 'fresh'}]})})

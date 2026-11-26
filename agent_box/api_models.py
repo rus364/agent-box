@@ -71,12 +71,19 @@ def _items(base, protocol, key, require_complete):
                 or data.get('error') not in (None, False, '') or data.get('errors')
                 or data.get('success') is False or data.get('ok') is False):
             raise ListError('provider reported an error instead of a model list')
-        items += data['data']
+        rows = data['data']
+        items.extend(rows)
         links = data.get('links')
         following = links.get('next') if isinstance(links, dict) else None
         if require_complete:
             if (cursor_paging or 'first_id' in data or 'last_id' in data) and 'has_more' not in data:
                 raise ListError('incomplete model list: cursor page omitted has_more')
+            for cursor, position in (('first_id', 0), ('last_id', -1)):
+                if cursor in data:
+                    row = rows[position] if rows else None
+                    boundary = row.get('id') if isinstance(row, dict) else None
+                    if data[cursor] != boundary:
+                        raise ListError(f'inconsistent model list: {cursor} does not match its page')
             if (links is not None and not isinstance(links, dict)
                     or following is not None and not (isinstance(following, str) and following.strip())
                     or 'has_more' in data and type(data['has_more']) is not bool):

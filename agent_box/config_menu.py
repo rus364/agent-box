@@ -1250,10 +1250,10 @@ def edit(config, *, project=None):
         facts = [f"{fields['context_window']} tokens of context" if "context_window" in fields else "",
                  f"output limit {fields['max_output_tokens']} tokens" if "max_output_tokens" in fields else "",
                  "input " + (", ".join(fields["input_modalities"]) or "(none compatible)") if "input_modalities" in fields else "",
-                 "efforts " + ", ".join(fields["supported_efforts"]) + (f" (default {fields['effort']})" if fields.get("effort", "default") != "default" else "")
-                 if "supported_efforts" in fields else ""]
+                 "efforts " + (", ".join(fields["supported_efforts"]) or "(none compatible)") if "supported_efforts" in fields else "",
+                 f"default effort {fields['effort']}" if "effort" in fields else ""]
         stated = "; ".join(fact for fact in facts if fact)
-        return f"{model}: " + (stated + "." if stated else "the provider states only its ID; fill the settings by hand.")
+        return f"{model}: " + (stated + "." if stated else "uses the connection's model defaults.")
 
     def menu(screen, data, path=()):
         selected, notice = 0, ""

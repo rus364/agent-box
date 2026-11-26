@@ -610,6 +610,15 @@ class ExternalModelTests(unittest.TestCase):
         self.assertTrue(filtered)
         self.assertFalse(any('DeepSeek-V4.1-Flash' in frame or 'Small [' in frame for frame in filtered))
 
+    def test_the_provider_picker_previews_a_standalone_effort_before_import(self):
+        """A published preference matters even when the provider leaves its other available levels unknown."""
+        config = external_config()
+        keys = [*self.walk(config, ('agents', 'external_apis', 'deepseek', 'models')),
+                curses.KEY_END, curses.KEY_UP, '\n', '\n', *['\x1b'] * 5, curses.KEY_END, curses.KEY_UP, '\n']
+        edited, screen = menu_tests.ConfigMenuTests().edit(config, keys, published=({'new': {'effort': 'high'}}, None))
+        self.assertIn('default effort high', '\n'.join(screen.frames))
+        self.assertEqual(edited.config.agents.external_apis['deepseek'].models['new']['discovered'], {'effort': 'high'})
+
     def test_update_from_api_replaces_only_the_fields_the_list_states(self):
         """Hand-tuned CLI settings must survive refreshing what the provider describes."""
         config = rich_config()
