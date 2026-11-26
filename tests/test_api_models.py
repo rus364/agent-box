@@ -244,6 +244,8 @@ class LoadTests(unittest.TestCase):
         self.assertEqual(set(api_models.load(spec, require_complete=True)[0]), {row['id'] for row in full['data']})
         del routes['/api/models'][1]['total_count']
         self.assertIn('omitted pagination', api_models.load(spec, require_complete=True)[1])
+        routes['/page2'][1]['links'] = {}
+        self.assertIn('omitted pagination', api_models.load(spec, require_complete=True)[1])
         routes['/page2'][1]['links'] = {'next': None}
         self.assertEqual(set(api_models.load(spec, require_complete=True)[0]), {row['id'] for row in full['data']})
 
@@ -303,6 +305,16 @@ class LoadTests(unittest.TestCase):
         self.assertIn('URL', api_models.load(provider())[1])
         # The menu asks before save-time validation, so a draft URL may be malformed.
         self.assertIn('malformed URL', api_models.load(provider('http://[::1'))[1])
+
+    def test_unreadable_nested_json_allows_a_models_menu_retry(self):
+        """A decoder nesting error must follow the recoverable diagnostic path for the configuration draft."""
+        spec = provider('https://catalog.invalid')
+        with patch.object(api_models, 'http_json', side_effect=RecursionError):
+            models, error = api_models.load(spec, require_complete=True)
+        self.assertEqual(models, {})
+        self.assertIn('JSON', error)
+        with patch.object(api_models, 'http_json', return_value={'data': [{'id': 'fresh'}]}):
+            self.assertEqual(api_models.load(spec, require_complete=True), ({'fresh': {}}, None))
 
 
 if __name__ == '__main__':

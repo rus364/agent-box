@@ -428,6 +428,21 @@ class ExternalModelTests(unittest.TestCase):
                         self.assertEqual(model['supported_efforts'], levels)
                         self.assertEqual(model['effort'], 'default')
 
+    def test_a_codex_only_model_preference_does_not_mask_a_manual_claude_effort(self):
+        """An explicit preference for each CLI must survive a more restrictive provider list."""
+        data = external_config().to_dict()
+        p = data['agents']['external_apis']['deepseek']
+        m = p['models']['external-small']
+        m.update(effort='minimal', supported_efforts=None)
+        m['claude']['env']['CLAUDE_CODE_EFFORT_LEVEL'] = 'high'
+        config_menu.sync_models('deepseek', p, {'external-small': {'supported_efforts': ['low']}})
+        config = Config.from_dict(data)
+        with tempfile.TemporaryDirectory() as tmp:
+            _, env = ext.prepare(['claude'], 'deepseek', 'claude', config, tmp, {})
+            args, _ = ext.prepare(['codex'], 'deepseek', 'codex', config, tmp, {})
+            self.assertEqual(env['CLAUDE_CODE_EFFORT_LEVEL'], 'high')
+            self.assertIn('model_reasoning_effort="minimal"', args)
+
     def test_suffixed_workflow_model_uses_the_same_effort_choices_as_launch(self):
         """A manually entered [1m] ID must not lose the configured model's effort metadata."""
         config = rich_config()

@@ -31,6 +31,8 @@ def _fetch(url, headers):
         raise error(f'HTTP {exc.code}') from None
     except (OSError, http.client.HTTPException):
         raise ListError('network error or timeout') from None
+    except RecursionError:
+        raise ListError('JSON response is too deeply nested') from None
     except ValueError:
         raise ListError('response is not JSON') from None
 
@@ -72,7 +74,7 @@ def _items(base, protocol, key, require_complete):
             if (cursor_paging or 'first_id' in data or 'last_id' in data) and 'has_more' not in data:
                 raise ListError('incomplete model list: cursor page omitted has_more')
             if (links is not None and not isinstance(links, dict)
-                    or following is not None and not isinstance(following, str)
+                    or following is not None and not (isinstance(following, str) and following.strip())
                     or 'has_more' in data and type(data['has_more']) is not bool):
                 raise ListError('invalid model list pagination')
             if 'total_count' in data:
@@ -80,8 +82,9 @@ def _items(base, protocol, key, require_complete):
                 if type(count) is not int or count < 0 or total is not None and count != total:
                     raise ListError('invalid or inconsistent model list total_count')
                 total = count
-            if index and total is None and 'has_more' not in data and not isinstance(links, dict):
-                raise ListError('incomplete model list: continuation page omitted pagination')
+            if ((index or isinstance(links, dict)) and total is None and 'has_more' not in data
+                    and not (isinstance(links, dict) and 'next' in links)):
+                raise ListError('incomplete model list: page omitted pagination status')
         if isinstance(following, str) and following:
             try:
                 foreign = urlsplit(following)[:2] != origin

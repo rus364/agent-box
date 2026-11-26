@@ -30,8 +30,8 @@ response leaves the draft intact. An incompatible workflow effort also stops
 the sync and identifies the affected candidate. A failed request leaves the
 last successful list available for individual selection.
 Sync checks the total count when supplied. Cursor pages must declare
-`has_more`. A link-based continuation must retain pagination metadata or
-account for the advertised total.
+`has_more`. A link-based response must supply its next URL, explicitly end
+the list with `"next": null`, or account for the advertised total.
 It tries the other protocol only if the first listing endpoint answers 404, 405
 or 501 on its initial request. Any later page failure stops the sync.
 The menu reports the change counts.
