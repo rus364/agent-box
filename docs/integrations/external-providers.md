@@ -53,6 +53,9 @@ picker and launch to the client default. Setting a manual model override takes
 precedence. A missing list continues to use the connection settings.
 Claude's endpoint `CLAUDE_CODE_EFFORT_LEVEL` and Codex's endpoint
 `model_reasoning_effort` apply only where the published levels allow them.
+When a published list applies and no compatible preference is set, agent-box
+uses Claude's [`auto` setting](https://code.claude.com/docs/en/model-config#send-no-effort-level)
+to let the API choose the effort.
 Without tuning, token limits
 and efforts stay unspecified and Codex assumes text input.
 

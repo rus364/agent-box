@@ -400,7 +400,7 @@ class ExternalModelTests(unittest.TestCase):
                     args, env = ext.prepare([cli, *options], 'deepseek', cli, config, tmp, {})
                     allowed = model not in ('fixed', 'limited')
                     if cli == 'claude':
-                        self.assertEqual(env['CLAUDE_CODE_EFFORT_LEVEL'], 'high' if allowed else '')
+                        self.assertEqual(env['CLAUDE_CODE_EFFORT_LEVEL'], 'high' if allowed else 'auto')
                     else:
                         self.assertEqual('model_reasoning_effort="high"' in args, allowed)
                     if not allowed:
@@ -786,7 +786,7 @@ class ExternalModelTests(unittest.TestCase):
                     _, env = ext.prepare(['claude', '--model', model], 'deepseek', 'claude', config, directory, {})
                     self.assertEqual(env['CLAUDE_CODE_MAX_CONTEXT_TOKENS'], str(window))
                     self.assertEqual(env['CLAUDE_CODE_MAX_OUTPUT_TOKENS'], '2048')
-                    self.assertEqual(env.get('CLAUDE_CODE_EFFORT_LEVEL') or None, effort)
+                    self.assertEqual(env['CLAUDE_CODE_EFFORT_LEVEL'], effort or 'auto')
                     ext.prepare(['codex', '--model', model], 'deepseek', 'codex', config, directory, {})
                     rows = json.loads((directory / 'models.json').read_text())['models']
                     row = next(r for r in rows if r['slug'] == model)

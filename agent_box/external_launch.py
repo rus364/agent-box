@@ -289,6 +289,9 @@ def prepare(command, name, cli, config, directory, environment, *, model=None):
             effort = default_effort
         if effort and effort != 'default':
             custom_env['CLAUDE_CODE_EFFORT_LEVEL'] = effort
+        elif settings.get('published_effort_limits'):
+            # An empty variable lets Claude choose and send its own level.
+            custom_env['CLAUDE_CODE_EFFORT_LEVEL'] = 'auto'
         if settings['auto_compact_token_limit']:
             custom_env['CLAUDE_CODE_AUTO_COMPACT_WINDOW'] = str(settings['auto_compact_token_limit'])
     directory = Path(directory)
