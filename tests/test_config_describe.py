@@ -90,6 +90,23 @@ class ConfigDescribeTests(unittest.TestCase):
         self.assertEqual(shown[path + '.context_window'], '1000000 [API]')
         self.assertEqual(shown[path + '.max_output_tokens'], '4096 [inherited]')
 
+    def test_global_proposals_can_pin_and_release_typed_fields_for_a_dotted_model_id(self):
+        """The same setting described as an integer must accept a number and reset to discovery."""
+        data = rich_config().to_dict()
+        provider = data['agents']['external_apis']['deepseek']
+        provider['models']['vendor/v4.1'] = {'discovered': {'max_output_tokens': 8192}}
+        baseline = Config.from_dict(data).to_dict()
+        field = 'agents.external_apis.deepseek.models.vendor/v4.1.max_output_tokens'
+        pinned = cli._checked_global(baseline, {'set': {field: 4096}, 'reset': []}).to_dict()
+        self.assertEqual(cli._change_lines(baseline, pinned, {'set': {field: 4096}, 'reset': []}),
+                         [f'- {field} = null', f'+ {field} = 4096'])
+        for proposal in ({'set': {field: None}, 'reset': []}, {'set': {}, 'reset': [field]}):
+            result = cli._checked_global(pinned, proposal).agents.external_apis['deepseek']
+            self.assertIsNone(result.models['vendor/v4.1']['max_output_tokens'])
+            self.assertEqual(result.claude.models['vendor/v4.1']['max_output_tokens'], 8192)
+        with self.assertRaisesRegex(AgentBoxError, 'invalid type'):
+            cli._checked_global(baseline, {'set': {field: '4096'}, 'reset': []})
+
     def test_layers_sources_and_project_eligibility_follow_the_project_loader(self):
         """The agent must know which value wins, where it comes from, and whether a project may change it."""
         config = Config()

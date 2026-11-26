@@ -24,7 +24,10 @@ request header; a failure shows a short diagnostic and leaves manual entry.
 response. It adds new IDs, refreshes published metadata, removes absent IDs
 (including manual entries), and clears any endpoint default naming a removed
 model. A successful empty list clears the catalog. An incomplete or invalid
-response leaves the draft intact. The menu reports the change counts.
+response leaves the draft intact. Sync checks the total count when supplied.
+It tries the other protocol only if the first listing endpoint answers 404, 405
+or 501 on its initial request. Any later page failure stops the sync.
+The menu reports the change counts.
 Use **Save and apply** to persist the result or **Cancel** to discard it.
 Sync includes every ID, including rolling aliases such as `~vendor/model-latest`,
 embedding models and models that only serve a different protocol. Check that
@@ -38,7 +41,9 @@ The menu marks values supplied by the API or inherited. Editing a model
 field pins it, and **R** on that field resumes inheritance. Existing literal
 model settings remain explicit. If the provider drops a field, a full sync
 releases its old published value. If a model's levels exclude the inherited
-preferred effort, the client uses its default. Without tuning, token limits
+preferred effort, the client uses its default. When a more specific preferred
+effort contradicts an inherited list, only that explicit effort is advertised.
+Without tuning, token limits
 and efforts stay unspecified and Codex assumes text input.
 
 **Add from provider list** offers the models not configured yet; typing
@@ -48,8 +53,9 @@ filters them by ID or name. A chosen model gets the settings the list states:
 state most of these; a plain OpenAI-compatible list gives only IDs. Compaction
 thresholds, Codex tool flags, `metadata` and `env` stay manual. A configured
 model the list lacks is marked `not listed` while browsing. **Update from API**
-deliberately replaces only the fields the list states for that model, including
-any manual edits to those shared fields. Browsing and launching never refresh
+deliberately replaces the fields the list states for that model, including
+any manual edits to those shared fields. A new effort list also releases the
+old published preferred effort. Browsing and launching never refresh
 saved values. CLI-specific overrides remain intact. A listed model is a
 suggestion, not proof that the account may use it.
 

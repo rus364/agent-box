@@ -578,17 +578,24 @@ def _checked_global(baseline: dict, proposal: dict):
     from .config import Config
     defaults = Config().to_dict()
     for dotted in [*proposal["set"], *proposal["reset"]]:
-        path = tuple(dotted.split("."))
+        path = config_proposal.setting_path(baseline, dotted)
         current = _lookup(baseline, path)
         if path == ("version",) or _hidden(path):
             raise AgentBoxError(f"config set --global: {dotted} is a credential, environment or installation "
                                 "setting; change it in 'agent-box config'")
-        if current is _MISSING or isinstance(current, dict) and not config_menu.json_field(path):
+        rel = config_menu.external(path)
+        if (current is _MISSING or isinstance(current, dict) and not config_menu.json_field(path)
+                or rel and rel[1:2] == ('models',) and rel[3:4] == ('discovered',)):
             raise AgentBoxError(f"config set --global: {dotted} is not a setting; 'agent-box config describe' lists every path")
-        if dotted in proposal["reset"] and _lookup(defaults, path) is _MISSING:
+        override = config_proposal.model_override(path)
+        if dotted in proposal["reset"] and not override and _lookup(defaults, path) is _MISSING:
             raise AgentBoxError(f"config set --global: {dotted} has no built-in value to reset to")
         if dotted in proposal["set"]:
             value = proposal["set"][dotted]
+            if override:
+                if value is None:
+                    continue
+                current = config_menu.menu_model_values(_lookup(baseline, path[:-1]), path[:-1], baseline)[path[-1]]
             if type(value) is not type(current) and not {type(value), type(current)} <= {int, float}:
                 raise AgentBoxError(f"config set --global: {dotted} has an invalid type")
             if config_menu.candidate_list(path):
@@ -611,9 +618,10 @@ def _checked_global(baseline: dict, proposal: dict):
 
 def _change_lines(before: dict, after: dict, proposal: dict) -> list[str]:
     """Only the proposed settings: a whole-file diff of config.json would print its credentials."""
+    from . import config_proposal
     lines = []
     for dotted in [*proposal["reset"], *proposal["set"]]:
-        path = tuple(dotted.split("."))
+        path = config_proposal.setting_path(before, dotted)
         old, new = _lookup(before, path), _lookup(after, path)
         if old != new:
             lines += [f"- {dotted} = {json.dumps(old, ensure_ascii=False)}",

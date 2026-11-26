@@ -560,6 +560,32 @@ class ExternalModelTests(unittest.TestCase):
         self.assertNotIn('not listed', drawn)
         self.assertNotIn('private-api-key', drawn)
 
+    def test_single_model_update_drops_the_obsolete_published_effort_default(self):
+        """A new effort list with no preferred value must be editable and saveable from the menu."""
+        raw = rich_config().to_dict()
+        raw['agents']['external_apis']['deepseek']['models']['v4-pro'].update(
+            effort=None, supported_efforts=None, discovered={'effort': 'high', 'supported_efforts': ['high']})
+        config = Config.from_dict(raw)
+        keys = [*self.walk(config, ('agents', 'external_apis', 'deepseek', 'models', 'v4-pro')),
+                curses.KEY_END, curses.KEY_UP, curses.KEY_UP, '\n',
+                *['\x1b'] * 5, curses.KEY_END, curses.KEY_UP, '\n']
+        edited, _ = menu_tests.ConfigMenuTests().edit(config, keys, published=({'v4-pro': {'supported_efforts': ['low']}}, None))
+        provider = edited.config.agents.external_apis['deepseek']
+        self.assertEqual(provider.models['v4-pro']['discovered'], {'supported_efforts': ['low']})
+        self.assertEqual(provider.claude.models['v4-pro']['effort'], 'default')
+
+    def test_a_manual_effort_survives_an_id_only_refresh_with_conflicting_connection_levels(self):
+        """When an explicit level survives discovery loss, unrelated fallback levels cannot invalidate it."""
+        raw = external_config().to_dict()
+        provider = raw['agents']['external_apis']['deepseek']
+        provider['model_defaults'].update(supported_efforts=['low'], effort='low')
+        provider['models']['external-small'].update(effort='high', discovered={'supported_efforts': ['high']})
+        config_menu.sync_models('deepseek', provider, {'external-small': {}})
+        provider = Config.from_dict(raw).agents.external_apis['deepseek']
+        for endpoint in (provider.claude, provider.codex):
+            spec = endpoint.models['external-small']
+            self.assertEqual((spec['effort'], spec['supported_efforts']), ('high', ['high']))
+
     def test_full_sync_refetches_on_retry_and_only_save_replaces_the_catalog(self):
         """A stale preview or partial fetch must never drive deletions or overwrite a manual exception."""
         raw = external_config().to_dict()

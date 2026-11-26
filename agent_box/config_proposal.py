@@ -50,6 +50,24 @@ def merged(proposal: dict, assignments, resets) -> dict:
     return result
 
 
+def setting_path(data, dotted):
+    """A listed model ID can contain dots, even though configuration fields use dotted paths."""
+    parts = tuple(dotted.split('.'))
+    if parts[:2] == ('agents', 'external_apis') and parts[3:4] == ('models',):
+        entries = data.get('agents', {}).get('external_apis', {}).get(parts[2], {}).get('models', {})
+        for end in range(len(parts) - 1, 4, -1):
+            model = '.'.join(parts[4:end])
+            if model in entries:
+                return (*parts[:4], model, *parts[end:])
+    return parts
+
+
+def model_override(path):
+    from .external_config import SHARED_DEFAULTS
+    return (len(path) == 6 and path[:2] == ('agents', 'external_apis') and path[3] == 'models'
+            and (path[-1] == 'display_name' or path[-1] in SHARED_DEFAULTS))
+
+
 def applied(data: dict, proposal: dict) -> dict:
     """``data`` in ``Config.to_dict`` form with resets restored to built-in values and assignments set.
 
@@ -62,9 +80,12 @@ def applied(data: dict, proposal: dict) -> dict:
             tree = tree[part]
         return tree
 
-    changes = [(dotted, value_at(defaults, dotted.split("."))) for dotted in proposal["reset"]]
+    changes = []
+    for dotted in proposal["reset"]:
+        path = setting_path(data, dotted)
+        changes.append((dotted, None if model_override(path) else value_at(defaults, path)))
     for dotted, value in [*changes, *proposal["set"].items()]:
-        *parents, name = dotted.split(".")
+        *parents, name = setting_path(data, dotted)
         value_at(result, parents)[name] = copy.deepcopy(value)
     return result
 

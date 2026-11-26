@@ -1451,6 +1451,8 @@ def edit(config, *, project=None):
                         continue
                     if action == 'update_listed':
                         fields = listed[path[4]]
+                        if 'supported_efforts' in fields:
+                            data['discovered'].pop('effort', None)
                         data['discovered'].update(copy.deepcopy(fields))
                         for field in fields:
                             data[field] = None

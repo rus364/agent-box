@@ -18,19 +18,24 @@ class ListError(Exception):
     """A short reason the list could not be read; never carries the key or a response body."""
 
 
+class EndpointUnavailable(ListError):
+    """The first request may establish that this endpoint does not implement model lists."""
+
+
 def _fetch(url, headers):
     try:
         return http_json(url, headers={'User-Agent': 'agent-box', **headers}, timeout=TIMEOUT)
     except urllib.error.HTTPError as exc:
         exc.close()
-        raise ListError(f'HTTP {exc.code}') from None
+        error = EndpointUnavailable if exc.code in (404, 405, 501) else ListError
+        raise error(f'HTTP {exc.code}') from None
     except (OSError, http.client.HTTPException):
         raise ListError('network error or timeout') from None
     except ValueError:
         raise ListError('response is not JSON') from None
 
 
-def _items(base, protocol, key):
+def _items(base, protocol, key, require_complete):
     """Every entry of the list at ``base``, paged by whichever cursor the response carries.
 
     OpenAI and OpenRouter page with a ``links.next`` URL, Anthropic with
@@ -45,13 +50,29 @@ def _items(base, protocol, key):
     origin = urlsplit(first)[:2]
     query = {'limit': 1000} if protocol is ANTHROPIC else {}
     page, items = first + ('?' + urlencode(query) if query else ''), []
-    for _ in range(PAGES):
-        data = _fetch(page, headers(key))
+    total = None
+    for index in range(PAGES):
+        try:
+            data = _fetch(page, headers(key))
+        except EndpointUnavailable as exc:
+            if index:
+                raise ListError(f'incomplete model list: {exc}') from None
+            raise
         if not isinstance(data, dict) or not isinstance(data.get('data'), list):
             raise ListError('not a model list')
         items += data['data']
-        links = data.get('links') if isinstance(data.get('links'), dict) else {}
-        following = links.get('next')
+        links = data.get('links')
+        following = links.get('next') if isinstance(links, dict) else None
+        if require_complete:
+            if (links is not None and not isinstance(links, dict)
+                    or following is not None and not isinstance(following, str)
+                    or 'has_more' in data and type(data['has_more']) is not bool):
+                raise ListError('invalid model list pagination')
+            if 'total_count' in data:
+                count = data['total_count']
+                if type(count) is not int or count < 0 or total is not None and count != total:
+                    raise ListError('invalid or inconsistent model list total_count')
+                total = count
         if isinstance(following, str) and following:
             try:
                 foreign = urlsplit(following)[:2] != origin
@@ -65,6 +86,8 @@ def _items(base, protocol, key):
                 raise ListError('more pages announced without a cursor to reach them')
             page = first + '?' + urlencode({**query, 'after_id': data['last_id']})
         else:
+            if total is not None and len(items) != total:
+                raise ListError(f'incomplete model list: received {len(items)} of {total} entries')
             return items
     raise ListError(f'more than {PAGES} pages; showing none rather than a partial list')
 
@@ -172,17 +195,23 @@ def load(provider, *, require_complete=False):
     for protocol, url in attempts:
         try:
             # A draft URL is validated only on save, so a malformed one reaches here.
-            items = _items(url, protocol, key)
+            items = _items(url, protocol, key, require_complete)
         except ValueError:
             errors.append(f'{url}: malformed URL')
+            if require_complete:
+                break
             continue
         except ListError as exc:
             errors.append(f'{url}: {exc}')
+            if require_complete and not isinstance(exc, EndpointUnavailable):
+                break
             continue
         models = {}
         for item in items:
             if require_complete and (not isinstance(item, dict) or not valid_model(item.get('id'))):
                 return {}, 'cannot synchronize a list containing a missing or unsupported model ID'
+            if require_complete and item['id'] in models:
+                return {}, 'cannot synchronize a list containing a duplicate model ID'
             if isinstance(item, dict) and isinstance(item.get('id'), str) and item['id'] not in models:
                 models[item['id']] = model_fields(item)
         return models, None

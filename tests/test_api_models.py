@@ -213,6 +213,43 @@ class LoadTests(unittest.TestCase):
             self.assertIn('model ID', error)
             self.assertIn('valid', api_models.load(spec)[0])
 
+    def test_full_sync_requires_complete_distinct_rows_and_consistent_pagination(self):
+        """A truncated last page or duplicate ID could eliminate unrelated local settings on save."""
+        full = sample('openrouter.json')
+        routes = {}
+        server = self.serve(routes)
+        spec = provider(server.url + '/api')
+        for reply, reason in [(dict(full, data=full['data'][:2]), 'received 2 of 4'),
+                              (dict(full, data=full['data'][:2] * 2), 'duplicate model ID'),
+                              (dict(full, has_more='yes'), 'pagination'),
+                              (dict(full, links={'next': 3}), 'pagination')]:
+            with self.subTest(reason=reason):
+                routes['/api/models'] = (200, reply)
+                models, error = api_models.load(spec, require_complete=True)
+                self.assertEqual(models, {})
+                self.assertIn(reason, error)
+        routes['/api/models'] = (200, dict(full, data=full['data'][:2], links={'next': server.url + '/page2'}))
+        routes['/page2'] = (200, dict(full, data=full['data'][2:], total_count=2))
+        self.assertIn('inconsistent', api_models.load(spec, require_complete=True)[1])
+        routes['/page2'] = (200, {'data': full['data'][2:]})
+        self.assertEqual(set(api_models.load(spec, require_complete=True)[0]), {row['id'] for row in full['data']})
+
+    def test_sync_switches_protocol_only_if_the_first_listing_endpoint_is_unavailable(self):
+        """Failure on a later page must never replace an established catalog with a smaller alternative."""
+        alt = '/claude/v1/models?limit=1000'
+        routes = {alt: (200, {'data': [{'id': 'different'}]})}
+        server = self.serve(routes)
+        spec = provider(server.url + '/api', server.url + '/claude')
+        self.assertEqual(api_models.load(spec, require_complete=True), ({'different': {}}, None))
+        routes['/api/models'] = (200, {'data': [{'id': 'keep'}], 'links': {'next': server.url + '/page2'}})
+        for status in (404, 503):
+            routes['/page2'] = (status, {})
+            server.requests.clear()
+            models, error = api_models.load(spec, require_complete=True)
+            self.assertEqual(models, {})
+            self.assertIn(f'HTTP {status}', error)
+            self.assertEqual([path for path, _ in server.requests], ['/api/models', '/page2'])
+
     def test_failures_become_a_diagnostic_that_never_carries_the_key(self):
         """The menu shows this text; a key in it, in argv or after a redirect would be a disclosure."""
         def slow(server):

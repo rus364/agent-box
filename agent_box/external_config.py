@@ -134,13 +134,17 @@ def external_model_entry():
 
 
 def effective_model(entry, defaults):
-    reported = entry.get('discovered', {})
     manual = {k: v for k, v in entry.items() if v is not None and k != 'discovered'}
-    settings = {**model_defaults(), **defaults, **reported, **manual}
-    # A narrower model-specific list can exclude the lower layer's preferred effort.
-    if ('effort' not in manual and settings['supported_efforts']
-            and settings['effort'] not in settings['supported_efforts']):
-        settings['effort'] = 'default'
+    settings = model_defaults()
+    for layer in (defaults, entry.get('discovered', {}), manual):
+        settings.update(layer)
+        effort, levels = settings['effort'], settings['supported_efforts']
+        if levels and effort != 'default' and effort not in levels:
+            if 'effort' not in layer:
+                settings['effort'] = 'default'
+            elif 'supported_efforts' not in layer:
+                # This more specific choice establishes one level; the inherited list contradicts it.
+                settings['supported_efforts'] = [effort]
     return settings
 
 
