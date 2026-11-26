@@ -180,6 +180,20 @@ class ConfigProposalTests(unittest.TestCase):
         models = load_config().agents.external_apis['api'].models
         self.assertEqual((models['m']['context_window'], models['m.context_window.rev']['max_output_tokens']), (9100, 4100))
 
+    def test_global_set_and_reset_accept_consecutive_dots_in_a_known_model_id(self):
+        """Every field advertised for a catalog model must remain addressable from the CLI."""
+        config = load_config().to_dict()
+        model = 'vendor/model..preview.'
+        config['agents']['external_apis'] = {'api': {'models': {model: {'discovered': {'context_window': 8192}}}}}
+        save_config(Config.from_dict(config), self.global_file)
+        setting = 'agents.external_apis.api.models.' + model + '.context_window'
+        self.command('set', '--global', setting + '=4096')
+        self.command('proposal', 'apply', answer='y')
+        self.assertEqual(load_config().agents.external_apis['api'].models[model]['context_window'], 4096)
+        self.command('set', '--global', '--reset', setting)
+        self.command('proposal', 'apply', answer='y')
+        self.assertEqual(load_config().agents.external_apis['api'].codex.models[model]['context_window'], 8192)
+
     def test_apply_is_refused_inside_any_agent_session(self):
         """An agent must not answer the confirmation itself, in a box or in a --host session with a saved file."""
         snapshot = Config()

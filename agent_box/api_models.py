@@ -93,7 +93,7 @@ def _items(base, protocol, key, require_complete):
                 if type(count) is not int or count < 0 or total is not None and count != total:
                     raise ListError('invalid or inconsistent model list total_count')
                 total = count
-            if ((index or isinstance(links, dict)) and total is None and 'has_more' not in data
+            if ((index or 'links' in data) and total is None and 'has_more' not in data
                     and not (isinstance(links, dict) and 'next' in links)):
                 raise ListError('incomplete model list: page omitted pagination status')
         if isinstance(following, str) and following:

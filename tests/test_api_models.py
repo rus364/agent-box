@@ -231,6 +231,7 @@ class LoadTests(unittest.TestCase):
         for reply, reason in [(dict(full, data=full['data'][:2]), 'received 2 of 4'),
                               (dict(full, data=full['data'][:2] * 2), 'duplicate model ID'),
                               (dict(full, has_more='yes'), 'pagination'),
+                              ({'data': full['data'][:2], 'links': None}, 'omitted pagination'),
                               (dict(full, links={'next': 3}), 'pagination')]:
             with self.subTest(reason=reason):
                 routes['/api/models'] = (200, reply)

@@ -482,8 +482,9 @@ CONFIG_SET_USAGE = "expected: agent-box config set --project|--global [--dry-run
 CONFIG_PROPOSAL_USAGE = "expected: agent-box config proposal [apply | discard]"
 
 
-def _setting_path(text: str) -> tuple[str, ...]:
-    path = tuple(text.split("."))
+def _setting_path(text: str, baseline: dict | None) -> tuple[str, ...]:
+    from . import config_proposal
+    path = config_proposal.setting_path(baseline, text) if baseline is not None else tuple(text.split("."))
     if not all(path):
         die(f"config set: invalid setting path {text!r}; 'agent-box config describe' lists every path")
     return path
@@ -513,7 +514,7 @@ def config_set(args: list[str]) -> None:
             # Taking `--reset --dry-run` as a path would turn a preview into a write.
             if not rest or rest[0].startswith("-"):
                 die(CONFIG_SET_USAGE)
-            resets.append(_setting_path(rest.pop(0)))
+            resets.append(rest.pop(0))
         elif "=" in arg and not arg.startswith("-"):
             name, text = arg.split("=", 1)
             try:
@@ -521,7 +522,7 @@ def config_set(args: list[str]) -> None:
             except ValueError:
                 # The value may be a secret typed into the wrong place; name the setting only.
                 die(f'config set: the value for {name} must be JSON, for example true, 5, "text" or ["a"]')
-            assignments.append((_setting_path(name), value))
+            assignments.append((name, value))
         elif not arg.startswith("-"):
             # `PATH VALUE` is the usual slip; the stray word may be a secret, so it is not quoted back.
             die("config set: give each setting as one PATH=JSON argument, for example "
@@ -530,12 +531,9 @@ def config_set(args: list[str]) -> None:
             die(CONFIG_SET_USAGE)
     if project == global_scope or not assignments and not resets:
         die(CONFIG_SET_USAGE)
-    baseline = None
-    if global_scope:
-        from . import config_proposal
-        baseline = effective_config(include_project=False).to_dict()
-        assignments = [(config_proposal.setting_path(baseline, '.'.join(path)), value) for path, value in assignments]
-        resets = [config_proposal.setting_path(baseline, '.'.join(path)) for path in resets]
+    baseline = effective_config(include_project=False).to_dict() if global_scope else None
+    assignments = [(_setting_path(name, baseline), value) for name, value in assignments]
+    resets = [_setting_path(name, baseline) for name in resets]
     paths = [path for path, _ in assignments] + resets
     # A section and a field inside it would make the result depend on argument order.
     if any(a[:len(b)] == b for i, a in enumerate(paths) for j, b in enumerate(paths) if i != j):
