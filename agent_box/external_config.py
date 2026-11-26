@@ -185,6 +185,8 @@ def cli_models(models, cli, defaults):
             if effort:
                 entry = {**entry, 'effort': effort}
         result[model] = cli_settings(effective_model(entry, defaults), cli)
+        if entry.get('supported_efforts') is None and 'supported_efforts' in entry.get('discovered', {}):
+            result[model]['published_effort_limits'] = True
     return result
 
 
@@ -214,14 +216,25 @@ def model_settings(models, model, fallback):
     return models.get(model, models.get(model.removesuffix('[1m]'), fallback))
 
 
+def model_default_effort(endpoint, spec, cli):
+    """A published restriction can rule out a native endpoint default for this model alone."""
+    if spec['effort'] != 'default':
+        return spec['effort']
+    if cli == 'claude':
+        if 'CLAUDE_CODE_EFFORT_LEVEL' in spec['env']:
+            return spec['env']['CLAUDE_CODE_EFFORT_LEVEL']
+        effort = endpoint.env.get('CLAUDE_CODE_EFFORT_LEVEL')
+    else:
+        effort = endpoint.config.get('model_reasoning_effort')
+    if spec.get('published_effort_limits') and effort not in spec['supported_efforts']:
+        return None
+    return effort
+
+
 def model_effort_error(endpoint, model, cli, effort):
     spec = model_settings(endpoint.models, model, endpoint.fallback)
     if effort in (None, 'default'):
-        effort = spec['effort']
-        if effort == 'default' and cli == 'claude':
-            effort = {**endpoint.env, **spec['env']}.get('CLAUDE_CODE_EFFORT_LEVEL', 'default')
-        elif effort == 'default' and cli == 'codex':
-            effort = endpoint.config.get('model_reasoning_effort', 'default')
+        effort = model_default_effort(endpoint, spec, cli)
     if ((spec['supported_efforts'] or spec.get('effort_unavailable'))
             and effort not in (None, 'default') and effort not in spec['supported_efforts']):
         return f'Requested effort is not supported by configured {cli} model {model}; choose default or a supported level'

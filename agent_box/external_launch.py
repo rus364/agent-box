@@ -12,7 +12,7 @@ import tomllib
 
 from .atomicio import atomic_write_json
 from .errors import AgentBoxError
-from .external_config import (CODEX_OWNED_CONFIG, codex_options, model_effort_error,
+from .external_config import (CODEX_OWNED_CONFIG, codex_options, model_default_effort, model_effort_error,
                               model_settings, toml_string, valid_model, valid_name)
 from .paths import SESSION_TEMP_ROOT
 
@@ -269,6 +269,10 @@ def prepare(command, name, cli, config, directory, environment, *, model=None):
     explicit_model, effort = invocation_settings(cli, command[1:], managed=model is not None)
     model = choose_model(endpoint, cli, model or explicit_model)
     settings = model_settings(endpoint.models, model, endpoint.fallback)
+    error = model_effort_error(endpoint, model, cli, effort)
+    if error:
+        raise AgentBoxError(error)
+    default_effort = model_default_effort(endpoint, settings, cli)
     original = builtin_environment(environment)
     custom_env = {**endpoint.env, **settings['env']}
     if cli == 'claude':
@@ -280,17 +284,13 @@ def prepare(command, name, cli, config, directory, environment, *, model=None):
         if settings['max_output_tokens']:
             custom_env.setdefault('CLAUDE_CODE_MAX_OUTPUT_TOKENS',
                                   original.get('CLAUDE_CODE_MAX_OUTPUT_TOKENS') or str(min(32000, settings['max_output_tokens'])))
-        if effort is None:
-            effort = settings['effort'] if settings['effort'] != 'default' else custom_env.get('CLAUDE_CODE_EFFORT_LEVEL')
+        custom_env.pop('CLAUDE_CODE_EFFORT_LEVEL', None)
+        if effort in (None, 'default'):
+            effort = default_effort
         if effort and effort != 'default':
             custom_env['CLAUDE_CODE_EFFORT_LEVEL'] = effort
         if settings['auto_compact_token_limit']:
             custom_env['CLAUDE_CODE_AUTO_COMPACT_WINDOW'] = str(settings['auto_compact_token_limit'])
-    else:
-        effort = effort or settings['effort']
-    error = model_effort_error(endpoint, model, cli, effort)
-    if error:
-        raise AgentBoxError(error)
     directory = Path(directory)
     baseline = directory / 'api-baseline.json'
     atomic_write_json(baseline, {**{k: v for k, v in original.items() if auth_name(k)},
@@ -324,10 +324,12 @@ def prepare(command, name, cli, config, directory, environment, *, model=None):
                    # An external API must never read/delete the subscription login.
                    'cli_auth_credentials_store': 'ephemeral',
                    'model_catalog_json': str(path)}
+        if default_effort is None:
+            options.pop('model_reasoning_effort', None)
+        else:
+            options['model_reasoning_effort'] = default_effort
         overrides = [(key if re.fullmatch(r'[A-Za-z0-9_-]+', key) else toml_string(key))
                      + '=' + toml_value(value) for key, value in options.items()]
-        if settings['effort'] != 'default':
-            overrides.append('model_reasoning_effort=' + toml_string(settings['effort']))
         before, explicit = codex_config_arguments(before)
         return [command[0], *[arg for value in overrides for arg in ('-c', value)],
                 *explicit, *before, *tail], env

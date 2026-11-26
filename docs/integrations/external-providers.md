@@ -51,6 +51,8 @@ adds that level to an inherited list while keeping the other supported levels.
 An explicit API declaration that no compatible effort is available limits the
 picker and launch to the client default. Setting a manual model override takes
 precedence. A missing list continues to use the connection settings.
+Claude's endpoint `CLAUDE_CODE_EFFORT_LEVEL` and Codex's endpoint
+`model_reasoning_effort` apply only where the published levels allow them.
 Without tuning, token limits
 and efforts stay unspecified and Codex assumes text input.
 

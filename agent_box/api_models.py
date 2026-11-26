@@ -51,6 +51,7 @@ def _items(base, protocol, key, require_complete):
     query = {'limit': 1000} if protocol is ANTHROPIC else {}
     page, items = first + ('?' + urlencode(query) if query else ''), []
     total = None
+    cursor_paging = False
     for index in range(PAGES):
         try:
             data = _fetch(page, headers(key))
@@ -68,6 +69,8 @@ def _items(base, protocol, key, require_complete):
         links = data.get('links')
         following = links.get('next') if isinstance(links, dict) else None
         if require_complete:
+            if cursor_paging and 'has_more' not in data:
+                raise ListError('incomplete model list: continuation page omitted has_more')
             if (links is not None and not isinstance(links, dict)
                     or following is not None and not isinstance(following, str)
                     or 'has_more' in data and type(data['has_more']) is not bool):
@@ -89,6 +92,7 @@ def _items(base, protocol, key, require_complete):
             if not isinstance(data.get('last_id'), str) or not data['last_id']:
                 raise ListError('more pages announced without a cursor to reach them')
             page = first + '?' + urlencode({**query, 'after_id': data['last_id']})
+            cursor_paging = True
         else:
             if total is not None and len(items) != total:
                 raise ListError(f'incomplete model list: received {len(items)} of {total} entries')

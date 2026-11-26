@@ -382,6 +382,32 @@ class ExternalModelTests(unittest.TestCase):
                                  'deepseek', 'claude', loaded, tmp, {})
             self.assertEqual(env['CLAUDE_CODE_EFFORT_LEVEL'], 'max')
 
+    def test_native_endpoint_effort_only_applies_to_models_that_can_use_it(self):
+        """One model's published limits must not block syncing its siblings or leak an invalid effort into launch."""
+        data = external_config().to_dict()
+        provider = data['agents']['external_apis']['deepseek']
+        provider['claude']['env']['CLAUDE_CODE_EFFORT_LEVEL'] = 'high'
+        provider['codex']['config']['model_reasoning_effort'] = 'high'
+        config_menu.sync_models('deepseek', provider, {
+            'fixed': api_models.model_fields(sample('anthropic-page2.json')['data'][0]),
+            'limited': {'supported_efforts': ['low']}, 'accepts-high': {'supported_efforts': ['high']}, 'unknown': {}})
+        config = Config.from_dict(data)
+        with tempfile.TemporaryDirectory() as tmp:
+            for cli in ('claude', 'codex'):
+                for model in ('fixed', 'limited', 'accepts-high', 'unknown', 'unlisted'):
+                    options = ['--model', model]
+                    self.assertEqual(ext.selected_model(config, 'deepseek', cli, options), model)
+                    args, env = ext.prepare([cli, *options], 'deepseek', cli, config, tmp, {})
+                    allowed = model not in ('fixed', 'limited')
+                    if cli == 'claude':
+                        self.assertEqual(env['CLAUDE_CODE_EFFORT_LEVEL'], 'high' if allowed else '')
+                    else:
+                        self.assertEqual('model_reasoning_effort="high"' in args, allowed)
+                    if not allowed:
+                        explicit = ['--effort', 'high'] if cli == 'claude' else ['-cmodel_reasoning_effort=high']
+                        with self.assertRaisesRegex(AgentBoxError, 'not supported'):
+                            ext.prepare([cli, *options, *explicit], 'deepseek', cli, config, tmp, {})
+
     def test_suffixed_workflow_model_uses_the_same_effort_choices_as_launch(self):
         """A manually entered [1m] ID must not lose the configured model's effort metadata."""
         config = rich_config()
@@ -690,6 +716,20 @@ class ExternalModelTests(unittest.TestCase):
         edited, _ = menu_tests.ConfigMenuTests().edit(config, keys, responses=[
             ({'listed-model': {}}, None), ({}, 'timeout')])
         self.assertIn('listed-model', edited.config.agents.external_apis['deepseek'].models)
+
+    def test_missing_cursor_status_on_a_continuation_preserves_the_entire_draft(self):
+        """Saving after an incomplete cursor sequence must retain the unseen model's settings and defaults."""
+        config = rich_config()
+        first = sample('anthropic-page1.json')
+        last = sample('anthropic-page2.json')
+        last.pop('has_more')
+        load = api_models.load
+        keys = [*self.walk(config, ('agents', 'external_apis', 'deepseek', 'models')), 'S',
+                *['\x1b'] * 4, curses.KEY_END, curses.KEY_UP, '\n']
+        with patch.object(api_models, '_fetch', side_effect=[first, last, first, last]):
+            edited, screen = menu_tests.ConfigMenuTests().edit(config, keys, responses=load)
+        self.assertEqual(edited.config.to_dict(), config.to_dict())
+        self.assertIn('has_more', '\n'.join(screen.frames))
 
     def test_full_sync_refetches_on_retry_and_only_save_replaces_the_catalog(self):
         """A stale preview or partial fetch must never drive deletions or overwrite a manual exception."""
