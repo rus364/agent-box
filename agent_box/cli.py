@@ -307,7 +307,7 @@ def _show_rows(data, path=(), tree=None):
         if leaf(value, at):
             shown = _show_value(model_values[key] if model_values is not None else value, _hidden(at))
             if model_values is not None and value is None:
-                shown += " [API]" if key in data.get("discovered", {}) else " [inherited]"
+                shown += f" [{config_menu.model_source(data, key, model_values[key])}]"
             yield len(path), key, shown, at
         elif len(at) > 2 and all(leaf(item, (*at, name)) for name, item in value.items()):
             yield len(path), key, "; ".join(f"{name} {_show_value(item, _hidden((*at, name)))}"
@@ -444,7 +444,9 @@ def config_description(prefix: str = "") -> dict:
                         entry["source"] = "unset"
                     elif effective is None and model_values is not None:
                         entry["effective"] = _masked(shown, hidden)
-                        entry["source"] = "model list" if key in data.get("discovered", {}) else "model defaults"
+                        source = config_menu.model_source(data, key, shown)
+                        entry["source"] = {"API": "model list", "inherited": "model defaults",
+                                           "adjusted": "effort settings"}[source]
                     else:
                         entry["effective"] = _masked(effective, hidden)
                         if effective != underlying or bound:

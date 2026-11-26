@@ -24,7 +24,10 @@ request header; a failure shows a short diagnostic and leaves manual entry.
 response. It adds new IDs, refreshes published metadata, removes absent IDs
 (including manual entries), and clears any endpoint default naming a removed
 model. A successful empty list clears the catalog. An incomplete or invalid
-response leaves the draft intact. Sync checks the total count when supplied.
+response leaves the draft intact. An incompatible workflow effort also stops
+the sync and identifies the affected candidate. A failed request leaves the
+last successful list available for individual selection.
+Sync checks the total count when supplied.
 It tries the other protocol only if the first listing endpoint answers 404, 405
 or 501 on its initial request. Any later page failure stops the sync.
 The menu reports the change counts.
@@ -335,7 +338,7 @@ Workflow model IDs must match the provider's configured catalog to use its
 context, compaction and tool settings. `config show`, `config apply`, launch
 and `workflow inspect` warn when an external candidate has no matching entry.
 Correct the candidate ID or add that model under **External APIs → Models**.
-An explicit unlisted model remains allowed and uses generic defaults;
+An explicit unlisted model remains allowed and uses the connection defaults;
 agent-box never guesses an alias or copies another model's metadata.
 
 In each Codex/Claude candidate of a role's `models` or a worker/reviewer

@@ -77,7 +77,8 @@ class ConfigDescribeTests(unittest.TestCase):
         provider = config['agents']['external_apis']['deepseek']
         provider['model_defaults']['max_output_tokens'] = 4096
         provider['models']['v4-pro'].update(context_window=None, max_output_tokens=None,
-                                            discovered={'context_window': 1000000})
+                                            supported_efforts=None, effort='high',
+                                            discovered={'context_window': 1000000, 'supported_efforts': ['low']})
         parsed = Config.from_dict(config)
         save_config(parsed, self.global_file)
         path = 'agents.external_apis.deepseek.models.v4-pro'
@@ -89,6 +90,8 @@ class ConfigDescribeTests(unittest.TestCase):
         shown = {'.'.join(at): value for _, _, value, at in cli._show_rows(parsed.to_dict())}
         self.assertEqual(shown[path + '.context_window'], '1000000 [API]')
         self.assertEqual(shown[path + '.max_output_tokens'], '4096 [inherited]')
+        self.assertEqual(fields[path + '.supported_efforts']['source'], 'effort settings')
+        self.assertEqual(fields[path + '.supported_efforts']['effective'], ['high'])
 
     def test_global_proposals_can_pin_and_release_typed_fields_for_a_dotted_model_id(self):
         """The same setting described as an integer must accept a number and reset to discovery."""
@@ -106,6 +109,17 @@ class ConfigDescribeTests(unittest.TestCase):
             self.assertEqual(result.claude.models['vendor/v4.1']['max_output_tokens'], 8192)
         with self.assertRaisesRegex(AgentBoxError, 'invalid type'):
             cli._checked_global(baseline, {'set': {field: '4096'}, 'reset': []})
+
+    def test_an_id_ending_in_codex_does_not_hide_another_models_client_settings(self):
+        """Resolve both the model ID and all remaining setting names before selecting the edit target."""
+        baseline = rich_config().to_dict()
+        models = baseline['agents']['external_apis']['deepseek']['models']
+        models.update({'m': {}, 'm.codex': {}})
+        path = 'agents.external_apis.deepseek.models.m.codex.'
+        proposal = {'set': {path + 'auto_compact_token_limit': 123, path + 'context_window': 456}, 'reset': []}
+        result = cli._checked_global(Config.from_dict(baseline).to_dict(), proposal).agents.external_apis['deepseek']
+        self.assertEqual(result.codex.models['m']['auto_compact_token_limit'], 123)
+        self.assertEqual(result.codex.models['m.codex']['context_window'], 456)
 
     def test_layers_sources_and_project_eligibility_follow_the_project_loader(self):
         """The agent must know which value wins, where it comes from, and whether a project may change it."""

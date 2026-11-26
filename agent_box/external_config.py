@@ -135,16 +135,19 @@ def external_model_entry():
 
 def effective_model(entry, defaults):
     manual = {k: v for k, v in entry.items() if v is not None and k != 'discovered'}
-    settings = model_defaults()
-    for layer in (defaults, entry.get('discovered', {}), manual):
-        settings.update(layer)
-        effort, levels = settings['effort'], settings['supported_efforts']
-        if levels and effort != 'default' and effort not in levels:
-            if 'effort' not in layer:
+    reported = entry.get('discovered', {})
+    settings = {**model_defaults(), **defaults, **reported, **manual}
+    effort, levels = settings['effort'], settings['supported_efforts']
+    if levels and effort != 'default' and effort not in levels:
+        # Compare the final fields' sources. An intermediate list may have been overridden again.
+        for layer in (manual, reported, defaults):
+            if 'effort' in layer:
+                if 'supported_efforts' not in layer:
+                    settings['supported_efforts'] = [effort]
+                break
+            if 'supported_efforts' in layer:
                 settings['effort'] = 'default'
-            elif 'supported_efforts' not in layer:
-                # This more specific choice establishes one level; the inherited list contradicts it.
-                settings['supported_efforts'] = [effort]
+                break
     return settings
 
 
@@ -403,6 +406,6 @@ def model_warnings(config):
         connection = config.agents.external_apis.get(api) if isinstance(api, str) else None
         if connection and connection.enabled and model and model.removesuffix('[1m]') not in connection.models:
             warnings.append(f'{path}: {candidate["provider"]}@{api}:{model} has no configured model settings; '
-                            'context, compaction and tool capabilities use generic defaults. '
+                            'shared settings follow the connection defaults; CLI-specific settings use generic defaults. '
                             f'Match the model ID or add it under agents.external_apis.{api}.models.')
     return warnings

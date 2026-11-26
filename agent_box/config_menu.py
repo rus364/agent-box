@@ -13,7 +13,7 @@ from .config import AGENT_EFFORTS, AGENT_PROVIDERS, K3S_LIFETIMES, TOOL_GROUP_HE
 from . import api_models, workflow_behavior
 from .errors import AgentBoxError
 from .external_config import (API_EFFORTS, EFFORTS, ExternalProvider, cli_models, cli_settings, effective_model,
-                              external_model_entry, model_settings, parse_connections, valid_model, valid_name,
+                              external_model_entry, model_settings, valid_model, valid_name,
                               validate_connections)
 from .model_catalog import load_model_catalogs
 
@@ -407,6 +407,14 @@ def menu_model_values(data, path, tree):
     return None
 
 
+def model_source(data, key, resolved):
+    """An effort adjusted to match a higher-priority field is not the original API value."""
+    published = data.get('discovered', {})
+    if key not in published:
+        return 'inherited'
+    return 'API' if published[key] == resolved else 'adjusted'
+
+
 def character_width(character):
     if unicodedata.combining(character):
         return 0
@@ -660,7 +668,7 @@ def group_headings(keys, path):
     return headings
 
 
-def sync_models(api, provider, listed):
+def sync_models(api, provider, listed, *, workflow=None):
     """Stage the complete catalog before replacing the draft; retain ordering of surviving implicit defaults."""
     current = provider['models']
     models = {model: entry for model, entry in current.items() if model in listed}
@@ -675,7 +683,10 @@ def sync_models(api, provider, listed):
     cleared = [cli for cli in LAUNCH_AGENTS if provider[cli]['default_model'] in removed]
     for cli in cleared:
         candidate[cli] = {**provider[cli], 'default_model': ''}
-    parse_connections({api: candidate})
+    proposed = Config.from_dict({'agents': {'external_apis': {api: candidate}}, 'workflow': workflow})
+    errors = validate_connections(proposed)
+    if errors:
+        raise AgentBoxError(errors[0])
     current.clear()
     current.update(models)
     for cli in cleared:
@@ -1204,10 +1215,14 @@ def edit(config, *, project=None):
         after editing its key or a URL asks again, browsing does not."""
         spec = draft["agents"]["external_apis"][api]
         identity = (spec["api_key"], spec["codex"]["url"], spec["claude"]["url"])
-        if sync or published.get(api, (None,))[0] != identity:
+        cached = published.get(api)
+        if sync or not cached or cached[0] != identity:
             paint(screen, [f"Loading the {api} model list..."], 0, "agent-box config / External APIs / " + api,
                   f"Asking the provider for its models; at most {api_models.TIMEOUT} seconds per URL.", controls="Please wait")
-            published[api] = (identity, *api_models.load(spec, require_complete=sync))
+            models, error = api_models.load(spec, require_complete=sync)
+            if error and cached and cached[0] == identity and cached[2] is None:
+                return models, error
+            published[api] = (identity, models, error)
         return published[api][1:]
 
     def listed_summary(model, fields):
@@ -1291,7 +1306,7 @@ def edit(config, *, project=None):
                 else:
                     shown = json.dumps(value, ensure_ascii=False)
                 if model_values and data[key] is None:
-                    shown += '  [API]' if key in data['discovered'] else '  [inherited]'
+                    shown += f'  [{model_source(data, key, value)}]'
                 if listed is not None and rel is not None and len(rel) == 2 and key not in listed:
                     shown += "  not listed"
                 if project_mode:
@@ -1419,7 +1434,8 @@ def edit(config, *, project=None):
                             notice = 'Sync failed: ' + error
                             continue
                         try:
-                            notice = sync_models(api, draft['agents']['external_apis'][api], fresh)
+                            notice = sync_models(api, draft['agents']['external_apis'][api], fresh,
+                                                 workflow=draft['workflow'])
                         except AgentBoxError as exc:
                             notice = 'Sync failed: ' + str(exc)
                         continue

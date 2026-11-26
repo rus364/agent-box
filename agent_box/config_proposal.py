@@ -55,10 +55,17 @@ def setting_path(data, dotted):
     parts = tuple(dotted.split('.'))
     if parts[:2] == ('agents', 'external_apis') and parts[3:4] == ('models',):
         entries = data.get('agents', {}).get('external_apis', {}).get(parts[2], {}).get('models', {})
-        for end in range(len(parts) - 1, 4, -1):
-            model = '.'.join(parts[4:end])
-            if model in entries:
-                return (*parts[:4], model, *parts[end:])
+        # A model field or its CLI's field exhausts the editable schema. A longer ID
+        # is only a match if it really owns the remaining field.
+        for size in (1, 2):
+            model, suffix = '.'.join(parts[4:-size]), parts[-size:]
+            owner = entries.get(model, {})
+            if size == 2:
+                if suffix[0] not in ('codex', 'claude'):
+                    continue
+                owner = owner.get(suffix[0], {})
+            if suffix[-1] in owner:
+                return (*parts[:4], model, *suffix)
     return parts
 
 

@@ -586,6 +586,38 @@ class ExternalModelTests(unittest.TestCase):
             spec = endpoint.models['external-small']
             self.assertEqual((spec['effort'], spec['supported_efforts']), ('high', ['high']))
 
+    def test_a_manual_list_can_restore_the_preferred_effort_from_connection_defaults(self):
+        """The final manual list supersedes a published list that temporarily excluded the connection effort."""
+        spec = external_model_entry()
+        spec.update(supported_efforts=['high'], discovered={'supported_efforts': ['low']})
+        effective = effective_model(spec, {'effort': 'high', 'supported_efforts': ['low', 'high']})
+        self.assertEqual((effective['effort'], effective['supported_efforts']), ('high', ['high']))
+
+    def test_sync_rejects_newly_incompatible_workflow_efforts_before_changing_the_draft(self):
+        """Save should still succeed with the old catalog after an API list conflicts with a role candidate."""
+        config = rich_config()
+        provider = config.agents.external_apis['deepseek']
+        raw = provider.models['v4-pro']
+        raw.update(effort=None, supported_efforts=None, discovered={'supported_efforts': ['low', 'high']})
+        config.workflow.worker.models = [dict(provider='codex', api_provider='deepseek', model='v4-pro',
+                                              effort='high', speed='inherit')]
+        enter = self.walk(config, ('agents', 'external_apis', 'deepseek', 'models'))
+        keys = [*enter, 'S', *['\x1b'] * 4, curses.KEY_END, curses.KEY_UP, '\n']
+        edited, screen = menu_tests.ConfigMenuTests().edit(config, keys, responses=[
+            ({'v4-pro': {}}, None), ({'v4-pro': {'supported_efforts': ['low']}}, None)])
+        self.assertEqual(edited.config.to_dict(), config.to_dict())
+        self.assertIn('Sync failed: workflow.worker.models.0', '\n'.join(screen.frames))
+
+    def test_failed_sync_keeps_the_previous_browsing_list_for_individual_additions(self):
+        """A network failure must leave individual selection available from the last usable list."""
+        config = external_config()
+        keys = [*self.walk(config, ('agents', 'external_apis', 'deepseek', 'models')), 'S',
+                curses.KEY_END, curses.KEY_UP, '\n', '\n',
+                *['\x1b'] * 5, curses.KEY_END, curses.KEY_UP, '\n']
+        edited, _ = menu_tests.ConfigMenuTests().edit(config, keys, responses=[
+            ({'listed-model': {}}, None), ({}, 'timeout')])
+        self.assertIn('listed-model', edited.config.agents.external_apis['deepseek'].models)
+
     def test_full_sync_refetches_on_retry_and_only_save_replaces_the_catalog(self):
         """A stale preview or partial fetch must never drive deletions or overwrite a manual exception."""
         raw = external_config().to_dict()
