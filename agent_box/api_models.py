@@ -1,10 +1,11 @@
 """Model lists external APIs publish; a listed model is a suggestion, not proof of access."""
 import http.client
+import json
 from urllib.parse import urlencode, urlsplit
 import urllib.error
 
 from .external_config import EFFORTS, valid_model
-from .usage import http_json
+from .usage import open_http
 
 TIMEOUT = 5
 # OpenRouter returns its whole catalog in one page today; the bound keeps a
@@ -24,7 +25,10 @@ class EndpointUnavailable(ListError):
 
 def _fetch(url, headers):
     try:
-        return http_json(url, headers={'User-Agent': 'agent-box', **headers}, timeout=TIMEOUT)
+        with open_http(url, headers={'User-Agent': 'agent-box', **headers}, timeout=TIMEOUT) as response:
+            if response.status != 200 or 'Content-Range' in response.headers:
+                raise ListError(f'incomplete model list response (HTTP {response.status})')
+            return json.load(response)
     except urllib.error.HTTPError as exc:
         exc.close()
         error = EndpointUnavailable if exc.code in (404, 405, 501) else ListError

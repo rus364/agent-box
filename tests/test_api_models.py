@@ -306,15 +306,29 @@ class LoadTests(unittest.TestCase):
         # The menu asks before save-time validation, so a draft URL may be malformed.
         self.assertIn('malformed URL', api_models.load(provider('http://[::1'))[1])
 
+    def test_a_partial_http_representation_cannot_replace_the_catalog(self):
+        """HTTP status and range headers can identify a partial response even when its JSON looks complete."""
+        body = {'data': [{'id': 'new'}]}
+        routes = {}
+        server = self.serve(routes)
+        spec = provider(server.url)
+        for status, headers in [(206, {}), (202, {}), (200, {'Content-Range': 'items 0-0/3'})]:
+            routes['/models'] = (status, body, headers)
+            models, error = api_models.load(spec, require_complete=True)
+            self.assertEqual(models, {})
+            self.assertIn('incomplete', error)
+        routes['/models'] = (200, body)
+        self.assertEqual(api_models.load(spec, require_complete=True), ({'new': {}}, None))
+
     def test_unreadable_nested_json_allows_a_models_menu_retry(self):
         """A decoder nesting error must follow the recoverable diagnostic path for the configuration draft."""
-        spec = provider('https://catalog.invalid')
-        with patch.object(api_models, 'http_json', side_effect=RecursionError):
+        server = self.serve({'/models': (200, {'data': [{'id': 'fresh'}]})})
+        spec = provider(server.url)
+        with patch.object(api_models.json, 'load', side_effect=RecursionError):
             models, error = api_models.load(spec, require_complete=True)
         self.assertEqual(models, {})
         self.assertIn('JSON', error)
-        with patch.object(api_models, 'http_json', return_value={'data': [{'id': 'fresh'}]}):
-            self.assertEqual(api_models.load(spec, require_complete=True), ({'fresh': {}}, None))
+        self.assertEqual(api_models.load(spec, require_complete=True), ({'fresh': {}}, None))
 
 
 if __name__ == '__main__':

@@ -631,7 +631,7 @@ class ExternalModelTests(unittest.TestCase):
 
     def test_an_unreachable_provider_leaves_manual_entry_and_says_why(self):
         """A network failure is a diagnostic in the menu, never a crash or a lost edit."""
-        with patch.object(api_models, 'http_json', side_effect=OSError('unreachable')):
+        with patch.object(api_models, 'open_http', side_effect=OSError('unreachable')):
             published = api_models.load(external_config().to_dict()['agents']['external_apis']['deepseek'])
         config = external_config()
         keys = [*self.walk(config, ('agents', 'external_apis', 'deepseek', 'models')),
@@ -663,6 +663,12 @@ class ExternalModelTests(unittest.TestCase):
         provider = edited.config.agents.external_apis['deepseek']
         self.assertEqual(provider.models['v4-pro']['discovered'], {'effort': 'high'})
         self.assertEqual(provider.codex.models['v4-pro']['effort'], 'high')
+        edited, _ = menu_tests.ConfigMenuTests().edit(edited.config, keys, published=({'v4-pro': {'supported_efforts': []}}, None))
+        edited, _ = menu_tests.ConfigMenuTests().edit(edited.config, keys, published=({'v4-pro': {'effort': 'high'}}, None))
+        provider = edited.config.agents.external_apis['deepseek']
+        self.assertEqual(provider.models['v4-pro']['discovered'], {'effort': 'high'})
+        for endpoint in (provider.codex, provider.claude):
+            self.assertEqual(endpoint.models['v4-pro']['effort'], 'high')
 
     def test_a_manual_effort_survives_an_id_only_refresh_with_conflicting_connection_levels(self):
         """When an explicit level survives discovery loss, unrelated fallback levels cannot invalidate it."""

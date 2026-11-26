@@ -74,9 +74,13 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def http_json(url: str, *, headers: dict[str, str] | None = None, data: bytes | None = None, timeout: float = 15) -> Any:
+def open_http(url: str, *, headers: dict[str, str] | None = None, data: bytes | None = None, timeout: float = 15):
     request = urllib.request.Request(url, data=data, headers=headers or {})
-    with urllib.request.build_opener(NoRedirect).open(request, timeout=timeout) as response:
+    return urllib.request.build_opener(NoRedirect).open(request, timeout=timeout)
+
+
+def http_json(url: str, *, headers: dict[str, str] | None = None, data: bytes | None = None, timeout: float = 15) -> Any:
+    with open_http(url, headers=headers, data=data, timeout=timeout) as response:
         return json.load(response)
 
 
