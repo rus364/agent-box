@@ -1,11 +1,29 @@
 # Release notes
 
-## Unreleased
+## 0.4.0
 
+- Choose **Sync all models from API** (press **S** in an external provider's
+  **Models** menu) to fetch its complete catalog. The draft adds new IDs,
+  updates published settings and removes IDs the provider no longer lists,
+  including manually added IDs. Incomplete responses leave the draft intact.
+  Choose **Save and apply** to keep the changes.
+- Set **Model defaults** per connection for context window, output limit, input
+  types and reasoning effort. Published model values take precedence over these
+  defaults. A manual model setting takes precedence over both and survives
+  catalog sync. Press **R** on a field to resume inheritance. Interactive Codex
+  can still send a personal profile's effort when agent-box leaves it unset,
+  and a provider may reject that value.
+  [Provider model lists and settings](docs/integrations/external-providers.md#provider-model-lists)
 - `tracker get REFERENCE --context` includes pages of directly linked task
   descriptions and document references. Workflow behavior v4, the new default,
   directs coordinators to check this evidence before recommending a design.
   Saved explicit versions keep their existing guidance.
+- Project-selected Codex reviewers can run natively when the session supports
+  the selected model and effort. Managed review now tries the next configured
+  candidate when a Claude account hold prevents a review.
+- After upgrading the package, the first host agent launch refreshes configured
+  integrations. Use `agent-box config apply` to refresh them immediately.
+  Stop and relaunch existing workspaces to adopt the new runtime.
 
 ## 0.3.0
 
