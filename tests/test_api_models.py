@@ -80,9 +80,10 @@ class ModelFieldTests(unittest.TestCase):
             'input_modalities': ['text', 'image'],
             'supported_efforts': ['low', 'medium', 'high', 'xhigh', 'max']})
         # Haiku states it takes no effort: a stale declaration must not survive an update.
-        self.assertEqual((anthropic[1]['supported_efforts'], anthropic[1]['effort']), ([], 'default'))
+        self.assertEqual(anthropic[1]['supported_efforts'], [])
+        self.assertNotIn('effort', anthropic[1])
         self.assertEqual(api_models.model_fields({'id': 'm', 'effort': {'supported_levels': ['turbo']}}),
-                         {'supported_efforts': [], 'effort': 'default'})
+                         {'supported_efforts': []})
         self.assertEqual([api_models.model_fields(item) for item in sample('openai.json')['data']], [{}, {}])
 
     def test_routing_alias_does_not_advertise_one_models_limits_or_capabilities(self):

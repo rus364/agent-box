@@ -528,14 +528,20 @@ def config_set(args: list[str]) -> None:
                 "'workflow.language=\"English\"'; a value is never a separate argument")
         else:
             die(CONFIG_SET_USAGE)
-    paths = [path for path, _ in assignments] + resets
-    if project == global_scope or not paths:
+    if project == global_scope or not assignments and not resets:
         die(CONFIG_SET_USAGE)
+    baseline = None
+    if global_scope:
+        from . import config_proposal
+        baseline = effective_config(include_project=False).to_dict()
+        assignments = [(config_proposal.setting_path(baseline, '.'.join(path)), value) for path, value in assignments]
+        resets = [config_proposal.setting_path(baseline, '.'.join(path)) for path in resets]
+    paths = [path for path, _ in assignments] + resets
     # A section and a field inside it would make the result depend on argument order.
     if any(a[:len(b)] == b for i, a in enumerate(paths) for j, b in enumerate(paths) if i != j):
         die("config set: each setting path may appear once, and not together with a section containing it")
     if global_scope:
-        _propose_global(assignments, resets, dry_run)
+        _propose_global(baseline, assignments, resets, dry_run)
         return
     file = project_config.project_path()
     before = project_config.load(file)
@@ -631,7 +637,7 @@ def _change_lines(before: dict, after: dict, proposal: dict) -> list[str]:
     return lines
 
 
-def _propose_global(assignments, resets, dry_run: bool) -> None:
+def _propose_global(baseline, assignments, resets, dry_run: bool) -> None:
     """Record global changes as a proposal; only ``config proposal apply`` on the host saves them.
 
     A box cannot write config.json, and a host write needs the user's own
@@ -639,8 +645,7 @@ def _propose_global(assignments, resets, dry_run: bool) -> None:
     """
     from . import config_proposal
     file = config_proposal.proposal_path()
-    proposal = config_proposal.merged(config_proposal.load(file), assignments, resets)
-    baseline = effective_config(include_project=False).to_dict()
+    proposal = config_proposal.merged(baseline, config_proposal.load(file), assignments, resets)
     config = _checked_global(baseline, proposal)
     lines = _change_lines(baseline, config.to_dict(), proposal)
     if not lines:

@@ -161,9 +161,24 @@ class ConfigProposalTests(unittest.TestCase):
             self.assertIn(repo.resolve() / ".git", path.resolve().parents)
         config_proposal.save(paths[0], {"set": {"box.browser.enabled": True}, "reset": []})
         self.assertEqual(config_proposal.load(paths[1]), {"set": {}, "reset": []})
-        self.assertEqual(config_proposal.merged({"set": {"workflow.review.max_files": 9, "box.browser.enabled": True}, "reset": []},
+        self.assertEqual(config_proposal.merged({}, {"set": {"workflow.review.max_files": 9, "box.browser.enabled": True}, "reset": []},
                                                 [(("workflow", "review", "max_files"), 4)], [("box", "browser", "enabled")]),
                          {"set": {"workflow.review.max_files": 4}, "reset": ["box.browser.enabled"]})
+
+    def test_distinct_model_paths_survive_separate_and_combined_global_proposals(self):
+        """A field on one model may be a prefix of another model's dotted ID without overlapping the edit."""
+        config = load_config().to_dict()
+        config['agents']['external_apis'] = {'api': {'models': {'m': {}, 'm.context_window.rev': {}}}}
+        save_config(Config.from_dict(config), self.global_file)
+        base = 'agents.external_apis.api.models.m.context_window'
+        second = base + '.rev.max_output_tokens'
+        self.command('set', '--global', base + '=9000')
+        self.command('set', '--global', second + '=4000')
+        self.assertEqual(config_proposal.load(self.proposal)['set'], {base: 9000, second: 4000})
+        self.command('set', '--global', base + '=9100', second + '=4100')
+        self.command('proposal', 'apply', answer='y')
+        models = load_config().agents.external_apis['api'].models
+        self.assertEqual((models['m']['context_window'], models['m.context_window.rev']['max_output_tokens']), (9100, 4100))
 
     def test_apply_is_refused_inside_any_agent_session(self):
         """An agent must not answer the confirmation itself, in a box or in a --host session with a saved file."""

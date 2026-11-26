@@ -35,12 +35,12 @@ def load(path: Path) -> dict:
     return data
 
 
-def merged(proposal: dict, assignments, resets) -> dict:
+def merged(baseline: dict, proposal: dict, assignments, resets) -> dict:
     """Later changes replace earlier ones for the same setting or a setting overlapping it."""
     new = [tuple(path) for path, _ in assignments] + [tuple(path) for path in resets]
 
     def kept(dotted):
-        path = tuple(dotted.split("."))
+        path = setting_path(baseline, dotted)
         return not any(path[:len(other)] == other or other[:len(path)] == path for other in new)
 
     result = {"set": {dotted: value for dotted, value in proposal["set"].items() if kept(dotted)},

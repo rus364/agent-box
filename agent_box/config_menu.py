@@ -1114,9 +1114,12 @@ def edit(config, *, project=None):
             apis.insert(0, current[:2])
         suggestions = [(provider, '', model, f'{model} [{provider}]')
                        for provider in AGENT_PROVIDERS for model in model_suggestions[provider]]
-        suggestions += [(provider, api, model, (settings['display_name'] or settings['discovered'].get('display_name') or model) + f' [{provider}@{api}: {model}]')
-                        for provider, api in apis if api and api in draft['agents']['external_apis']
-                        for model, settings in draft['agents']['external_apis'][api]['models'].items()]
+        for provider, api in apis:
+            connection = draft['agents']['external_apis'].get(api)
+            if connection:
+                for model, entry in connection['models'].items():
+                    label = effective_model(entry, connection['model_defaults'])['display_name'] or model
+                    suggestions.append((provider, api, model, f'{label} [{provider}@{api}: {model}]'))
         unlisted = current and current not in [row[:3] for row in suggestions]
         if unlisted:
             suggestions.insert(0, (*current, f'{current[2]} [{current[0]}{"@" + current[1] if current[1] else ""}]'))
@@ -1481,6 +1484,8 @@ def edit(config, *, project=None):
                         reported = data['discovered']
                         if 'supported_efforts' in fields:
                             reported.pop('effort', None)
+                            if not fields['supported_efforts']:
+                                data['effort'] = None
                         elif fields.get('effort', 'default') != 'default' and reported.get('supported_efforts'):
                             if fields['effort'] not in reported['supported_efforts']:
                                 del reported['supported_efforts']

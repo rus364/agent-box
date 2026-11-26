@@ -629,6 +629,22 @@ class ExternalModelTests(unittest.TestCase):
             self.assertEqual(ext.selected_model(config, 'deepseek', cli, ['--model', 'fixed']), 'fixed')
         p['models']['fixed']['supported_efforts'] = ['high']
         self.assertIn('high', config_menu.value_choices(path, p['models']['fixed'], raw))
+        connection = Config.from_dict(raw).agents.external_apis['deepseek']
+        for endpoint in (connection.codex, connection.claude):
+            self.assertEqual(endpoint.models['fixed']['effort'], 'high')
+
+    def test_workflow_picker_uses_the_id_for_a_deliberately_cleared_api_display_name(self):
+        """An empty manual label selects the model ID everywhere, including the searchable role picker."""
+        config = rich_config()
+        model = config.agents.external_apis['deepseek'].models['v4-pro']
+        model.update(display_name='', discovered={'display_name': 'Old API label'})
+        config.workflow.worker.models = [dict(provider='codex', api_provider='deepseek', model='v4-pro',
+                                             effort='default', speed='inherit')]
+        path = ('workflow', 'worker', 'models')
+        keys = [*self.walk(config, path), '\n', '\n', *'v4-pro', *['\x1b'] * 8]
+        _, screen = menu_tests.ConfigMenuTests().edit(config, keys)
+        self.assertIn('v4-pro [codex@deepseek: v4-pro] (current)', screen.drawn)
+        self.assertIn('v4-pro [claude@deepseek: v4-pro]', screen.drawn)
 
     def test_sync_rejects_newly_incompatible_workflow_efforts_before_changing_the_draft(self):
         """Save should still succeed with the old catalog after an API list conflicts with a role candidate."""

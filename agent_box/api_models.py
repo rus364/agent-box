@@ -184,8 +184,6 @@ def model_fields(item):
         fields['supported_efforts'] = supported
         if default in supported:
             fields['effort'] = default
-        elif not supported:
-            fields['effort'] = 'default'
     elif default in EFFORTS[1:]:
         fields['effort'] = default
     return fields
