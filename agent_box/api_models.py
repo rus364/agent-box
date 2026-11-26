@@ -127,7 +127,9 @@ def model_fields(item):
         fields['max_output_tokens'] = output
     capabilities = item.get('capabilities') if isinstance(item.get('capabilities'), dict) else {}
     architecture = item.get('architecture') if isinstance(item.get('architecture'), dict) else {}
-    modalities = item.get('input_modalities') or architecture.get('input_modalities')
+    modalities = item.get('input_modalities')
+    if modalities is None:
+        modalities = architecture.get('input_modalities')
     if modalities is None and isinstance(item.get('modalities'), dict):
         modalities = item['modalities'].get('input')
         if isinstance(modalities, list):
@@ -136,16 +138,15 @@ def model_fields(item):
     if isinstance(image, dict) and isinstance(image.get('supported'), bool):
         modalities = ['text', 'image'] if image['supported'] else ['text']
     if isinstance(modalities, list):
-        known = [m for m in ('text', 'image') if m in modalities]
-        if known:
-            fields['input_modalities'] = known
+        fields['input_modalities'] = [m for m in ('text', 'image') if m in modalities]
     levels, default = None, None
     reasoning = capabilities.get('reasoning')
     if isinstance(reasoning, dict):
         if reasoning.get('supported') is False:
             levels = []
-        elif isinstance(reasoning.get('effort'), list):
-            levels = reasoning['effort']
+        else:
+            if isinstance(reasoning.get('effort'), list):
+                levels = reasoning['effort']
             preset = reasoning.get('default')
             if isinstance(preset, dict) and preset.get('type') == 'effort':
                 default = preset.get('value')
@@ -157,10 +158,16 @@ def model_fields(item):
         default = router.get('default_effort')
     for source, key, preferred in ((item.get('effort'), 'supported_levels', 'default_level'),
                                    (item.get('reasoning'), 'supported_efforts', 'default_effort')):
-        if isinstance(source, dict) and isinstance(source.get(key), list):
-            levels, default = source[key], source.get(preferred)
-    if gateway_reasoning and router['mandatory'] and levels is not None:
-        levels = [level for level in levels if level != 'none']
+        if isinstance(source, dict):
+            if isinstance(source.get(key), list):
+                levels = source[key]
+            if preferred in source:
+                default = source[preferred]
+    if gateway_reasoning and router['mandatory']:
+        if levels is not None:
+            levels = [level for level in levels if level != 'none']
+        if default == 'none':
+            default = None
     effort = capabilities.get('effort')
     if isinstance(effort, dict) and isinstance(effort.get('supported'), bool):
         levels = [name for name, support in effort.items() if effort['supported']
@@ -174,6 +181,8 @@ def model_fields(item):
             fields['effort'] = default
         elif not supported:
             fields['effort'] = 'default'
+    elif default in EFFORTS[1:]:
+        fields['effort'] = default
     return fields
 
 

@@ -268,7 +268,7 @@ class ExternalModelTests(unittest.TestCase):
                {'supported_efforts': ['low'], 'effort': 'high'}, {'context_window': True},
                {'context_window': -1}, {'context_window': 100, 'codex': {'auto_compact_token_limit': 100}},
                {'context_window': 400000, 'claude': {'auto_compact_token_limit': 400000}},
-               {'input_modalities': ['audio']}, {'input_modalities': []}, {'codex': 'private-value'},
+               {'input_modalities': ['audio']}, {'input_modalities': ['text', 'text']}, {'codex': 'private-value'},
                {'codex': {'supports_parallel_tool_calls': 1}}, {'claude': {'metadata': {}}},
                {'codex': {'metadata': {'slug': 'private-value'}}}, {'codex': {'metadata': {'x': float('nan')}}},
                {'claude': {'env': {'ANTHROPIC_BASE_URL': 'private-value'}}},
@@ -573,6 +573,10 @@ class ExternalModelTests(unittest.TestCase):
         provider = edited.config.agents.external_apis['deepseek']
         self.assertEqual(provider.models['v4-pro']['discovered'], {'supported_efforts': ['low']})
         self.assertEqual(provider.claude.models['v4-pro']['effort'], 'default')
+        edited, _ = menu_tests.ConfigMenuTests().edit(edited.config, keys, published=({'v4-pro': {'effort': 'high'}}, None))
+        provider = edited.config.agents.external_apis['deepseek']
+        self.assertEqual(provider.models['v4-pro']['discovered'], {'effort': 'high'})
+        self.assertEqual(provider.codex.models['v4-pro']['effort'], 'high')
 
     def test_a_manual_effort_survives_an_id_only_refresh_with_conflicting_connection_levels(self):
         """When an explicit level survives discovery loss, unrelated fallback levels cannot invalidate it."""
@@ -707,6 +711,43 @@ class ExternalModelTests(unittest.TestCase):
         self.assertEqual(reset.config.agents.external_apis['deepseek'].claude.models['external-small']['context_window'],
                          256000)
         self.assertIn('[API]', '\n'.join(screen.frames))
+
+    def test_implicit_launch_default_survives_catalog_sync_and_sorted_json_storage(self):
+        """An alphabetically earlier new ID must not switch either CLI's existing default after save."""
+        raw = external_config().to_dict()
+        p = raw['agents']['external_apis']['deepseek']
+        for cli in ('codex', 'claude'):
+            p[cli]['default_model'] = ''
+        p['models'] = {'z-model': external_model_entry()}
+        listed = {'z-model': {}, 'a-model': {}}
+        config_menu.sync_models('deepseek', p, listed)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'config.json'
+            save_config(Config.from_dict(raw), path)
+            loaded = load_config(path)
+            for cli in ('codex', 'claude'):
+                self.assertEqual(ext.selected_model(loaded, 'deepseek', cli, []), 'z-model')
+        p['models'].clear()
+        for cli in ('codex', 'claude'):
+            p[cli]['default_model'] = ''
+        config_menu.sync_models('deepseek', p, listed)
+        first = copy.deepcopy(p)
+        config_menu.sync_models('deepseek', p, listed)
+        self.assertEqual(p, first)
+
+    def test_partial_metadata_overrides_only_the_connection_settings_it_describes(self):
+        """An audio-only entry accepts no Codex input, and a preferred effort may arrive without a level list."""
+        raw = external_config().to_dict()
+        p = raw['agents']['external_apis']['deepseek']
+        p['model_defaults'].update(input_modalities=['text', 'image'], effort='low')
+        fields = api_models.model_fields({'architecture': {'input_modalities': ['audio']},
+                                         'reasoning': {'default_effort': 'high'}})
+        config_menu.sync_models('deepseek', p, {'partial': fields})
+        p = Config.from_dict(raw).agents.external_apis['deepseek']
+        self.assertEqual(p.codex.models['partial']['input_modalities'], [])
+        for endpoint in (p.codex, p.claude):
+            self.assertEqual(endpoint.models['partial']['effort'], 'high')
+            self.assertEqual(endpoint.models['partial']['supported_efforts'], [])
 
     def test_empty_catalog_can_be_saved_and_a_conflicting_refresh_preserves_the_draft(self):
         """An empty successful mirror clears both defaults; invalid new limits never partly update the draft."""

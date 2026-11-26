@@ -223,7 +223,7 @@ def validate_shared(values, path):
     modalities = values.get('input_modalities', ['text'])
     if (effort not in EFFORTS or any(e not in EFFORTS[1:] for e in efforts) or len(set(efforts)) != len(efforts)
             or efforts and effort != 'default' and effort not in efforts
-            or not modalities or any(m not in ('text', 'image') for m in modalities)
+            or any(m not in ('text', 'image') for m in modalities)
             or len(set(modalities)) != len(modalities)
             or values.get('context_window', 0) < 0 or values.get('max_output_tokens', 0) < 0):
         raise AgentBoxError(f'Invalid {path}: invalid model settings')

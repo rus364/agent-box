@@ -23,7 +23,9 @@ request header; a failure shows a short diagnostic and leaves manual entry.
 **Sync all models from API** (shortcut **S** in the Models menu) makes the draft's model IDs match the complete
 response. It adds new IDs, refreshes published metadata, removes absent IDs
 (including manual entries), and clears any endpoint default naming a removed
-model. A successful empty list clears the catalog. An incomplete or invalid
+model. If a new ID sorts ahead of a surviving implicit default, sync makes the
+previous selection explicit so both clients keep it after save. A successful
+empty list clears the catalog. An incomplete or invalid
 response leaves the draft intact. An incompatible workflow effort also stops
 the sync and identifies the affected candidate. A failed request leaves the
 last successful list available for individual selection.
@@ -58,7 +60,8 @@ thresholds, Codex tool flags, `metadata` and `env` stay manual. A configured
 model the list lacks is marked `not listed` while browsing. **Update from API**
 deliberately replaces the fields the list states for that model, including
 any manual edits to those shared fields. A new effort list also releases the
-old published preferred effort. Browsing and launching never refresh
+old published preferred effort. A preferred effort on its own replaces an
+incompatible old published enumeration. Browsing and launching never refresh
 saved values. CLI-specific overrides remain intact. A listed model is a
 suggestion, not proof that the account may use it.
 
@@ -77,7 +80,7 @@ what they route to before adopting the advertised settings.
 | DeepSeek `context_window`, OpenRouter `context_length` (or `top_provider.context_length`) | Exact `context_window`; Codex catalog and Claude custom-ID environment |
 | Anthropic `max_input_tokens` | Conservative `context_window` from the input limit; no output budget is added to invent a total capacity |
 | DeepSeek `max_output_tokens`, OpenRouter `top_provider.max_completion_tokens`, Anthropic model `max_tokens` | `max_output_tokens`; Claude uses the smaller of this ceiling and its 32,000-token unknown-model default. Codex has no mapped output-limit setting; this field is not inserted into its catalog |
-| `input_modalities`, OpenRouter `architecture.input_modalities`, Anthropic `capabilities.image_input.supported` | Text/image subset in Codex's catalog. Missing data defaults to text only; audio, video and file support are not inferred. No equivalent Claude modality setting is emitted |
+| `input_modalities`, OpenRouter `architecture.input_modalities`, Anthropic `capabilities.image_input.supported` | Codex gets the text/image subset. An explicit audio-only list yields no compatible inputs. Missing data inherits the connection setting, initially text. Claude has no equivalent modality setting |
 | DeepSeek `effort`, OpenRouter explicit `reasoning.supported_efforts`, Anthropic `capabilities.effort` | Shared effort list/default, Codex catalog and Claude launch effort within each client's vocabulary |
 | OpenCode `limit.context`, `limit.output`, `modalities.input` | Context window, output ceiling and supported text/image inputs, including image MIME types |
 | OpenCode `capabilities.reasoning.effort` and its typed `default` | Import enumerated efforts and a declared effort default. Reasoning support alone supplies no levels. |

@@ -506,7 +506,7 @@ def help_for(path):
                 "context_window": "Exact tokens; 0 leaves the CLI default. Claude custom IDs use CLAUDE_CODE_MAX_CONTEXT_TOKENS; recognized Claude IDs retain native window rules. Restart after changing models with different limits.",
                 "max_output_tokens": "Provider output ceiling; 0 means unknown. Claude requests at most min(32000, ceiling) unless env overrides it; Codex has no mapped output-limit setting.",
                 "auto_compact_token_limit": "Compaction threshold in tokens; 0 leaves the CLI default. Must be below a configured context window.",
-                "input_modalities": "Input types for the Codex model catalog: text, image or both; at least one.",
+                "input_modalities": "Input types for the Codex catalog. Select text, image, both, or neither for a model with no compatible inputs.",
                 "supports_parallel_tool_calls": "Advertise parallel tool calls in the Codex model catalog.",
                 "supports_reasoning_summaries": "Advertise reasoning summaries in the Codex model catalog.",
                 "metadata": "Additional native Codex model metadata as JSON. Typed model fields cannot be overridden here; fields must be supported by your CLI.",
@@ -669,31 +669,38 @@ def group_headings(keys, path):
 
 
 def sync_models(api, provider, listed, *, workflow=None):
-    """Stage the complete catalog before replacing the draft; retain ordering of surviving implicit defaults."""
+    """Stage the complete catalog in its persisted order before replacing the draft."""
     current = provider['models']
-    models = {model: entry for model, entry in current.items() if model in listed}
+    models = {}
     updated = 0
-    for model, fields in listed.items():
-        entry = models[model] if model in models else external_model_entry()
+    for model in sorted(listed):
+        fields = listed[model]
+        entry = current[model] if model in current else external_model_entry()
         updated += model in current and entry['discovered'] != fields
         models[model] = {**entry, 'discovered': copy.deepcopy(fields)}
     removed = current.keys() - models.keys()
     added = len(models.keys() - current.keys())
     candidate = {**provider, 'models': models}
     cleared = [cli for cli in LAUNCH_AGENTS if provider[cli]['default_model'] in removed]
-    for cli in cleared:
-        candidate[cli] = {**provider[cli], 'default_model': ''}
+    implicit = next(iter(current), None)
+    # JSON storage sorts keys. Pin the surviving implicit choice only if the new order would change it.
+    kept = [cli for cli in LAUNCH_AGENTS if not provider[cli]['default_model']
+            and implicit in models and implicit != next(iter(models), None)]
+    for cli in [*cleared, *kept]:
+        candidate[cli] = {**provider[cli], 'default_model': implicit if cli in kept else ''}
     proposed = Config.from_dict({'agents': {'external_apis': {api: candidate}}, 'workflow': workflow})
     errors = validate_connections(proposed)
     if errors:
         raise AgentBoxError(errors[0])
     current.clear()
     current.update(models)
-    for cli in cleared:
-        provider[cli]['default_model'] = ''
+    for cli in [*cleared, *kept]:
+        provider[cli]['default_model'] = candidate[cli]['default_model']
     notice = f'Synced draft: {added} added, {updated} updated, {len(removed)} removed.'
     if cleared:
         notice += ' Cleared default for ' + ', '.join(cleared) + '.'
+    if kept:
+        notice += f' Kept {implicit} as default for ' + ', '.join(kept) + '.'
     return notice
 
 
@@ -1231,7 +1238,7 @@ def edit(config, *, project=None):
             return f"{model}: routing alias; context and capabilities depend on the selected model. Set verified limits manually."
         facts = [f"{fields['context_window']} tokens of context" if "context_window" in fields else "",
                  f"output limit {fields['max_output_tokens']} tokens" if "max_output_tokens" in fields else "",
-                 "input " + ", ".join(fields["input_modalities"]) if "input_modalities" in fields else "",
+                 "input " + (", ".join(fields["input_modalities"]) or "(none compatible)") if "input_modalities" in fields else "",
                  "efforts " + ", ".join(fields["supported_efforts"]) + (f" (default {fields['effort']})" if fields.get("effort", "default") != "default" else "")
                  if "supported_efforts" in fields else ""]
         stated = "; ".join(fact for fact in facts if fact)
@@ -1467,9 +1474,13 @@ def edit(config, *, project=None):
                         continue
                     if action == 'update_listed':
                         fields = listed[path[4]]
+                        reported = data['discovered']
                         if 'supported_efforts' in fields:
-                            data['discovered'].pop('effort', None)
-                        data['discovered'].update(copy.deepcopy(fields))
+                            reported.pop('effort', None)
+                        elif fields.get('effort', 'default') != 'default' and reported.get('supported_efforts'):
+                            if fields['effort'] not in reported['supported_efforts']:
+                                del reported['supported_efforts']
+                        reported.update(copy.deepcopy(fields))
                         for field in fields:
                             data[field] = None
                         notice = 'Updated from the provider list: ' + (', '.join(listed[path[4]]) or 'nothing it states')
