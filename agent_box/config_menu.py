@@ -12,7 +12,7 @@ from pathlib import Path
 from .config import AGENT_EFFORTS, AGENT_PROVIDERS, K3S_LIFETIMES, TOOL_GROUP_HELP, LAUNCH_AGENTS, Config, CredentialsConfig, EnvConfig, REVIEW_INCREMENTAL, REVIEW_PRESETS, TRACKER_PROVIDERS, TrackerConnection, candidate_label, model_entry
 from . import api_models, workflow_behavior
 from .errors import AgentBoxError
-from .external_config import (API_EFFORTS, EFFORTS, ExternalProvider, cli_models, cli_settings, effective_model,
+from .external_config import (API_EFFORTS, EFFORTS, SHARED_DEFAULTS, ExternalProvider, cli_models, cli_settings, effective_model,
                               external_model_entry, model_settings, valid_model, valid_name,
                               validate_connections)
 from .model_catalog import load_model_catalogs
@@ -407,12 +407,16 @@ def menu_model_values(data, path, tree):
     return None
 
 
-def model_source(data, key, resolved):
-    """An effort adjusted to match a higher-priority field is not the original API value."""
+def model_source(data, key, resolved, path, tree):
+    """Compare with the source value before a more specific effort setting adjusted it."""
     published = data.get('discovered', {})
-    if key not in published:
-        return 'inherited'
-    return 'API' if published[key] == resolved else 'adjusted'
+    defaults = tree['agents']['external_apis'][path[2]].get('model_defaults', {})
+    value = published.get(key, defaults.get(key, SHARED_DEFAULTS.get(key, '')))
+    if resolved == value:
+        return 'API' if key in published else 'inherited'
+    if key == 'effort' and data.get('supported_efforts') is None and 'supported_efforts' in published:
+        return 'API limits'
+    return 'adjusted'
 
 
 def character_width(character):
@@ -1320,7 +1324,7 @@ def edit(config, *, project=None):
                 else:
                     shown = json.dumps(value, ensure_ascii=False)
                 if model_values and data[key] is None:
-                    shown += f'  [{model_source(data, key, value)}]'
+                    shown += f'  [{model_source(data, key, value, path, draft)}]'
                 if listed is not None and rel is not None and len(rel) == 2 and key not in listed:
                     shown += "  not listed"
                 if project_mode:

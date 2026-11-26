@@ -93,6 +93,23 @@ class ConfigDescribeTests(unittest.TestCase):
         self.assertEqual(fields[path + '.supported_efforts']['source'], 'effort settings')
         self.assertEqual(fields[path + '.supported_efforts']['effective'], ['low', 'high'])
 
+    def test_a_published_restriction_explains_why_the_connection_effort_was_dropped(self):
+        """A user seeing default on a high-effort connection needs the actual source of the adjustment."""
+        config = rich_config().to_dict()
+        p = config['agents']['external_apis']['deepseek']
+        p['model_defaults']['effort'] = 'high'
+        model = p['models']['v4-pro']
+        model.update(effort=None, supported_efforts=None)
+        path = 'agents.external_apis.deepseek.models.v4-pro.effort'
+        for levels in (['low'], []):
+            model['discovered'] = {'supported_efforts': levels}
+            parsed = Config.from_dict(config)
+            save_config(parsed, self.global_file)
+            _, fields = self.describe(path)
+            self.assertEqual((fields[path]['effective'], fields[path]['source']), ('default', 'model list limits'))
+            rows = {'.'.join(at): value for _, _, value, at in cli._show_rows(parsed.to_dict())}
+            self.assertEqual(rows[path], 'default [API limits]')
+
     def test_global_proposals_can_pin_and_release_typed_fields_for_a_dotted_model_id(self):
         """The same setting described as an integer must accept a number and reset to discovery."""
         data = rich_config().to_dict()

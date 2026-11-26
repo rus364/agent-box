@@ -408,6 +408,26 @@ class ExternalModelTests(unittest.TestCase):
                         with self.assertRaisesRegex(AgentBoxError, 'not supported'):
                             ext.prepare([cli, *options, *explicit], 'deepseek', cli, config, tmp, {})
 
+    def test_literal_default_keeps_a_claude_model_environment_preference_on_sync(self):
+        """A saved neutral typed preference delegates to the model's native Claude setting."""
+        data = external_config().to_dict()
+        p = data['agents']['external_apis']['deepseek']
+        p['models']['external-small'].update(effort='default', supported_efforts=None)
+        p['models']['external-small']['claude']['env']['CLAUDE_CODE_EFFORT_LEVEL'] = 'high'
+        with tempfile.TemporaryDirectory() as tmp:
+            for levels in (['low'], [], ['low', 'high']):
+                config_menu.sync_models('deepseek', p, {'external-small': {'supported_efforts': levels}})
+                config = Config.from_dict(data)
+                for cli in ('claude', 'codex'):
+                    model = getattr(config.agents.external_apis['deepseek'], cli).models['external-small']
+                    if cli == 'claude':
+                        self.assertEqual(model['effort'], 'high')
+                        _, env = ext.prepare([cli], 'deepseek', cli, config, tmp, {})
+                        self.assertEqual(env['CLAUDE_CODE_EFFORT_LEVEL'], 'high')
+                    else:
+                        self.assertEqual(model['supported_efforts'], levels)
+                        self.assertEqual(model['effort'], 'default')
+
     def test_suffixed_workflow_model_uses_the_same_effort_choices_as_launch(self):
         """A manually entered [1m] ID must not lose the configured model's effort metadata."""
         config = rich_config()

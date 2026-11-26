@@ -179,7 +179,7 @@ def cli_settings(spec, cli):
 def cli_models(models, cli, defaults):
     result = {}
     for model, entry in models.items():
-        if cli == 'claude' and entry.get('effort') is None:
+        if cli == 'claude' and entry.get('effort') in (None, 'default'):
             # A model-specific native preference is an operator override for this CLI alone.
             effort = entry.get('claude', {}).get('env', {}).get('CLAUDE_CODE_EFFORT_LEVEL')
             if effort:
