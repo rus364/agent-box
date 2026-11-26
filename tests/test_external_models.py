@@ -608,6 +608,11 @@ class ExternalModelTests(unittest.TestCase):
         self.assertEqual(effective_model(after, {}), {**effective_model(before, {}), **listed['v4-pro']})
         self.assertEqual(after['codex']['auto_compact_token_limit'], 786432)
         self.assertIn('Updated from the provider list', '\n'.join(screen.frames))
+        edited, _ = menu_tests.ConfigMenuTests().edit(config, keys, published=({'v4-pro': {'supported_efforts': []}}, None))
+        saved = edited.config.agents.external_apis['deepseek']
+        self.assertEqual(saved.models['v4-pro']['discovered'], {'supported_efforts': []})
+        self.assertEqual(saved.models['v4-pro']['effort'], 'high')
+        self.assertEqual(saved.claude.models['v4-pro']['effort'], 'high')
 
     def test_an_unreachable_provider_leaves_manual_entry_and_says_why(self):
         """A network failure is a diagnostic in the menu, never a crash or a lost edit."""
@@ -737,19 +742,20 @@ class ExternalModelTests(unittest.TestCase):
             ({'listed-model': {}}, None), ({}, 'timeout')])
         self.assertIn('listed-model', edited.config.agents.external_apis['deepseek'].models)
 
-    def test_missing_cursor_status_on_a_continuation_preserves_the_entire_draft(self):
-        """Saving after an incomplete cursor sequence must retain the unseen model's settings and defaults."""
+    def test_missing_cursor_status_preserves_the_entire_draft_on_any_page(self):
+        """Cursor markers on the first page or prior pages require a definitive completion status before saving."""
         config = rich_config()
         first = sample('anthropic-page1.json')
         last = sample('anthropic-page2.json')
-        last.pop('has_more')
         load = api_models.load
         keys = [*self.walk(config, ('agents', 'external_apis', 'deepseek', 'models')), 'S',
                 *['\x1b'] * 4, curses.KEY_END, curses.KEY_UP, '\n']
-        with patch.object(api_models, '_fetch', side_effect=[first, last, first, last]):
-            edited, screen = menu_tests.ConfigMenuTests().edit(config, keys, responses=load)
-        self.assertEqual(edited.config.to_dict(), config.to_dict())
-        self.assertIn('has_more', '\n'.join(screen.frames))
+        for pages in ([{k: v for k, v in first.items() if k != 'has_more'}],
+                      [first, {'data': last['data']}]):
+            with self.subTest(pages=len(pages)), patch.object(api_models, '_fetch', side_effect=pages * 2):
+                edited, screen = menu_tests.ConfigMenuTests().edit(config, keys, responses=load)
+                self.assertEqual(edited.config.to_dict(), config.to_dict())
+                self.assertIn('has_more', '\n'.join(screen.frames))
 
     def test_full_sync_refetches_on_retry_and_only_save_replaces_the_catalog(self):
         """A stale preview or partial fetch must never drive deletions or overwrite a manual exception."""

@@ -69,8 +69,8 @@ def _items(base, protocol, key, require_complete):
         links = data.get('links')
         following = links.get('next') if isinstance(links, dict) else None
         if require_complete:
-            if cursor_paging and 'has_more' not in data:
-                raise ListError('incomplete model list: continuation page omitted has_more')
+            if (cursor_paging or 'first_id' in data or 'last_id' in data) and 'has_more' not in data:
+                raise ListError('incomplete model list: cursor page omitted has_more')
             if (links is not None and not isinstance(links, dict)
                     or following is not None and not isinstance(following, str)
                     or 'has_more' in data and type(data['has_more']) is not bool):
@@ -80,6 +80,8 @@ def _items(base, protocol, key, require_complete):
                 if type(count) is not int or count < 0 or total is not None and count != total:
                     raise ListError('invalid or inconsistent model list total_count')
                 total = count
+            if index and total is None and 'has_more' not in data and not isinstance(links, dict):
+                raise ListError('incomplete model list: continuation page omitted pagination')
         if isinstance(following, str) and following:
             try:
                 foreign = urlsplit(following)[:2] != origin

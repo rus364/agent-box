@@ -242,6 +242,10 @@ class LoadTests(unittest.TestCase):
         self.assertIn('inconsistent', api_models.load(spec, require_complete=True)[1])
         routes['/page2'] = (200, {'data': full['data'][2:]})
         self.assertEqual(set(api_models.load(spec, require_complete=True)[0]), {row['id'] for row in full['data']})
+        del routes['/api/models'][1]['total_count']
+        self.assertIn('omitted pagination', api_models.load(spec, require_complete=True)[1])
+        routes['/page2'][1]['links'] = {'next': None}
+        self.assertEqual(set(api_models.load(spec, require_complete=True)[0]), {row['id'] for row in full['data']})
 
     def test_a_success_http_status_cannot_turn_an_explicit_api_error_into_an_empty_catalog(self):
         """Application errors may share the success data field; never delete models based on that array."""

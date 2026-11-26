@@ -1488,8 +1488,6 @@ def edit(config, *, project=None):
                         reported = data['discovered']
                         if 'supported_efforts' in fields:
                             reported.pop('effort', None)
-                            if not fields['supported_efforts']:
-                                data['effort'] = None
                         elif fields.get('effort', 'default') != 'default' and reported.get('supported_efforts'):
                             if fields['effort'] not in reported['supported_efforts']:
                                 del reported['supported_efforts']
