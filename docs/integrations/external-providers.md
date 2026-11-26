@@ -58,8 +58,17 @@ Claude's endpoint `CLAUDE_CODE_EFFORT_LEVEL` and Codex's endpoint
 When a published list applies and no compatible preference is set, agent-box
 uses Claude's [`auto` setting](https://code.claude.com/docs/en/model-config#send-no-effort-level)
 to let the API choose the effort.
-Without tuning, token limits
-and efforts stay unspecified and Codex assumes text input.
+With no published values or manual settings, agent-box leaves token limits
+and effort unspecified and Codex assumes text input.
+
+Interactive Codex retains its personal profile. When agent-box supplies no
+effort override, Codex may send the `model_reasoning_effort` from
+`$CODEX_HOME/config.toml`. For example, if the profile selects `high` and a
+model accepts only `low`, the catalog still syncs, but the provider may reject
+the request. Pass `-c 'model_reasoning_effort="low"'` for that launch or pin
+`low` on the model. If the model accepts no effort parameter, remove the
+preference from the native profile to let the provider choose. Managed Codex
+workflow runs use `--ignore-user-config`.
 
 **Add from provider list** offers the models not configured yet; typing
 filters them by ID or name. A chosen model gets the settings the list states:
