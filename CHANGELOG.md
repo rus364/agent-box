@@ -10,9 +10,11 @@
 - Set **Model defaults** per connection for context window, output limit, input
   types and reasoning effort. Published model values take precedence over these
   defaults. A manual model setting takes precedence over both and survives
-  catalog sync. Press **R** on a field to resume inheritance. Interactive Codex
-  can still send a personal profile's effort when agent-box leaves it unset,
-  and a provider may reject that value.
+  catalog sync. Values saved in 0.3.0, including those imported through
+  **Add from provider list**, also count as explicit settings. Press **R** on
+  each field you want to inherit from the API or connection defaults.
+  Interactive Codex can still send a personal profile's effort when agent-box
+  leaves it unset, and a provider may reject that value.
   [Provider model lists and settings](docs/integrations/external-providers.md#provider-model-lists)
 - `tracker get REFERENCE --context` includes pages of directly linked task
   descriptions and document references. Workflow behavior v4, the new default,
