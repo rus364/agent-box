@@ -588,7 +588,7 @@ class ExternalModelTests(unittest.TestCase):
         provider = Config.from_dict(raw).agents.external_apis['deepseek']
         for endpoint in (provider.claude, provider.codex):
             spec = endpoint.models['external-small']
-            self.assertEqual((spec['effort'], spec['supported_efforts']), ('high', ['high']))
+            self.assertEqual((spec['effort'], spec['supported_efforts']), ('high', ['low', 'high']))
 
     def test_a_manual_list_can_restore_the_preferred_effort_from_connection_defaults(self):
         """The final manual list supersedes a published list that temporarily excluded the connection effort."""
@@ -596,6 +596,39 @@ class ExternalModelTests(unittest.TestCase):
         spec.update(supported_efforts=['high'], discovered={'supported_efforts': ['low']})
         effective = effective_model(spec, {'effort': 'high', 'supported_efforts': ['low', 'high']})
         self.assertEqual((effective['effort'], effective['supported_efforts']), ('high', ['high']))
+
+    def test_a_preferred_model_exception_preserves_levels_still_used_by_workflow(self):
+        """A manual high preference adds an exception without removing the API's low option."""
+        raw = external_config().to_dict()
+        p = raw['agents']['external_apis']['deepseek']
+        p['models']['external-small'].update(effort='high', discovered={'supported_efforts': ['low', 'high']})
+        raw['workflow']['worker']['models'] = [dict(provider='codex', api_provider='deepseek', model='external-small',
+                                                   effort='low', speed='inherit')]
+        config_menu.sync_models('deepseek', p, {'external-small': {'supported_efforts': ['low']}}, workflow=raw['workflow'])
+        model = Config.from_dict(raw).agents.external_apis['deepseek'].codex.models['external-small']
+        self.assertEqual((model['effort'], model['supported_efforts']), ('high', ['low', 'high']))
+
+    def test_explicit_absence_of_an_effort_control_is_honored_by_both_launchers_and_pickers(self):
+        """A model listed without an effort control accepts only default until the operator overrides that capability."""
+        raw = external_config().to_dict()
+        p = raw['agents']['external_apis']['deepseek']
+        p['model_defaults']['effort'] = 'high'
+        rows = {'fixed': api_models.model_fields(sample('anthropic-page2.json')['data'][0]), 'unknown': {}}
+        config_menu.sync_models('deepseek', p, rows)
+        config = Config.from_dict(raw)
+        path = ('agents', 'external_apis', 'deepseek', 'models', 'fixed', 'effort')
+        self.assertEqual(config_menu.value_choices(path, p['models']['fixed'], raw), ('default',))
+        for cli in ('claude', 'codex'):
+            candidate = dict(provider=cli, model='fixed', api_provider='deepseek', effort='default')
+            self.assertEqual(config_menu.candidate_efforts(candidate, raw), ('default',))
+            candidate['model'] = 'unknown'
+            self.assertIn('high', config_menu.candidate_efforts(candidate, raw))
+            args = ['--effort', 'high'] if cli == 'claude' else ['-c', 'model_reasoning_effort="high"']
+            with self.assertRaisesRegex(AgentBoxError, 'not supported'):
+                ext.selected_model(config, 'deepseek', cli, ['--model', 'fixed', *args])
+            self.assertEqual(ext.selected_model(config, 'deepseek', cli, ['--model', 'fixed']), 'fixed')
+        p['models']['fixed']['supported_efforts'] = ['high']
+        self.assertIn('high', config_menu.value_choices(path, p['models']['fixed'], raw))
 
     def test_sync_rejects_newly_incompatible_workflow_efforts_before_changing_the_draft(self):
         """Save should still succeed with the old catalog after an API list conflicts with a role candidate."""

@@ -91,7 +91,7 @@ class ConfigDescribeTests(unittest.TestCase):
         self.assertEqual(shown[path + '.context_window'], '1000000 [API]')
         self.assertEqual(shown[path + '.max_output_tokens'], '4096 [inherited]')
         self.assertEqual(fields[path + '.supported_efforts']['source'], 'effort settings')
-        self.assertEqual(fields[path + '.supported_efforts']['effective'], ['high'])
+        self.assertEqual(fields[path + '.supported_efforts']['effective'], ['low', 'high'])
 
     def test_global_proposals_can_pin_and_release_typed_fields_for_a_dotted_model_id(self):
         """The same setting described as an integer must accept a number and reset to discovery."""

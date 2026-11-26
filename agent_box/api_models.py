@@ -96,6 +96,10 @@ def _number(*values):
     return next((v for v in values if type(v) is int and v > 0), None)
 
 
+def _names(value):
+    return isinstance(value, list) and all(isinstance(name, str) and name.strip() for name in value)
+
+
 def routing_alias(model):
     """These published IDs select different models, not a fixed set of capabilities."""
     return model in ('openrouter/free', 'openrouter/auto')
@@ -137,7 +141,7 @@ def model_fields(item):
     image = capabilities.get('image_input')
     if isinstance(image, dict) and isinstance(image.get('supported'), bool):
         modalities = ['text', 'image'] if image['supported'] else ['text']
-    if isinstance(modalities, list):
+    if _names(modalities):
         fields['input_modalities'] = [m for m in ('text', 'image') if m in modalities]
     levels, default = None, None
     reasoning = capabilities.get('reasoning')
@@ -145,7 +149,7 @@ def model_fields(item):
         if reasoning.get('supported') is False:
             levels = []
         else:
-            if isinstance(reasoning.get('effort'), list):
+            if _names(reasoning.get('effort')):
                 levels = reasoning['effort']
             preset = reasoning.get('default')
             if isinstance(preset, dict) and preset.get('type') == 'effort':
@@ -159,7 +163,7 @@ def model_fields(item):
     for source, key, preferred in ((item.get('effort'), 'supported_levels', 'default_level'),
                                    (item.get('reasoning'), 'supported_efforts', 'default_effort')):
         if isinstance(source, dict):
-            if isinstance(source.get(key), list):
+            if _names(source.get(key)):
                 levels = source[key]
             if preferred in source:
                 default = source[preferred]
@@ -170,11 +174,12 @@ def model_fields(item):
             default = None
     effort = capabilities.get('effort')
     if isinstance(effort, dict) and isinstance(effort.get('supported'), bool):
-        levels = [name for name, support in effort.items() if effort['supported']
-                  and isinstance(support, dict) and support.get('supported') is True]
+        flags = {name: flag['supported'] for name, flag in effort.items()
+                 if isinstance(flag, dict) and type(flag.get('supported')) is bool}
+        if not effort['supported'] or flags:
+            levels = [name for name in flags if effort['supported'] and flags[name]]
     if levels is not None:
-        # A stated list sharing no level with agent-box's still replaces a stale
-        # one: empty means unknown here, and the default goes back to the CLI's.
+        # A published empty subset means there is no selectable client effort.
         supported = [e for e in EFFORTS[1:] if e in levels]
         fields['supported_efforts'] = supported
         if default in supported:

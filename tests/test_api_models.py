@@ -137,6 +137,14 @@ class ModelFieldTests(unittest.TestCase):
                 self.assertEqual(api_models.model_fields({'id': 'm', 'max_output_tokens': value,
                     'top_provider': {'max_completion_tokens': value}}), {})
 
+    def test_malformed_capability_lists_stay_unknown_and_valid_unmapped_lists_remain_explicit(self):
+        """Malformed entries provide no basis for removing an inherited capability."""
+        for bad in ([None], ['text', 9], ['']):
+            self.assertNotIn('input_modalities', api_models.model_fields({'input_modalities': bad}))
+            self.assertNotIn('supported_efforts', api_models.model_fields({'effort': {'supported_levels': bad}}))
+        self.assertEqual(api_models.model_fields({'input_modalities': ['audio']})['input_modalities'], [])
+        self.assertNotIn('supported_efforts', api_models.model_fields({'capabilities': {'effort': {'supported': True}}}))
+
 
 class LoadTests(unittest.TestCase):
     def serve(self, routes):

@@ -46,8 +46,11 @@ The menu marks values supplied by the API or inherited. Editing a model
 field pins it, and **R** on that field resumes inheritance. Existing literal
 model settings remain explicit. If the provider drops a field, a full sync
 releases its old published value. If a model's levels exclude the inherited
-preferred effort, the client uses its default. When a more specific preferred
-effort contradicts an inherited list, only that explicit effort is advertised.
+preferred effort, the client uses its default. A more specific preferred effort
+adds that level to an inherited list while keeping the other supported levels.
+An explicit API declaration that no compatible effort is available limits the
+picker and launch to the client default. Setting a manual model override takes
+precedence. A missing list continues to use the connection settings.
 Without tuning, token limits
 and efforts stay unspecified and Codex assumes text input.
 

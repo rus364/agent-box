@@ -138,12 +138,17 @@ def effective_model(entry, defaults):
     reported = entry.get('discovered', {})
     settings = {**model_defaults(), **defaults, **reported, **manual}
     effort, levels = settings['effort'], settings['supported_efforts']
+    if reported.get('supported_efforts') == [] and 'supported_efforts' not in manual:
+        if manual.get('effort', 'default') == 'default':
+            settings.update(effort='default', effort_unavailable=True)
+        else:
+            settings['supported_efforts'] = [effort]
     if levels and effort != 'default' and effort not in levels:
         # Compare the final fields' sources. An intermediate list may have been overridden again.
         for layer in (manual, reported, defaults):
             if 'effort' in layer:
                 if 'supported_efforts' not in layer:
-                    settings['supported_efforts'] = [effort]
+                    settings['supported_efforts'] = [e for e in EFFORTS[1:] if e in levels or e == effort]
                 break
             if 'supported_efforts' in layer:
                 settings['effort'] = 'default'
@@ -162,6 +167,8 @@ def cli_settings(spec, cli):
     flat = {key: spec[key] for key in ('display_name', 'effort', 'supported_efforts', 'context_window',
                                       'max_output_tokens')}
     flat.update(spec[cli])
+    if spec.get('effort_unavailable'):
+        flat['effort_unavailable'] = True
     if cli == 'codex':
         flat['input_modalities'] = spec['input_modalities']
     else:
@@ -207,7 +214,8 @@ def model_effort_error(endpoint, model, cli, effort):
             effort = {**endpoint.env, **spec['env']}.get('CLAUDE_CODE_EFFORT_LEVEL', 'default')
         elif effort == 'default' and cli == 'codex':
             effort = endpoint.config.get('model_reasoning_effort', 'default')
-    if spec['supported_efforts'] and effort not in (None, 'default') and effort not in spec['supported_efforts']:
+    if ((spec['supported_efforts'] or spec.get('effort_unavailable'))
+            and effort not in (None, 'default') and effort not in spec['supported_efforts']):
         return f'Requested effort is not supported by configured {cli} model {model}; choose default or a supported level'
     return None
 

@@ -611,6 +611,8 @@ def candidate_efforts(spec, tree):
     defaults = connection.get('model_defaults', {})
     models = cli_models(connection.get('models', {}), provider, defaults)
     model = model_settings(models, spec["model"], cli_settings(effective_model({}, defaults), provider))
+    if model.get('effort_unavailable'):
+        return ('default',)
     declared = [e for e in model["supported_efforts"] if e in API_EFFORTS[provider]]
     return tuple(dict.fromkeys(["default", *(declared if model["supported_efforts"] else API_EFFORTS[provider][1:]), value]))
 
@@ -623,6 +625,8 @@ def value_choices(path, section, tree):
     if rel is not None:
         if name == 'effort' and (len(rel) == 4 and rel[1] == 'models' or len(rel) == 3 and rel[1] == 'model_defaults'):
             section = menu_model_values(section, path[:-1], tree) or section
+            if section.get('effort_unavailable'):
+                return ('default',)
             value = section[name]
             options = tuple(dict.fromkeys(['default', *(section['supported_efforts'] or EFFORTS[1:]), value]))
         elif len(rel) == 3 and rel[1] in LAUNCH_AGENTS and name == 'default_model':
