@@ -10,7 +10,7 @@ from unittest.mock import patch
 from agent_box import api_models, config_menu, external_launch as ext, provider_runner, runtime, workflow
 from agent_box.config import Config, load_config, save_config
 from agent_box.errors import AgentBoxError
-from agent_box.external_config import model_defaults, validate_connections
+from agent_box.external_config import effective_model, external_model_entry, model_defaults, validate_connections
 from agent_box.workspace import Workspace
 import test_config_menu as menu_tests
 from test_external_config import external_config
@@ -438,7 +438,7 @@ class ExternalModelTests(unittest.TestCase):
         # The dynamic model has no entry in Config() defaults; reset still knows its schema.
         reset = [*add, curses.KEY_HOME, 'R', *save]
         edited, _ = menu_tests.ConfigMenuTests().edit(config, reset)
-        self.assertEqual(edited.config.agents.external_apis['deepseek'].models['metadata'], model_defaults())
+        self.assertEqual(edited.config.agents.external_apis['deepseek'].models['metadata'], external_model_entry())
         delete = [*add, curses.KEY_END, '\n', curses.KEY_DOWN, '\n',
                   *['\x1b'] * 4, curses.KEY_END, curses.KEY_UP, '\n']
         edited, _ = menu_tests.ConfigMenuTests().edit(config, delete)
@@ -518,7 +518,8 @@ class ExternalModelTests(unittest.TestCase):
                 *['\x1b'] * 5, curses.KEY_END, curses.KEY_UP, '\n']
         edited, screen = menu_tests.ConfigMenuTests().edit(config, keys, published=(listed, None))
         provider = edited.config.agents.external_apis['deepseek']
-        self.assertEqual(provider.models['deepseek-v4-pro'], {**model_defaults(), **listed['deepseek-v4-pro']})
+        self.assertEqual(effective_model(provider.models['deepseek-v4-pro'], provider.model_defaults),
+                         {**model_defaults(), **listed['deepseek-v4-pro']})
         self.assertEqual(provider.claude.models['deepseek-v4-pro']['context_window'], 1048576)
         self.assertNotIn('deepseek-flash', provider.models)
         lines = [line for frame in screen.frames for line in frame.splitlines()]
@@ -538,7 +539,7 @@ class ExternalModelTests(unittest.TestCase):
         edited, screen = menu_tests.ConfigMenuTests().edit(config, keys, published=(listed, None))
         before = config.agents.external_apis['deepseek'].models['v4-pro']
         after = edited.config.agents.external_apis['deepseek'].models['v4-pro']
-        self.assertEqual(after, {**before, **listed['v4-pro']})
+        self.assertEqual(effective_model(after, {}), {**effective_model(before, {}), **listed['v4-pro']})
         self.assertEqual(after['codex']['auto_compact_token_limit'], 786432)
         self.assertIn('Updated from the provider list', '\n'.join(screen.frames))
 
@@ -558,3 +559,105 @@ class ExternalModelTests(unittest.TestCase):
         self.assertNotIn('Add from provider list', drawn)
         self.assertNotIn('not listed', drawn)
         self.assertNotIn('private-api-key', drawn)
+
+    def test_full_sync_refetches_on_retry_and_only_save_replaces_the_catalog(self):
+        """A stale preview or partial fetch must never drive deletions or overwrite a manual exception."""
+        raw = external_config().to_dict()
+        provider = raw['agents']['external_apis']['deepseek']
+        provider['models'] = {'retired': {}, 'keep': {'discovered': {'context_window': 50000},
+                                                       'max_output_tokens': 2000}}
+        provider['codex']['default_model'] = 'retired'
+        provider['claude']['default_model'] = 'keep'
+        config = Config.from_dict(raw)
+        fresh = {'keep': {'context_window': 75000, 'max_output_tokens': 5000}, '~vendor/new': {}}
+        responses = [({'preview': {}}, None), ({}, 'incomplete list'), (fresh, None)]
+        enter = self.walk(config, ('agents', 'external_apis', 'deepseek', 'models'))
+        sync = [curses.KEY_END, curses.KEY_UP, curses.KEY_UP, '\n']
+        retry = ['S']
+        save = ['\x1b'] * 4 + [curses.KEY_END, curses.KEY_UP, '\n']
+        ui = menu_tests.ConfigMenuTests()
+        failed, _ = ui.edit(config, [*enter, *sync, *save], responses=responses[:2])
+        self.assertEqual(failed.config.to_dict(), config.to_dict())
+        cancelled, _ = ui.edit(config, [*enter, *sync, *retry, *['\x1b'] * 5], responses=responses)
+        self.assertIsNone(cancelled)
+        result, screen = ui.edit(config, [*enter, *sync, *retry, *save], responses=responses)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'config.json'
+            save_config(result.config, path)
+            saved = load_config(path).agents.external_apis['deepseek']
+        self.assertEqual(set(saved.models), set(fresh))
+        self.assertEqual((saved.codex.default_model, saved.claude.default_model), ('', 'keep'))
+        self.assertEqual(saved.codex.models['keep']['context_window'], 75000)
+        self.assertEqual(saved.claude.models['keep']['max_output_tokens'], 2000)
+        self.assertIn('1 added, 1 updated, 1 removed', '\n'.join(screen.frames))
+        self.assertIn('incomplete list', '\n'.join(screen.frames))
+
+    def test_defaults_discovery_and_manual_overrides_reach_both_clients_after_round_trip(self):
+        """Provider fallback edits affect missing fields, while new API values and model exceptions stay distinct."""
+        raw = external_config().to_dict()
+        p = raw['agents']['external_apis']['deepseek']
+        p['model_defaults'] = {'context_window': 64000, 'max_output_tokens': 2048, 'supported_efforts': ['low', 'high'],
+                               'effort': 'high', 'input_modalities': ['text', 'image']}
+        p['models'] = {'explicit': {'context_window': 32000, 'input_modalities': ['text']}}
+        p = Config.from_dict(raw).to_dict()['agents']['external_apis']['deepseek']
+        catalog = {'explicit': {'context_window': 128000}, 'reported': {'supported_efforts': ['low']}, 'unknown': {}}
+        config_menu.sync_models('deepseek', p, catalog)
+        p['model_defaults']['context_window'] = 96000
+        raw['agents']['external_apis']['deepseek'] = p
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'config.json'
+            save_config(Config.from_dict(raw), path)
+            config = load_config(path)
+            for model, window, inputs, effort in [('explicit', 32000, ['text'], 'high'),
+                        ('reported', 96000, ['text', 'image'], None), ('custom', 96000, ['text', 'image'], 'high')]:
+                with self.subTest(model=model):
+                    directory = Path(tmp) / model
+                    _, env = ext.prepare(['claude', '--model', model], 'deepseek', 'claude', config, directory, {})
+                    self.assertEqual(env['CLAUDE_CODE_MAX_CONTEXT_TOKENS'], str(window))
+                    self.assertEqual(env['CLAUDE_CODE_MAX_OUTPUT_TOKENS'], '2048')
+                    self.assertEqual(env.get('CLAUDE_CODE_EFFORT_LEVEL') or None, effort)
+                    ext.prepare(['codex', '--model', model], 'deepseek', 'codex', config, directory, {})
+                    rows = json.loads((directory / 'models.json').read_text())['models']
+                    row = next(r for r in rows if r['slug'] == model)
+                    self.assertEqual((row['context_window'], row['input_modalities'], row['default_reasoning_level']),
+                                     (window, inputs, effort))
+            config_menu.sync_models('deepseek', p, {'explicit': {}, 'reported': {}, 'unknown': {}})
+            again = Config.from_dict(raw).agents.external_apis['deepseek']
+            self.assertEqual(again.codex.models['reported']['effort'], 'high')
+            self.assertEqual(again.codex.models['explicit']['context_window'], 32000)
+
+    def test_model_editor_can_pin_an_inherited_value_and_release_it_to_the_api(self):
+        """Entering the same number pins it; resetting just that field follows subsequent discovery."""
+        config = external_config()
+        path = ('agents', 'external_apis', 'deepseek')
+        defaults = (*path, 'model_defaults')
+        keys = [*self.walk(config, defaults), curses.KEY_HOME,
+                *[curses.KEY_DOWN] * list(config.agents.external_apis['deepseek'].model_defaults).index('context_window'),
+                '\n', '\x15', *'64000', '\n', *['\x1b'] * 4, curses.KEY_END, curses.KEY_UP, '\n']
+        edited, _ = menu_tests.ConfigMenuTests().edit(config, keys)
+        model = (*path, 'models', 'external-small')
+        field = [*self.walk(edited.config, model), curses.KEY_HOME,
+                 *[curses.KEY_DOWN] * list(external_model_entry()).index('context_window')]
+        save = [*['\x1b'] * 5, curses.KEY_END, curses.KEY_UP, '\n']
+        pinned, screen = menu_tests.ConfigMenuTests().edit(edited.config, [*field, '\n', '\n', *save])
+        provider = pinned.config.to_dict()['agents']['external_apis']['deepseek']
+        self.assertEqual(provider['models']['external-small']['context_window'], 64000)
+        self.assertIn('[inherited]', '\n'.join(screen.frames))
+        config_menu.sync_models('deepseek', provider, {'external-small': {'context_window': 256000}})
+        config = Config.from_dict({'agents': {'external_apis': {'deepseek': provider}}})
+        reset, screen = menu_tests.ConfigMenuTests().edit(config, [*field, 'R', *save])
+        self.assertEqual(reset.config.agents.external_apis['deepseek'].claude.models['external-small']['context_window'],
+                         256000)
+        self.assertIn('[API]', '\n'.join(screen.frames))
+
+    def test_empty_catalog_can_be_saved_and_a_conflicting_refresh_preserves_the_draft(self):
+        """An empty successful mirror clears both defaults; invalid new limits never partly update the draft."""
+        provider = rich_config().to_dict()['agents']['external_apis']['deepseek']
+        provider['models']['v4-pro']['context_window'] = None
+        before = copy.deepcopy(provider)
+        with self.assertRaises(AgentBoxError):
+            config_menu.sync_models('deepseek', provider, {'v4-pro': {'context_window': 10000}, 'new': {}})
+        self.assertEqual(provider, before)
+        config_menu.sync_models('deepseek', provider, {})
+        self.assertEqual(provider['models'], {})
+        self.assertEqual((provider['codex']['default_model'], provider['claude']['default_model']), ('', ''))

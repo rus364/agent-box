@@ -3,7 +3,7 @@ import http.client
 from urllib.parse import urlencode, urlsplit
 import urllib.error
 
-from .external_config import EFFORTS
+from .external_config import EFFORTS, valid_model
 from .usage import http_json
 
 TIMEOUT = 5
@@ -20,7 +20,7 @@ class ListError(Exception):
 
 def _fetch(url, headers):
     try:
-        return http_json(url, headers=headers, timeout=TIMEOUT)
+        return http_json(url, headers={'User-Agent': 'agent-box', **headers}, timeout=TIMEOUT)
     except urllib.error.HTTPError as exc:
         exc.close()
         raise ListError(f'HTTP {exc.code}') from None
@@ -82,7 +82,7 @@ def model_fields(item):
     """The shared model settings one list entry states; a field the API leaves out stays absent.
 
     Covers OpenAI (ID only), DeepSeek (``effort``), OpenRouter (``reasoning``,
-    ``architecture``) and Anthropic (``capabilities``). Values outside agent-box's
+    ``architecture``), OpenCode (``limit``, ``modalities``) and Anthropic. Values outside agent-box's
     vocabulary are dropped rather than refused: the list is advice. Silence
     about efforts leaves them alone; a stated empty set clears them.
     """
@@ -93,17 +93,22 @@ def model_fields(item):
     if routing_alias(item.get('id')):
         return fields
     top = item.get('top_provider') if isinstance(item.get('top_provider'), dict) else {}
+    limits = item.get('limit') if isinstance(item.get('limit'), dict) else {}
     context = _number(item.get('context_window'), item.get('context_length'),
-                      item.get('max_input_tokens'), top.get('context_length'))
+                      limits.get('context'), item.get('max_input_tokens'), top.get('context_length'))
     if context:
         fields['context_window'] = context
-    output = _number(item.get('max_output_tokens'), top.get('max_completion_tokens'),
+    output = _number(item.get('max_output_tokens'), limits.get('output'), top.get('max_completion_tokens'),
                      item.get('max_tokens') if item.get('type') == 'model' else None)
     if output:
         fields['max_output_tokens'] = output
     capabilities = item.get('capabilities') if isinstance(item.get('capabilities'), dict) else {}
     architecture = item.get('architecture') if isinstance(item.get('architecture'), dict) else {}
     modalities = item.get('input_modalities') or architecture.get('input_modalities')
+    if modalities is None and isinstance(item.get('modalities'), dict):
+        modalities = item['modalities'].get('input')
+        if isinstance(modalities, list):
+            modalities = ['image' if isinstance(m, str) and m.startswith('image/') else m for m in modalities]
     image = capabilities.get('image_input')
     if isinstance(image, dict) and isinstance(image.get('supported'), bool):
         modalities = ['text', 'image'] if image['supported'] else ['text']
@@ -112,10 +117,27 @@ def model_fields(item):
         if known:
             fields['input_modalities'] = known
     levels, default = None, None
+    reasoning = capabilities.get('reasoning')
+    if isinstance(reasoning, dict):
+        if reasoning.get('supported') is False:
+            levels = []
+        elif isinstance(reasoning.get('effort'), list):
+            levels = reasoning['effort']
+            preset = reasoning.get('default')
+            if isinstance(preset, dict) and preset.get('type') == 'effort':
+                default = preset.get('value')
+    router = item.get('reasoning')
+    gateway_reasoning = isinstance(router, dict) and isinstance(router.get('mandatory'), bool)
+    if gateway_reasoning and 'supported_efforts' in router and router['supported_efforts'] is None:
+        # OpenRouter defines explicit null as all gateway efforts; an omitted key makes no such promise.
+        levels = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
+        default = router.get('default_effort')
     for source, key, preferred in ((item.get('effort'), 'supported_levels', 'default_level'),
                                    (item.get('reasoning'), 'supported_efforts', 'default_effort')):
         if isinstance(source, dict) and isinstance(source.get(key), list):
             levels, default = source[key], source.get(preferred)
+    if gateway_reasoning and router['mandatory'] and levels is not None:
+        levels = [level for level in levels if level != 'none']
     effort = capabilities.get('effort')
     if isinstance(effort, dict) and isinstance(effort.get('supported'), bool):
         levels = [name for name, support in effort.items() if effort['supported']
@@ -125,11 +147,14 @@ def model_fields(item):
         # one: empty means unknown here, and the default goes back to the CLI's.
         supported = [e for e in EFFORTS[1:] if e in levels]
         fields['supported_efforts'] = supported
-        fields['effort'] = default if default in supported else 'default'
+        if default in supported:
+            fields['effort'] = default
+        elif not supported:
+            fields['effort'] = 'default'
     return fields
 
 
-def load(provider):
+def load(provider, *, require_complete=False):
     """``(models, error)`` for one provider dict from the config draft.
 
     The Codex URL is tried first: DeepSeek's Anthropic URL has no list, while
@@ -156,6 +181,8 @@ def load(provider):
             continue
         models = {}
         for item in items:
+            if require_complete and (not isinstance(item, dict) or not valid_model(item.get('id'))):
+                return {}, 'cannot synchronize a list containing a missing or unsupported model ID'
             if isinstance(item, dict) and isinstance(item.get('id'), str) and item['id'] not in models:
                 models[item['id']] = model_fields(item)
         return models, None

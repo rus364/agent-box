@@ -268,7 +268,7 @@ def prepare(command, name, cli, config, directory, environment, *, model=None):
     spec, endpoint = connection(config, name, cli)
     explicit_model, effort = invocation_settings(cli, command[1:], managed=model is not None)
     model = choose_model(endpoint, cli, model or explicit_model)
-    settings = model_settings(endpoint.models, model, cli)
+    settings = model_settings(endpoint.models, model, endpoint.fallback)
     original = builtin_environment(environment)
     custom_env = {**endpoint.env, **settings['env']}
     if cli == 'claude':

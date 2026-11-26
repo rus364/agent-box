@@ -71,6 +71,25 @@ class ConfigDescribeTests(unittest.TestCase):
         with self.assertRaises(KeyError):
             config_menu.help_for(("agents", "external_apis", "deepseek", "new_field"))
 
+    def test_inherited_model_limits_show_their_effective_type_value_and_source(self):
+        """A null override is editable as its effective type and never hides the published or fallback limit."""
+        config = rich_config().to_dict()
+        provider = config['agents']['external_apis']['deepseek']
+        provider['model_defaults']['max_output_tokens'] = 4096
+        provider['models']['v4-pro'].update(context_window=None, max_output_tokens=None,
+                                            discovered={'context_window': 1000000})
+        parsed = Config.from_dict(config)
+        save_config(parsed, self.global_file)
+        path = 'agents.external_apis.deepseek.models.v4-pro'
+        _, fields = self.describe(path)
+        for name, expected, source in [('context_window', 1000000, 'model list'),
+                                       ('max_output_tokens', 4096, 'model defaults')]:
+            field = fields[path + '.' + name]
+            self.assertEqual((field['type'], field['effective'], field['source']), ('integer', expected, source))
+        shown = {'.'.join(at): value for _, _, value, at in cli._show_rows(parsed.to_dict())}
+        self.assertEqual(shown[path + '.context_window'], '1000000 [API]')
+        self.assertEqual(shown[path + '.max_output_tokens'], '4096 [inherited]')
+
     def test_layers_sources_and_project_eligibility_follow_the_project_loader(self):
         """The agent must know which value wins, where it comes from, and whether a project may change it."""
         config = Config()

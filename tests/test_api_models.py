@@ -78,7 +78,7 @@ class ModelFieldTests(unittest.TestCase):
         self.assertEqual(anthropic[0], {
             'display_name': 'Claude Opus 5', 'context_window': 1000000, 'max_output_tokens': 128000,
             'input_modalities': ['text', 'image'],
-            'supported_efforts': ['low', 'medium', 'high', 'xhigh', 'max'], 'effort': 'default'})
+            'supported_efforts': ['low', 'medium', 'high', 'xhigh', 'max']})
         # Haiku states it takes no effort: a stale declaration must not survive an update.
         self.assertEqual((anthropic[1]['supported_efforts'], anthropic[1]['effort']), ([], 'default'))
         self.assertEqual(api_models.model_fields({'id': 'm', 'effort': {'supported_levels': ['turbo']}}),
@@ -96,6 +96,33 @@ class ModelFieldTests(unittest.TestCase):
                     'reasoning': {'supported_efforts': ['high'], 'default_effort': 'high'},
                     'supported_parameters': ['tools', 'reasoning', 'parallel_tool_calls']})
                 self.assertEqual(fields, {'display_name': 'Router'})
+
+    def test_console_limits_mime_inputs_and_reasoning_presets_follow_the_reported_shape(self):
+        """Use the context limit, a typed effort default and the request ID, regardless of the connection name."""
+        row = {'id': 'test-model', 'canonical_id': 'vendor/test-model', 'name': 'Test model',
+               'limit': {'context': 1000000, 'input': 922000, 'output': 128000},
+               'modalities': {'input': ['text', 'image/png', 'image/jpeg', 'application/pdf']},
+               'capabilities': {'reasoning': {'supported': True, 'effort': ['low', 'high', 'max'],
+                                              'default': {'type': 'effort', 'value': 'max'}}}}
+        fields = api_models.model_fields(row)
+        self.assertEqual(fields, {'display_name': 'Test model', 'context_window': 1000000, 'max_output_tokens': 128000,
+                                  'input_modalities': ['text', 'image'], 'supported_efforts': ['low', 'high', 'max'],
+                                  'effort': 'max'})
+        row['capabilities']['reasoning'] = {'supported': True, 'budget': True}
+        self.assertNotIn('supported_efforts', api_models.model_fields(row))
+        row['capabilities']['reasoning'] = {'supported': False}
+        self.assertEqual(api_models.model_fields(row)['supported_efforts'], [])
+
+    def test_explicit_gateway_wide_efforts_differ_from_an_omitted_enumeration(self):
+        """Explicit null is OpenRouter's documented all-values signal; a missing list supplies no levels."""
+        row = {'id': '~vendor/model-latest', 'reasoning': {'mandatory': False}}
+        self.assertNotIn('supported_efforts', api_models.model_fields(row))
+        row['reasoning'].update(supported_efforts=None, default_effort='medium')
+        fields = api_models.model_fields(row)
+        self.assertEqual(fields['supported_efforts'], ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
+        self.assertEqual(fields['effort'], 'medium')
+        row['reasoning']['mandatory'] = True
+        self.assertNotIn('none', api_models.model_fields(row)['supported_efforts'])
 
     def test_output_limits_require_positive_integers_and_tools_do_not_imply_parallel_calls(self):
         """An output ceiling is usable, but a parameter name does not establish client tool support."""
@@ -125,6 +152,7 @@ class LoadTests(unittest.TestCase):
         self.assertEqual(list(models), ['deepseek-flash', 'deepseek-v4-pro'])
         self.assertEqual([path for path, _ in server.requests], ['/openai/models'])
         self.assertEqual(server.requests[0][1]['authorization'], 'Bearer ' + KEY)
+        self.assertEqual(server.requests[0][1]['user-agent'], 'agent-box')
 
         server = self.serve({
             '/anthropic/v1/models?limit=1000': (200, sample('anthropic-page1.json')),
@@ -171,6 +199,19 @@ class LoadTests(unittest.TestCase):
             models, error = api_models.load(provider(server.url + '/api/v1'))
         self.assertEqual(models, {})
         self.assertIn('more than 3 pages', error)
+
+    def test_whole_catalog_sync_distinguishes_an_empty_list_from_unrepresentable_entries(self):
+        """Dropping malformed rows from a destructive mirror could erase a working catalog."""
+        routes = {'/api/models': (200, {'data': []})}
+        server = self.serve(routes)
+        spec = provider(server.url + '/api')
+        self.assertEqual(api_models.load(spec, require_complete=True), ({}, None))
+        for malformed in ({}, {'id': 'bad id'}, None):
+            routes['/api/models'] = (200, {'data': [{'id': 'valid'}, malformed]})
+            models, error = api_models.load(spec, require_complete=True)
+            self.assertFalse(models)
+            self.assertIn('model ID', error)
+            self.assertIn('valid', api_models.load(spec)[0])
 
     def test_failures_become_a_diagnostic_that_never_carries_the_key(self):
         """The menu shows this text; a key in it, in argv or after a redirect would be a disclosure."""

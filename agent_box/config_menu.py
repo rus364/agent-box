@@ -12,7 +12,9 @@ from pathlib import Path
 from .config import AGENT_EFFORTS, AGENT_PROVIDERS, K3S_LIFETIMES, TOOL_GROUP_HELP, LAUNCH_AGENTS, Config, CredentialsConfig, EnvConfig, REVIEW_INCREMENTAL, REVIEW_PRESETS, TRACKER_PROVIDERS, TrackerConnection, candidate_label, model_entry
 from . import api_models, workflow_behavior
 from .errors import AgentBoxError
-from .external_config import API_EFFORTS, EFFORTS, ExternalProvider, cli_models, model_defaults, model_settings, valid_model, valid_name, validate_connections
+from .external_config import (API_EFFORTS, EFFORTS, ExternalProvider, cli_models, cli_settings, effective_model,
+                              external_model_entry, model_settings, parse_connections, valid_model, valid_name,
+                              validate_connections)
 from .model_catalog import load_model_catalogs
 
 CHOICES = {
@@ -205,6 +207,7 @@ LABELS = {
     "worker": "Workers", "scout": "Scouts", "sync": "Plan sync", "use_tiers": "Use tiers",
     "github_provider": "GitHub review provider", "other_vendor_first": "Other vendor first",
     "external_apis": "External APIs", "api_provider": "API provider", "api_key": "API key",
+    "model_defaults": "Model defaults",
 }
 #: Labels a bare key cannot carry because the same key means something else elsewhere.
 PATH_LABELS = {
@@ -389,8 +392,19 @@ MENU_GROUPS = {
 
 
 def menu_keys(data, path=()):
+    rel = external(path)
+    if rel and len(rel) == 3 and rel[1] == 'models':
+        return [key for key in data if key != 'discovered']
     ordered = [key for _, keys in MENU_GROUPS.get(path, ()) for key in keys if key in data]
     return ordered + [key for key in data if key not in ordered]
+
+
+def menu_model_values(data, path, tree):
+    rel = external(path)
+    if rel and len(rel) == 3 and rel[1] == 'models':
+        provider = tree['agents']['external_apis'][rel[0]]
+        return effective_model(data, provider.get('model_defaults', {}))
+    return None
 
 
 def character_width(character):
@@ -473,6 +487,7 @@ def help_for(path):
                 "url": ("HTTP(S) API base URL for this CLI, without credentials, query or fragment. Codex requires the Responses API, "
                         "for example https://api.deepseek.com or https://openrouter.ai/api/v1; Claude requires the Anthropic "
                         "Messages API, for example https://api.deepseek.com/anthropic or https://openrouter.ai/api."),
+                "model_defaults": "Fallback settings for models on this connection, including custom IDs. Model overrides and published values take precedence.",
                 "models": ("Models of this API for both CLIs, keyed by ID. Opening this list loads the provider's model list "
                            "(GET {Codex URL}/models, else {Claude URL}/v1/models): add a model from it with its settings filled in, "
                            "or enter an ID by hand. A listed model is a suggestion, not proof of account access."),
@@ -540,7 +555,7 @@ class EditResult:
 
 
 def secret(path):
-    return ("token" in path[-1] and path[-1] != 'auto_compact_token_limit'
+    return ("token" in path[-1] and path[-1] not in ('auto_compact_token_limit', 'max_output_tokens')
             or path[-1] == "api_key"
             or json_field(path) and path[-1] in ('env', 'provider_options'))
 
@@ -584,8 +599,10 @@ def candidate_efforts(spec, tree):
     provider, api, value = spec["provider"], spec.get("api_provider"), spec["effort"]
     if not api:
         return tuple(dict.fromkeys([*AGENT_EFFORTS.get(provider, ()), value]))
-    models = cli_models(tree["agents"]["external_apis"].get(api, {}).get("models", {}), provider)
-    model = model_settings(models, spec["model"], provider)
+    connection = tree["agents"]["external_apis"].get(api, {})
+    defaults = connection.get('model_defaults', {})
+    models = cli_models(connection.get('models', {}), provider, defaults)
+    model = model_settings(models, spec["model"], cli_settings(effective_model({}, defaults), provider))
     declared = [e for e in model["supported_efforts"] if e in API_EFFORTS[provider]]
     return tuple(dict.fromkeys(["default", *(declared if model["supported_efforts"] else API_EFFORTS[provider][1:]), value]))
 
@@ -596,7 +613,9 @@ def value_choices(path, section, tree):
     options = CHOICES.get(".".join(path))
     rel = external(path)
     if rel is not None:
-        if len(rel) == 4 and rel[1] == 'models' and name == 'effort':
+        if name == 'effort' and (len(rel) == 4 and rel[1] == 'models' or len(rel) == 3 and rel[1] == 'model_defaults'):
+            section = menu_model_values(section, path[:-1], tree) or section
+            value = section[name]
             options = tuple(dict.fromkeys(['default', *(section['supported_efforts'] or EFFORTS[1:]), value]))
         elif len(rel) == 3 and rel[1] in LAUNCH_AGENTS and name == 'default_model':
             options = ['', *tree['agents']['external_apis'][rel[0]]['models']]
@@ -623,7 +642,7 @@ def option_help(path, options):
 def list_vocabulary(path):
     """The fixed values a list field may hold, edited as checkboxes, or None for a free list."""
     rel = external(path)
-    if rel is not None and len(rel) == 4 and rel[1] == 'models':
+    if rel and (len(rel) == 4 and rel[1] == 'models' or len(rel) == 3 and rel[1] == 'model_defaults'):
         if path[-1] == 'supported_efforts':
             return EFFORTS[1:]
         if path[-1] == 'input_modalities':
@@ -639,6 +658,32 @@ def group_headings(keys, path):
         if heading and first is not None:
             headings[first] = heading
     return headings
+
+
+def sync_models(api, provider, listed):
+    """Stage the complete catalog before replacing the draft; retain ordering of surviving implicit defaults."""
+    current = provider['models']
+    models = {model: entry for model, entry in current.items() if model in listed}
+    updated = 0
+    for model, fields in listed.items():
+        entry = models[model] if model in models else external_model_entry()
+        updated += model in current and entry['discovered'] != fields
+        models[model] = {**entry, 'discovered': copy.deepcopy(fields)}
+    removed = current.keys() - models.keys()
+    added = len(models.keys() - current.keys())
+    candidate = {**provider, 'models': models}
+    cleared = [cli for cli in LAUNCH_AGENTS if provider[cli]['default_model'] in removed]
+    for cli in cleared:
+        candidate[cli] = {**provider[cli], 'default_model': ''}
+    parse_connections({api: candidate})
+    current.clear()
+    current.update(models)
+    for cli in cleared:
+        provider[cli]['default_model'] = ''
+    notice = f'Synced draft: {added} added, {updated} updated, {len(removed)} removed.'
+    if cleared:
+        notice += ' Cleared default for ' + ', '.join(cleared) + '.'
+    return notice
 
 
 def edit(config, *, project=None):
@@ -715,7 +760,7 @@ def edit(config, *, project=None):
                 rel = external(path)
                 if rel:
                     model_path = len(rel) >= 3 and rel[1] == 'models'
-                    value = model_defaults() if model_path else ExternalProvider().to_dict()
+                    value = external_model_entry() if model_path else ExternalProvider().to_dict()
                     for part in rel[3:] if model_path else rel[1:]:
                         value = value[part]
                     break
@@ -1047,7 +1092,7 @@ def edit(config, *, project=None):
             apis.insert(0, current[:2])
         suggestions = [(provider, '', model, f'{model} [{provider}]')
                        for provider in AGENT_PROVIDERS for model in model_suggestions[provider]]
-        suggestions += [(provider, api, model, (settings['display_name'] or model) + f' [{provider}@{api}: {model}]')
+        suggestions += [(provider, api, model, (settings['display_name'] or settings['discovered'].get('display_name') or model) + f' [{provider}@{api}: {model}]')
                         for provider, api in apis if api and api in draft['agents']['external_apis']
                         for model, settings in draft['agents']['external_apis'][api]['models'].items()]
         unlisted = current and current not in [row[:3] for row in suggestions]
@@ -1152,17 +1197,17 @@ def edit(config, *, project=None):
 
     published = {}
 
-    def provider_list(screen, api):
+    def provider_list(screen, api, *, sync=False):
         """``(models, error)`` the provider publishes for its current key and URLs.
 
         Asked once per combination in a menu session: entering the provider again
         after editing its key or a URL asks again, browsing does not."""
         spec = draft["agents"]["external_apis"][api]
         identity = (spec["api_key"], spec["codex"]["url"], spec["claude"]["url"])
-        if published.get(api, (None,))[0] != identity:
+        if sync or published.get(api, (None,))[0] != identity:
             paint(screen, [f"Loading the {api} model list..."], 0, "agent-box config / External APIs / " + api,
                   f"Asking the provider for its models; at most {api_models.TIMEOUT} seconds per URL.", controls="Please wait")
-            published[api] = (identity, *api_models.load(spec))
+            published[api] = (identity, *api_models.load(spec, require_complete=sync))
         return published[api][1:]
 
     def listed_summary(model, fields):
@@ -1210,6 +1255,8 @@ def edit(config, *, project=None):
                         extras.insert(0, ('Add from provider list', 'add_listed',
                                           'Pick one of the models the provider publishes, filtered by typing; the settings '
                                           'its list states are filled in and stay editable.'))
+                    extras.insert(0, ('Sync all models from API', 'sync_models',
+                                      'Fetch the full list again. Refresh published settings and remove absent IDs, including manual IDs. Save and apply commits the draft.'))
                 elif len(rel) == 3 and rel[1] == 'models':
                     extras = [('Use as default', 'default_model', 'Select this model for Codex and Claude launches without --model; '
                                'each CLI endpoint keeps its own Default model field.'),
@@ -1226,8 +1273,9 @@ def edit(config, *, project=None):
                     extras = [("Save project", "save", "Save explicit project overrides without applying host integrations."), ("Cancel", "cancel", ACTION_HELP["cancel"])]
             labels = [label_for(key, path) for key in keys]
             rows = []
+            model_values = menu_model_values(data, path, draft)
             for key, label in zip(keys, labels):
-                value, full = data[key], (*path, key)
+                value, full = (model_values[key] if model_values else data[key]), (*path, key)
                 if isinstance(value, dict) and not json_field(full):
                     shown = ">"
                 elif isinstance(value, bool):
@@ -1242,6 +1290,8 @@ def edit(config, *, project=None):
                     shown = value or "(not set)"
                 else:
                     shown = json.dumps(value, ensure_ascii=False)
+                if model_values and data[key] is None:
+                    shown += '  [API]' if key in data['discovered'] else '  [inherited]'
                 if listed is not None and rel is not None and len(rel) == 2 and key not in listed:
                     shown += "  not listed"
                 if project_mode:
@@ -1262,6 +1312,8 @@ def edit(config, *, project=None):
                             + ("Copy current global unavailable: no global value for this project identity field. "
                                if default_value(selected_path, global_values) is None
                                else "G: Copy current global (copy and pin current effective global values). ")) + hint
+                elif model_values and keys[selected] not in LAUNCH_AGENTS:
+                    hint = 'Edit to override. R follows the API or connection default. ' + hint
                 else:
                     hint = "R: Reset to default (built-in program values; remove global override on save). " + hint
                 hint = labels[selected] + "\n" + hint
@@ -1279,6 +1331,9 @@ def edit(config, *, project=None):
                         pass  # Invalid drafts still need their editing help.
             title = ("agent-box config --project" if project_mode else "agent-box config") + (" / " + " / ".join(label_for(part, path[:index]) for index, part in enumerate(path)) if path else "")
             controls = ("Enter R inherit G copy " if project_mode else "Enter open R reset ") + "? help Esc back"
+            can_sync = not project_mode and rel is not None and len(rel) == 2 and rel[1] == 'models'
+            if can_sync:
+                controls += '  S sync all'
             headings = group_headings(keys, path)
             if headings and extras:
                 # Otherwise the actions would read as members of the last group.
@@ -1289,6 +1344,8 @@ def edit(config, *, project=None):
                 return None
             if not usable:
                 continue
+            if can_sync and key in ('s', 'S'):
+                selected, key = len(keys), '\n'  # Sync is the first action after the model rows.
             destination = moved(key, selected, len(rows), screen)
             if destination is not None:
                 selected, notice = destination, ""
@@ -1305,7 +1362,10 @@ def edit(config, *, project=None):
                     notice = "Inherit global: override removed; following global values"
                 elif key in ("r", "R") or project_mode:
                     value = default_value(full, global_values if project_mode else defaults)
-                    if value is None:
+                    if model_values and keys[selected] not in LAUNCH_AGENTS:
+                        data[keys[selected]] = None
+                        notice = 'Model override removed'
+                    elif value is None:
                         notice = "Copy current global unavailable: no global value for this project identity field"
                     else:
                         if project_mode:
@@ -1319,6 +1379,8 @@ def edit(config, *, project=None):
                                 current = current[part]
                             data[keys[selected]] = current
                         else:
+                            if rel and len(rel) == 2 and rel[1] == 'models':
+                                value['discovered'] = data[keys[selected]]['discovered']
                             data[keys[selected]] = value
                         notice = ("Copy current global: current values copied as explicit project overrides" if project_mode
                                   else "Reset to default: built-in program values restored in draft")
@@ -1350,6 +1412,17 @@ def edit(config, *, project=None):
                                 "Unsaved global changes", 0) != 1:
                             continue
                         return EditResult(config, open_project=True)
+                    if action == 'sync_models':
+                        api = path[2]
+                        fresh, error = provider_list(screen, api, sync=True)
+                        if error:
+                            notice = 'Sync failed: ' + error
+                            continue
+                        try:
+                            notice = sync_models(api, draft['agents']['external_apis'][api], fresh)
+                        except AgentBoxError as exc:
+                            notice = 'Sync failed: ' + str(exc)
+                        continue
                     if action == 'add_model':
                         model = input_value(screen, 'Model ID, for example deepseek-v4-pro or openai/gpt-5.6-luna', '', False)
                         if model is not None:
@@ -1358,7 +1431,7 @@ def edit(config, *, project=None):
                             elif model in data:
                                 notice = 'Model already exists'
                             else:
-                                data[model] = model_defaults()
+                                data[model] = external_model_entry()
                                 menu(screen, data[model], (*path, model))
                         continue
                     if action == 'add_listed':
@@ -1373,11 +1446,14 @@ def edit(config, *, project=None):
                                         details=[listed_summary(m, listed[m]) for m in candidates], searchable=True)
                         if picked is not None:
                             model = candidates[picked]
-                            data[model] = {**model_defaults(), **copy.deepcopy(listed[model])}
+                            data[model] = {**external_model_entry(), 'discovered': copy.deepcopy(listed[model])}
                             menu(screen, data[model], (*path, model))
                         continue
                     if action == 'update_listed':
-                        data.update(copy.deepcopy(listed[path[4]]))
+                        fields = listed[path[4]]
+                        data['discovered'].update(copy.deepcopy(fields))
+                        for field in fields:
+                            data[field] = None
                         notice = 'Updated from the provider list: ' + (', '.join(listed[path[4]]) or 'nothing it states')
                         continue
                     if action in ('default_model', 'delete_model'):
@@ -1447,6 +1523,8 @@ def edit(config, *, project=None):
                             return EditResult(result, project=overrides)
                     continue
                 name, full, value = keys[selected], (*path, keys[selected]), data[keys[selected]]
+                if model_values:
+                    value = model_values[name]
                 if project_mode and project_field(full) is None:
                     notice = "Global only: edit in agent-box config"
                     continue

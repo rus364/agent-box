@@ -288,7 +288,7 @@ def _hidden(at) -> bool:
     return config_menu.secret(at) or at == ("agents", "claude", "statusline", "command") or at[:2] == ("box", "env")
 
 
-def _show_rows(data, path=()):
+def _show_rows(data, path=(), tree=None):
     """``(depth, key, value or None for a heading, dotted path)`` in menu order.
 
     Below a section's first level, a mapping of plain values renders on one
@@ -299,16 +299,22 @@ def _show_rows(data, path=()):
     def leaf(value, at):
         return not isinstance(value, dict) or config_menu.json_field(at)
 
+    if tree is None:
+        tree = data
+    model_values = config_menu.menu_model_values(data, path, tree)
     for key in config_menu.menu_keys(data, path):
         value, at = data[key], (*path, key)
         if leaf(value, at):
-            yield len(path), key, _show_value(value, _hidden(at)), at
+            shown = _show_value(model_values[key] if model_values is not None else value, _hidden(at))
+            if model_values is not None and value is None:
+                shown += " [API]" if key in data.get("discovered", {}) else " [inherited]"
+            yield len(path), key, shown, at
         elif len(at) > 2 and all(leaf(item, (*at, name)) for name, item in value.items()):
             yield len(path), key, "; ".join(f"{name} {_show_value(item, _hidden((*at, name)))}"
                                              for name, item in value.items()), at
         else:
             yield len(path), key, None, at
-            yield from _show_rows(value, at)
+            yield from _show_rows(value, at, tree)
 
 
 def _rendered_only(data, rendered, path=()):
@@ -398,13 +404,15 @@ def config_description(prefix: str = "") -> dict:
     fields = []
 
     def walk(data, at=()):
+        model_values = config_menu.menu_model_values(data, at, tree)
         for key in config_menu.menu_keys(data, at):
             value, full = data[key], (*at, key)
             dotted = ".".join(full)
             leaf = not isinstance(value, dict) or config_menu.json_field(full)
             selected = not prefix or dotted == prefix or dotted.startswith(prefix + ".")
             if selected:
-                entry = {"path": dotted, "type": _DESCRIBED_TYPES[type(value)] if leaf else "section",
+                shown = model_values[key] if model_values is not None else value
+                entry = {"path": dotted, "type": _DESCRIBED_TYPES[type(shown)] if leaf else "section",
                          "project_allowed": project_config.project_field(full) is not None}
                 if leaf:
                     choices = config_menu.value_choices(full, data, tree)
@@ -434,6 +442,9 @@ def config_description(prefix: str = "") -> dict:
                         entry["source"] = "host-only"
                     elif effective is _MISSING:
                         entry["source"] = "unset"
+                    elif effective is None and model_values is not None:
+                        entry["effective"] = _masked(shown, hidden)
+                        entry["source"] = "model list" if key in data.get("discovered", {}) else "model defaults"
                     else:
                         entry["effective"] = _masked(effective, hidden)
                         if effective != underlying or bound:

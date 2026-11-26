@@ -2,7 +2,8 @@
 
 Open `agent-box config` → **Agents** → **External APIs** → **Add provider**.
 Choose a name such as `deepseek`, enter the API key, and set the URL under
-Codex, Claude, or both. Under **Models**, use **Add from provider list** or
+Codex, Claude, or both. Under **Models**, use **Sync all models from API** for
+the entire catalog. To select individual IDs, use **Add from provider list** or
 **Add model**, edit its fields, then **Use as default**. One model list serves
 both CLIs; each CLI has its own endpoint, and there is one key per named
 connection. Enable the connection and save. New connections start disabled.
@@ -14,9 +15,31 @@ the models it publishes: `GET {Codex URL}/models` (OpenAI shape, Bearer key)
 first, then `GET {Claude URL}/v1/models` (Anthropic shape, `x-api-key`).
 Either list serves both CLIs: DeepSeek's Anthropic URL has none, while its
 OpenAI-compatible one does. Pages are followed only on the configured host.
-The list is read once per key and URL combination in a menu session, with a
-five-second timeout per URL, and is never stored. The key travels only in the
+Browsing reuses the list for the same key and URLs during the menu session.
+**Sync all models from API** requests it again on every press, also after a
+failed fetch. Each page request has a five-second timeout. The key travels only in the
 request header; a failure shows a short diagnostic and leaves manual entry.
+
+**Sync all models from API** (shortcut **S** in the Models menu) makes the draft's model IDs match the complete
+response. It adds new IDs, refreshes published metadata, removes absent IDs
+(including manual entries), and clears any endpoint default naming a removed
+model. A successful empty list clears the catalog. An incomplete or invalid
+response leaves the draft intact. The menu reports the change counts.
+Use **Save and apply** to persist the result or **Cancel** to discard it.
+Sync includes every ID, including rolling aliases such as `~vendor/model-latest`,
+embedding models and models that only serve a different protocol. Check that
+your chosen model supports the client's API.
+
+**Model defaults** belongs to the connection. Set a known common context
+window, output limit, input modalities, supported efforts or preferred effort
+once. The order for each field is a manual model setting, the last published
+value saved for that model, the connection default, then the built-in value.
+The menu marks values supplied by the API or inherited. Editing a model
+field pins it, and **R** on that field resumes inheritance. Existing literal
+model settings remain explicit. If the provider drops a field, a full sync
+releases its old published value. If a model's levels exclude the inherited
+preferred effort, the client uses its default. Without tuning, token limits
+and efforts stay unspecified and Codex assumes text input.
 
 **Add from provider list** offers the models not configured yet; typing
 filters them by ID or name. A chosen model gets the settings the list states:
@@ -24,7 +47,7 @@ filters them by ID or name. A chosen model gets the settings the list states:
 `context_window`, `max_output_tokens` and `input_modalities`. DeepSeek, OpenRouter and Anthropic
 state most of these; a plain OpenAI-compatible list gives only IDs. Compaction
 thresholds, Codex tool flags, `metadata` and `env` stay manual. A configured
-model the list lacks is marked `not listed` and kept; **Update from API**
+model the list lacks is marked `not listed` while browsing. **Update from API**
 deliberately replaces only the fields the list states for that model, including
 any manual edits to those shared fields. Browsing and launching never refresh
 saved values. CLI-specific overrides remain intact. A listed model is a
@@ -47,6 +70,10 @@ what they route to before adopting the advertised settings.
 | DeepSeek `max_output_tokens`, OpenRouter `top_provider.max_completion_tokens`, Anthropic model `max_tokens` | `max_output_tokens`; Claude uses the smaller of this ceiling and its 32,000-token unknown-model default. Codex has no mapped output-limit setting; this field is not inserted into its catalog |
 | `input_modalities`, OpenRouter `architecture.input_modalities`, Anthropic `capabilities.image_input.supported` | Text/image subset in Codex's catalog. Missing data defaults to text only; audio, video and file support are not inferred. No equivalent Claude modality setting is emitted |
 | DeepSeek `effort`, OpenRouter explicit `reasoning.supported_efforts`, Anthropic `capabilities.effort` | Shared effort list/default, Codex catalog and Claude launch effort within each client's vocabulary |
+| OpenCode `limit.context`, `limit.output`, `modalities.input` | Context window, output ceiling and supported text/image inputs, including image MIME types |
+| OpenCode `capabilities.reasoning.effort` and its typed `default` | Import enumerated efforts and a declared effort default. Reasoning support alone supplies no levels. |
+| OpenRouter `reasoning.supported_efforts: null` | The documented gateway effort vocabulary. An omitted enumeration supplies no levels. |
+| Gateway entries containing only `id`, `model_type` and `ingress_apis` | Model ID. Protocol names provide no numeric limits or effort levels. |
 | OpenRouter `supported_parameters` such as `tools` or `reasoning` | Not enough to infer parallel calls, reasoning levels/summaries, freeform patch tools, or Claude thinking/adaptive-thinking behavior; these remain manual |
 | Output modalities, DeepSeek `api_capabilities.anthropic_messages.system_prompt_update` | Not mapped: neither describes a supported generic client launch setting |
 
@@ -56,6 +83,8 @@ non-integer or nonpositive token limit stays unknown. We do not synthesize effor
 levels from a generic reasoning flag, or enable Claude capability overrides from
 unrelated provider flags. See the provider contracts for
 [DeepSeek](https://api-docs.deepseek.com/api/list-models/),
+[OpenCode](https://opencode.ai/docs/console/api/models/),
+[OpenRouter reasoning](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens),
 [OpenRouter](https://openrouter.ai/docs/api/api-reference/models/list-all-models-and-their-properties),
 [its free router](https://openrouter.ai/openrouter/free/providers), and
 [Anthropic](https://platform.claude.com/docs/en/api/models/list).
@@ -86,8 +115,7 @@ explicit ID. Configured models supply workflow suggestions; manual IDs remain av
 gets a separate model catalog and Claude gets a replacement model picker whose
 Default points at the selected external model. Launches use these configured
 definitions; the provider's list is read only by the configuration menu. A
-manual, unconfigured model has unknown context and conservative text-only Codex
-capabilities.
+manual, unconfigured ID uses the connection's model defaults.
 
 ## Native Codex options
 
@@ -156,7 +184,9 @@ CLIs. Each entry accepts `display_name`, `effort` (default: `default`),
 CLI default), `max_output_tokens` (default: `0`, unknown) and `input_modalities` (`text`, `image`; default: `text`). A
 declared effort list constrains launch requests. Explicit CLI/workflow effort
 wins over the model default. Set workflow effort to `default` to use the
-model's settings.
+model's settings. The provider's `model_defaults` holds shared fallbacks.
+A null or omitted model field inherits. The model's `discovered` object
+records published fields separately from explicit overrides.
 
 Settings one CLI alone uses live in the entry's `codex` and `claude` objects.
 Both accept `auto_compact_token_limit` (default: `0`, CLI default) and `env` (a

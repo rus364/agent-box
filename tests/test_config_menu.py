@@ -404,14 +404,15 @@ class ConfigMenuTests(unittest.TestCase):
                 self.assertTrue(result.config.box.tools.groups["yc"])
                 self.assertTrue(any("Image tools:" in frame and " on for " in frame for frame in screen.frames))
 
-    def edit(self, config, keys, screen=None, project=None, catalogs=None, published=None):
+    def edit(self, config, keys, screen=None, project=None, catalogs=None, published=None, responses=None):
         """``published`` is what every external provider's model list returns; tests never reach a network."""
         import curses
         screen = screen or Screen(keys)
         with patch.object(config_menu.sys.stdin, "isatty", return_value=True), patch.object(config_menu.sys.stdout, "isatty", return_value=True), \
              patch.object(curses, "wrapper", side_effect=lambda callback: callback(screen)), patch.object(curses, "curs_set"), \
              patch.object(config_menu, "load_model_catalogs", return_value=catalogs or BUNDLED_MODELS) as refresh, \
-             patch.object(config_menu.api_models, "load", return_value=published or ({}, "not requested in tests")):
+             patch.object(config_menu.api_models, "load", return_value=published or ({}, "not requested in tests"),
+                          side_effect=responses):
             result = config_menu.edit(config, project=project)
             refresh.assert_called_once_with()
             return result, screen
