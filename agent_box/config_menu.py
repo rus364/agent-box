@@ -414,6 +414,9 @@ def model_source(data, key, resolved, path, tree):
     value = published.get(key, defaults.get(key, SHARED_DEFAULTS.get(key, '')))
     if resolved == value:
         return 'API' if key in published else 'inherited'
+    if key in ('effort', 'supported_efforts') and published.get('reasoning_required') and (
+            value == 'none' or isinstance(value, list) and 'none' in value and 'none' not in resolved):
+        return 'API limits'
     if key == 'effort' and data.get('supported_efforts') is None and 'supported_efforts' in published:
         return 'API limits'
     return 'adjusted'
@@ -606,6 +609,16 @@ def candidate_list(path):
             and (len(path) == 3 and path[2] == "models" or len(path) == 4 and path[2] == "tiers" and path[1] != "scout"))
 
 
+def effort_choices(model, vocabulary, current):
+    if model.get('effort_unavailable'):
+        return ('default',)
+    declared = model['supported_efforts'] or vocabulary[1:]
+    choices = dict.fromkeys(['default', *(e for e in declared if e in vocabulary), current])
+    if model.get('reasoning_required'):
+        choices.pop('none', None)
+    return tuple(choices)
+
+
 def candidate_efforts(spec, tree):
     """Efforts a candidate may request: its CLI's, narrowed by a configured API model's declaration."""
     provider, api, value = spec["provider"], spec.get("api_provider"), spec["effort"]
@@ -615,24 +628,18 @@ def candidate_efforts(spec, tree):
     defaults = connection.get('model_defaults', {})
     models = cli_models(connection.get('models', {}), provider, defaults)
     model = model_settings(models, spec["model"], cli_settings(effective_model({}, defaults), provider))
-    if model.get('effort_unavailable'):
-        return ('default',)
-    declared = [e for e in model["supported_efforts"] if e in API_EFFORTS[provider]]
-    return tuple(dict.fromkeys(["default", *(declared if model["supported_efforts"] else API_EFFORTS[provider][1:]), value]))
+    return effort_choices(model, API_EFFORTS[provider], value)
 
 
 def value_choices(path, section, tree):
     """The values the menu offers for ``path``, or None for free input; `config describe` reports the same."""
-    name, value = path[-1], section[path[-1]]
+    name = path[-1]
     options = CHOICES.get(".".join(path))
     rel = external(path)
     if rel is not None:
         if name == 'effort' and (len(rel) == 4 and rel[1] == 'models' or len(rel) == 3 and rel[1] == 'model_defaults'):
             section = menu_model_values(section, path[:-1], tree) or section
-            if section.get('effort_unavailable'):
-                return ('default',)
-            value = section[name]
-            options = tuple(dict.fromkeys(['default', *(section['supported_efforts'] or EFFORTS[1:]), value]))
+            options = effort_choices(section, EFFORTS, section[name])
         elif len(rel) == 3 and rel[1] in LAUNCH_AGENTS and name == 'default_model':
             options = ['', *tree['agents']['external_apis'][rel[0]]['models']]
     return options
@@ -1251,7 +1258,8 @@ def edit(config, *, project=None):
                  f"output limit {fields['max_output_tokens']} tokens" if "max_output_tokens" in fields else "",
                  "input " + (", ".join(fields["input_modalities"]) or "(none compatible)") if "input_modalities" in fields else "",
                  "efforts " + (", ".join(fields["supported_efforts"]) or "(none compatible)") if "supported_efforts" in fields else "",
-                 f"default effort {fields['effort']}" if "effort" in fields else ""]
+                 f"default effort {fields['effort']}" if "effort" in fields else "",
+                 "reasoning required" if fields.get('reasoning_required') else ""]
         stated = "; ".join(fact for fact in facts if fact)
         return f"{model}: " + (stated + "." if stated else "uses the connection's model defaults.")
 
@@ -1492,7 +1500,7 @@ def edit(config, *, project=None):
                             if fields['effort'] not in reported['supported_efforts']:
                                 del reported['supported_efforts']
                         reported.update(copy.deepcopy(fields))
-                        for field in fields:
+                        for field in fields.keys() & data.keys():
                             data[field] = None
                         notice = 'Updated from the provider list: ' + (', '.join(listed[path[4]]) or 'nothing it states')
                         continue

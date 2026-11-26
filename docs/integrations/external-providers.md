@@ -104,6 +104,7 @@ what they route to before adopting the advertised settings.
 | OpenCode `limit.context`, `limit.output`, `modalities.input` | Context window, output ceiling and supported text/image inputs, including image MIME types |
 | OpenCode `capabilities.reasoning.effort` and its typed `default` | Import enumerated efforts and a declared effort default. Reasoning support alone supplies no levels. |
 | OpenRouter `reasoning.supported_efforts: null` | The documented gateway effort vocabulary. An omitted enumeration supplies no levels. |
+| OpenRouter `reasoning.mandatory: true` | Excludes `none` from inherited settings, agent-box effort choices and launch options even when the provider omits its level list. An explicit model override can allow it. |
 | Gateway entries containing only `id`, `model_type` and `ingress_apis` | Model ID. Protocol names provide no numeric limits or effort levels. |
 | OpenRouter `supported_parameters` such as `tools` or `reasoning` | Not enough to infer parallel calls, reasoning levels/summaries, freeform patch tools, or Claude thinking/adaptive-thinking behavior; these remain manual |
 | Output modalities, DeepSeek `api_capabilities.anthropic_messages.system_prompt_update` | Not mapped: neither describes a supported generic client launch setting |

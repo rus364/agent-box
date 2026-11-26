@@ -153,6 +153,16 @@ def effective_model(entry, defaults):
             if 'supported_efforts' in layer:
                 settings['effort'] = 'default'
                 break
+    if reported.get('reasoning_required'):
+        if manual.get('effort') == 'none' or 'none' in manual.get('supported_efforts', ()):
+            settings['reasoning_required'] = False
+        else:
+            if settings['effort'] == 'none':
+                settings['effort'] = 'default'
+            if 'none' in settings['supported_efforts']:
+                settings['supported_efforts'] = [level for level in settings['supported_efforts'] if level != 'none']
+                if not settings['supported_efforts']:
+                    settings['effort_unavailable'] = True
     return settings
 
 
@@ -167,6 +177,8 @@ def cli_settings(spec, cli):
     flat = {key: spec[key] for key in ('display_name', 'effort', 'supported_efforts', 'context_window',
                                       'max_output_tokens')}
     flat.update(spec[cli])
+    if spec.get('reasoning_required'):
+        flat['reasoning_required'] = True
     if spec.get('effort_unavailable'):
         flat['effort_unavailable'] = True
     if cli == 'codex':
@@ -226,7 +238,8 @@ def model_default_effort(endpoint, spec, cli):
         effort = endpoint.env.get('CLAUDE_CODE_EFFORT_LEVEL')
     else:
         effort = endpoint.config.get('model_reasoning_effort')
-    if spec.get('published_effort_limits') and effort not in spec['supported_efforts']:
+    if (spec.get('effort_unavailable') or spec.get('published_effort_limits') and effort not in spec['supported_efforts']
+            or spec.get('reasoning_required') and effort == 'none'):
         return None
     return effort
 
@@ -235,15 +248,18 @@ def model_effort_error(endpoint, model, cli, effort):
     spec = model_settings(endpoint.models, model, endpoint.fallback)
     if effort in (None, 'default'):
         effort = model_default_effort(endpoint, spec, cli)
-    if ((spec['supported_efforts'] or spec.get('effort_unavailable'))
+    if (spec.get('reasoning_required') and effort == 'none'
+            or (spec['supported_efforts'] or spec.get('effort_unavailable'))
             and effort not in (None, 'default') and effort not in spec['supported_efforts']):
         return f'Requested effort is not supported by configured {cli} model {model}; choose default or a supported level'
     return None
 
 
-def validate_shared(values, path):
+def validate_shared(values, path, *, discovered=False):
     """Check a single source even if another layer currently masks its values."""
     schema = {'display_name': '', **SHARED_DEFAULTS}
+    if discovered:
+        schema['reasoning_required'] = False
     if not isinstance(values, dict) or any(k not in schema or type(v) is not type(schema[k])
                                            for k, v in values.items()):
         raise AgentBoxError(f'Invalid {path}: invalid model settings')
@@ -271,7 +287,7 @@ def parse_models(raw, path, connection_defaults):
         spec = {**defaults, **values}
         fields = ('display_name', *SHARED_DEFAULTS)
         validate_shared({k: spec[k] for k in fields if spec[k] is not None}, f'{path}.{model}')
-        validate_shared(spec['discovered'], f'{path}.{model}.discovered')
+        validate_shared(spec['discovered'], f'{path}.{model}.discovered', discovered=True)
         effective = effective_model(spec, connection_defaults)
         validate_shared({k: effective[k] for k in fields}, f'{path}.{model}')
         for cli, block in CLI_MODEL_DEFAULTS.items():

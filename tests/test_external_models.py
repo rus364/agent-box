@@ -428,6 +428,34 @@ class ExternalModelTests(unittest.TestCase):
                         self.assertEqual(model['supported_efforts'], levels)
                         self.assertEqual(model['effort'], 'default')
 
+    def test_required_reasoning_without_an_enumeration_rejects_none_without_inventing_levels(self):
+        """A known prohibition survives even when the gateway supplies no selectable levels."""
+        data = external_config().to_dict()
+        p = data['agents']['external_apis']['deepseek']
+        p['model_defaults'].update(effort='none', supported_efforts=['none', 'low'])
+        p['codex']['config']['model_reasoning_effort'] = 'none'
+        published = api_models.model_fields({'id': 'required', 'reasoning': {'mandatory': True}})
+        config_menu.sync_models('deepseek', p, {'required': published})
+        self.assertNotIn('supported_efforts', p['models']['required']['discovered'])
+        config = Config.from_dict(data)
+        settings = config.agents.external_apis['deepseek'].codex.models['required']
+        self.assertEqual((settings['effort'], settings['supported_efforts']), ('default', ['low']))
+        candidate = dict(provider='codex', api_provider='deepseek', model='required', effort='default')
+        for defaults in (['none', 'low'], ['none'], []):
+            p['model_defaults']['supported_efforts'] = defaults
+            config = Config.from_dict(data)
+            self.assertNotIn('none', config_menu.candidate_efforts(candidate, data))
+            if defaults == ['none']:
+                self.assertEqual(config_menu.candidate_efforts(candidate, data), ('default',))
+            with tempfile.TemporaryDirectory() as tmp:
+                args, _ = ext.prepare(['codex'], 'deepseek', 'codex', config, tmp, {})
+                self.assertNotIn('model_reasoning_effort="none"', args)
+                with self.assertRaisesRegex(AgentBoxError, 'not supported'):
+                    ext.prepare(['codex', '-cmodel_reasoning_effort=none'], 'deepseek', 'codex', config, tmp, {})
+        p['models']['required']['effort'] = 'none'
+        config = Config.from_dict(data)
+        self.assertEqual(config.agents.external_apis['deepseek'].codex.models['required']['effort'], 'none')
+
     def test_a_codex_only_model_preference_does_not_mask_a_manual_claude_effort(self):
         """An explicit preference for each CLI must survive a more restrictive provider list."""
         data = external_config().to_dict()

@@ -88,6 +88,9 @@ def _items(base, protocol, key, require_complete):
                     or following is not None and not (isinstance(following, str) and following.strip())
                     or 'has_more' in data and type(data['has_more']) is not bool):
                 raise ListError('invalid model list pagination')
+            if ('has_more' in data and isinstance(links, dict) and 'next' in links
+                    and data['has_more'] != bool(following)):
+                raise ListError('contradictory model list pagination')
             if 'total_count' in data:
                 count = data['total_count']
                 if type(count) is not int or count < 0 or total is not None and count != total:
@@ -191,17 +194,19 @@ def model_fields(item):
                 levels = source[key]
             if preferred in source:
                 default = source[preferred]
-    if gateway_reasoning and router['mandatory']:
-        if levels is not None:
-            levels = [level for level in levels if level != 'none']
-        if default == 'none':
-            default = None
     effort = capabilities.get('effort')
     if isinstance(effort, dict) and isinstance(effort.get('supported'), bool):
         flags = {name: flag['supported'] for name, flag in effort.items()
                  if isinstance(flag, dict) and type(flag.get('supported')) is bool}
         if not effort['supported'] or flags:
             levels = [name for name in flags if effort['supported'] and flags[name]]
+    if gateway_reasoning:
+        fields['reasoning_required'] = router['mandatory']
+        if router['mandatory']:
+            if levels is not None:
+                levels = [level for level in levels if level != 'none']
+            if default == 'none':
+                default = None
     if levels is not None:
         # A published empty subset means there is no selectable client effort.
         supported = [e for e in EFFORTS[1:] if e in levels]
