@@ -177,7 +177,15 @@ def cli_settings(spec, cli):
 
 
 def cli_models(models, cli, defaults):
-    return {model: cli_settings(effective_model(spec, defaults), cli) for model, spec in models.items()}
+    result = {}
+    for model, entry in models.items():
+        if cli == 'claude' and entry.get('effort') is None:
+            # A model-specific native preference is an operator override for this CLI alone.
+            effort = entry.get('claude', {}).get('env', {}).get('CLAUDE_CODE_EFFORT_LEVEL')
+            if effort:
+                entry = {**entry, 'effort': effort}
+        result[model] = cli_settings(effective_model(entry, defaults), cli)
+    return result
 
 
 def parse_env(value, path, cli):

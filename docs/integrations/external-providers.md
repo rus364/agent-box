@@ -243,7 +243,10 @@ The compaction threshold remains separate, must be below the configured window,
 and becomes `CLAUDE_CODE_AUTO_COMPACT_WINDOW`. Claude uses only efforts among its
 own levels: a shared default it lacks, such as `minimal`, launches with Claude's
 default; a model declaring no level Claude supports accepts only that default.
-Default effort becomes `CLAUDE_CODE_EFFORT_LEVEL`. Agent-box uses
+Default effort becomes `CLAUDE_CODE_EFFORT_LEVEL`. An explicitly configured
+Claude model environment effort takes precedence over discovery and connection
+defaults. An explicit typed model preference or launch option can override it.
+Agent-box uses
 `supported_efforts` for its workflow picker and validation; it does not guarantee
 that Claude's own effort UI recognizes the custom model.
 

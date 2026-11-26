@@ -243,6 +243,21 @@ class LoadTests(unittest.TestCase):
         routes['/page2'] = (200, {'data': full['data'][2:]})
         self.assertEqual(set(api_models.load(spec, require_complete=True)[0]), {row['id'] for row in full['data']})
 
+    def test_a_success_http_status_cannot_turn_an_explicit_api_error_into_an_empty_catalog(self):
+        """Application errors may share the success data field; never delete models based on that array."""
+        routes = {}
+        server = self.serve(routes)
+        spec = provider(server.url + '/api')
+        for marker in ({'object': 'error'}, {'type': 'error'}, {'error': {'message': KEY}},
+                       {'errors': [{'message': KEY}]}, {'success': False}, {'ok': False}):
+            routes['/api/models'] = (200, {'data': [], **marker})
+            models, error = api_models.load(spec, require_complete=True)
+            self.assertEqual(models, {})
+            self.assertIn('provider reported an error', error)
+            self.assertNotIn(KEY, error)
+        routes['/api/models'] = (200, {'object': 'list', 'error': None, 'errors': [], 'data': []})
+        self.assertEqual(api_models.load(spec, require_complete=True), ({}, None))
+
     def test_sync_switches_protocol_only_if_the_first_listing_endpoint_is_unavailable(self):
         """Failure on a later page must never replace an established catalog with a smaller alternative."""
         alt = '/claude/v1/models?limit=1000'

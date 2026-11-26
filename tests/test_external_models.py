@@ -362,6 +362,26 @@ class ExternalModelTests(unittest.TestCase):
         with self.assertRaises(AgentBoxError):
             Config.from_dict(data)
 
+    def test_claudes_manual_model_env_effort_survives_discovery_and_codex_uses_the_published_preference(self):
+        """Discovery must retain an intentional per-client preference and still honor an explicit launch override."""
+        data = external_config().to_dict()
+        provider = data['agents']['external_apis']['deepseek']
+        provider['models']['deepseek-flash'] = external_model_entry()
+        provider['models']['deepseek-flash']['claude']['env']['CLAUDE_CODE_EFFORT_LEVEL'] = 'low'
+        published = api_models.model_fields(sample('deepseek.json')['data'][0])
+        with tempfile.TemporaryDirectory() as tmp:
+            for refreshed in (False, True):
+                if refreshed:
+                    config_menu.sync_models('deepseek', provider, {'deepseek-flash': published})
+                loaded = Config.from_dict(data)
+                _, env = ext.prepare(['claude', '--model', 'deepseek-flash'], 'deepseek', 'claude', loaded, tmp, {})
+                self.assertEqual(env['CLAUDE_CODE_EFFORT_LEVEL'], 'low')
+            args, _ = ext.prepare(['codex', '--model', 'deepseek-flash'], 'deepseek', 'codex', loaded, tmp, {})
+            self.assertIn('model_reasoning_effort="high"', args)
+            _, env = ext.prepare(['claude', '--model', 'deepseek-flash', '--effort', 'max'],
+                                 'deepseek', 'claude', loaded, tmp, {})
+            self.assertEqual(env['CLAUDE_CODE_EFFORT_LEVEL'], 'max')
+
     def test_suffixed_workflow_model_uses_the_same_effort_choices_as_launch(self):
         """A manually entered [1m] ID must not lose the configured model's effort metadata."""
         config = rich_config()

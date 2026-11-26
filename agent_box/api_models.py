@@ -60,6 +60,10 @@ def _items(base, protocol, key, require_complete):
             raise
         if not isinstance(data, dict) or not isinstance(data.get('data'), list):
             raise ListError('not a model list')
+        if (data.get('object') == 'error' or data.get('type') == 'error'
+                or data.get('error') not in (None, False, '') or data.get('errors')
+                or data.get('success') is False or data.get('ok') is False):
+            raise ListError('provider reported an error instead of a model list')
         items += data['data']
         links = data.get('links')
         following = links.get('next') if isinstance(links, dict) else None
