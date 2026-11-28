@@ -1,5 +1,21 @@
 # Release notes
 
+## 0.4.1
+
+- In interactive Claude Code sessions with external models, `/effort` can now
+  change the initial reasoning level. An explicit launch option such as
+  `--effort high` still pins the level. For models with no compatible level,
+  agent-box keeps Claude from sending an effort value. Claude's native menu can
+  show levels the provider rejects.
+  [External model settings](docs/integrations/external-providers.md#model-settings)
+- Codex now cites your standing permission on the first approval request for
+  an external review. You can authorize the configured reviewer across projects,
+  including future providers and selected fallbacks, in `~/.codex/AGENTS.md`.
+  The host still evaluates the request.
+  [External review permissions](docs/integrations/workflow.md#review)
+- After upgrading, stop and relaunch existing workspaces to use the updated
+  runtime. The first host launch refreshes the installed review instructions.
+
 ## 0.4.0
 
 - Choose **Sync all models from API** (press **S** in an external provider's
