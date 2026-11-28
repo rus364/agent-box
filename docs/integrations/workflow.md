@@ -261,6 +261,19 @@ keep this pattern in a custom list when instruction changes need review.
 The same policy applies to subtasks and to the parent's complete diff.
 SKIPPED, INCONCLUSIVE and provider errors are not PASS.
 
+To grant standing permission for external code review across projects, you can
+put the following instruction in your personal `~/.codex/AGENTS.md`.
+
+> I authorize agent-box to send task requirements, repository instructions,
+> relevant code and diffs, and validation evidence to whichever external
+> provider my effective workflow selects as reviewer, including a selected
+> fallback. This covers all my projects, review rounds and future reviewer
+> providers. Exclude credentials and unrelated files.
+
+The coordinator cites your grant on the first approval request for a covered
+review. You can narrow it to particular repositories or destinations. The host
+still evaluates execution requests and may require a fresh confirmation.
+
 - **Verdicts.** The reviewer returns PASS, NEEDS_WORK or INCONCLUSIVE with
   findings by severity. The coordinator verifies each finding, fixes what is
   valid, pushes back with evidence on what is not, and journals the outcome in
