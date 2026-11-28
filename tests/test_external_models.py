@@ -32,6 +32,41 @@ def rich_config():
 
 
 class ExternalModelTests(unittest.TestCase):
+    def test_claude_terminal_picker_can_override_defaults_only_for_selectable_models(self):
+        """A startup env pin defeats /effort, while a default-only model must suppress Claude's saved level."""
+        data = external_config().to_dict()
+        provider = data['agents']['external_apis']['deepseek']
+        provider['models'] = {
+            'flash': {'discovered': {'supported_efforts': ['low', 'high', 'max']}},
+            'preferred': {'discovered': {'supported_efforts': ['low', 'max'], 'effort': 'max'}},
+            'fixed': {'discovered': {'supported_efforts': []}},
+            'incompatible': {'supported_efforts': ['minimal', 'none']},
+        }
+        provider['claude']['default_model'] = provider['codex']['default_model'] = 'flash'
+        config = Config.from_dict(data)
+        cases = [
+            ('flash', [], '', None),
+            ('preferred', ['--', 'prompt'], '', 'max'),
+            ('fixed', [], 'auto', None),
+            ('incompatible', [], 'auto', None),
+            ('flash', ['--effort', 'low'], 'low', 'low'),
+            ('flash', ['--name', '-p', '--', '--print'], '', None),
+            ('flash', ['-vp', 'prompt'], 'auto', None),
+            ('flash', ['--print', 'prompt'], 'auto', None),
+            ('flash', ['--sdk-url=ws://localhost'], 'auto', None),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            for model, options, pin, initial in cases:
+                with self.subTest(model=model, options=options):
+                    args, env = ext.prepare(['claude', '--model', model, *options], 'deepseek', 'claude',
+                                            config, tmp, {'CLAUDE_CODE_EFFORT_LEVEL': 'high'}, terminal=True)
+                    settings = json.loads((Path(tmp) / 'claude-settings.json').read_text())
+                    self.assertEqual(env['CLAUDE_CODE_EFFORT_LEVEL'], pin)
+                    self.assertEqual(settings['env']['CLAUDE_CODE_EFFORT_LEVEL'], pin)
+                    self.assertEqual(args[args.index('--effort') + 1] if '--effort' in args else None, initial)
+                    if '--' in args and initial:
+                        self.assertLess(args.index('--effort'), args.index('--'))
+
     def test_discovered_limits_survive_storage_and_reach_each_clients_supported_settings(self):
         """Nonstandard windows must not be rounded or confused with output and compaction limits."""
         for context, output in ((32000, 4096), (400000, 65536), (1000000, 128000), (2000000, 393216)):

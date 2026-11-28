@@ -55,9 +55,11 @@ picker and launch to the client default. Setting a manual model override takes
 precedence. A missing list continues to use the connection settings.
 Claude's endpoint `CLAUDE_CODE_EFFORT_LEVEL` and Codex's endpoint
 `model_reasoning_effort` apply only where the published levels allow them.
-When a published list applies and no compatible preference is set, agent-box
-uses Claude's [`auto` setting](https://code.claude.com/docs/en/model-config#send-no-effort-level)
-to let the API choose the effort.
+When a model has no Claude-compatible level, interactive Claude uses
+[`auto`](https://code.claude.com/docs/en/model-config#send-no-effort-level)
+so the API chooses the effort. With selectable levels, a terminal session
+honors changes made through `/effort`. For unattended Claude launches with
+published limits and no compatible preference, agent-box keeps `auto`.
 With no published values or manual settings, agent-box leaves token limits
 and effort unspecified and Codex assumes text input.
 
@@ -260,14 +262,21 @@ The compaction threshold remains separate, must be below the configured window,
 and becomes `CLAUDE_CODE_AUTO_COMPACT_WINDOW`. Claude uses only efforts among its
 own levels: a shared default it lacks, such as `minimal`, launches with Claude's
 default; a model declaring no level Claude supports accepts only that default.
-Default effort becomes `CLAUDE_CODE_EFFORT_LEVEL`. An explicitly configured
-Claude model environment effort takes precedence over discovery and connection
-defaults. An explicit typed model preference or launch option can override it.
-Agent-box uses
-`supported_efforts` for its workflow picker and validation; it does not guarantee
-that Claude's own effort UI recognizes the custom model.
+In an interactive terminal, agent-box passes a configured initial level with
+`--effort` so you can change it with `/effort`. Without an initial level,
+Claude uses its saved preference or its native default. An explicit launch
+request such as `agent-box ext NAME claude --effort high` pins that session
+through `CLAUDE_CODE_EFFORT_LEVEL`. Unattended launches also use the environment
+for a configured level. A Claude-specific model environment preference takes
+precedence over discovery and connection defaults. An explicit typed model
+preference or launch option can override it.
 
-Claude's generated context, output, compaction and effort environment is set at
+Agent-box validates explicit launch requests against `supported_efforts`.
+Claude's native picker builds its own list. For example, a model advertising
+`low`, `high` and `max` may also show `medium` in Claude. A native selection
+or saved preference outside the published levels can be rejected by the API.
+
+Claude's generated context, output, compaction and effort settings apply at
 launch. Its `/model` picker does not rerun agent-box: **restart with `--model ID`
 when switching models with different limits or tuning**. Codex's catalog carries
 per-model context/compaction; native session-wide overrides still win.
@@ -283,9 +292,10 @@ explicit stop/relaunch to adopt updated runtime code.
 Endpoint `env` applies to that CLI only; the model's `env` for that CLI
 overrides matching names.
 `ANTHROPIC_CUSTOM_HEADERS` is reserved because custom headers can override authentication.
-Typed effort/compact values and explicit effort then take priority. These are
-per-process values, stored in protected config/snapshots, masked in the menu,
-and absent from argv and `config show`. They cannot override API credentials,
+Typed effort/compact values and explicit effort then take priority. Native env
+maps are stored in protected config/snapshots and masked in the menu and
+`config show`. Only the validated effort name can become a generated CLI flag.
+Native env maps cannot override API credentials,
 endpoint/main model selection, integration homes, agent-box identity or Remote
 Control. Nested external launches and managed built-in fallbacks restore the
 original environment before applying their own settings. Global env remains

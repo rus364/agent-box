@@ -7,12 +7,13 @@ from pathlib import Path
 import re
 import signal
 import subprocess
+import sys
 import tempfile
 import tomllib
 
 from .atomicio import atomic_write_json
 from .errors import AgentBoxError
-from .external_config import (CODEX_OWNED_CONFIG, codex_options, model_default_effort, model_effort_error,
+from .external_config import (API_EFFORTS, CODEX_OWNED_CONFIG, codex_options, model_default_effort, model_effort_error,
                               model_settings, toml_string, valid_model, valid_name)
 from .paths import SESSION_TEMP_ROOT
 
@@ -152,6 +153,7 @@ def invocation_settings(cli, args, *, managed=False):
         blocked.discard('--settings')
     values = value_options(cli)
     index, subcommand, print_mode, positionals = 0, None, False, []
+    headless = False
     while index < len(args):
         arg = args[index]
         if arg == '--':
@@ -185,6 +187,8 @@ def invocation_settings(cli, args, *, managed=False):
             effort = value
         if cli == 'claude' and key in {'-p', '--print'}:
             print_mode = True
+        if cli == 'claude' and key in {'--init-only', '--sdk-url', '--dry-run', '--yes'}:
+            headless = True
         if cli == 'codex' and key in {'-c', '--config'}:
             field = value.partition('=')[0].strip()
             try:
@@ -225,12 +229,12 @@ def invocation_settings(cli, args, *, managed=False):
         index += 1
     if cli == 'claude' and not print_mode and any(arg in commands for arg in positionals):
         raise AgentBoxError('ext cannot run service, authentication or resume commands')
-    return model, effort
+    return model, effort, print_mode or headless
 
 
 def selected_model(config, name, cli, args):
     _, endpoint = connection(config, name, cli)
-    model, effort = invocation_settings(cli, args)
+    model, effort, _ = invocation_settings(cli, args)
     model = choose_model(endpoint, cli, model)
     error = model_effort_error(endpoint, model, cli, effort)
     if error:
@@ -263,10 +267,10 @@ def catalog(models):
     } for i, (model, spec) in enumerate(models.items())]}
 
 
-def prepare(command, name, cli, config, directory, environment, *, model=None):
+def prepare(command, name, cli, config, directory, environment, *, model=None, terminal=False):
     """Shared by the interactive wrapper and managed exec/-p; secrets stay in env/files."""
     spec, endpoint = connection(config, name, cli)
-    explicit_model, effort = invocation_settings(cli, command[1:], managed=model is not None)
+    explicit_model, effort, headless = invocation_settings(cli, command[1:], managed=model is not None)
     model = choose_model(endpoint, cli, model or explicit_model)
     settings = model_settings(endpoint.models, model, endpoint.fallback)
     error = model_effort_error(endpoint, model, cli, effort)
@@ -285,12 +289,18 @@ def prepare(command, name, cli, config, directory, environment, *, model=None):
             custom_env.setdefault('CLAUDE_CODE_MAX_OUTPUT_TOKENS',
                                   original.get('CLAUDE_CODE_MAX_OUTPUT_TOKENS') or str(min(32000, settings['max_output_tokens'])))
         custom_env.pop('CLAUDE_CODE_EFFORT_LEVEL', None)
-        if effort in (None, 'default'):
-            effort = default_effort
-        if effort and effort != 'default':
-            custom_env['CLAUDE_CODE_EFFORT_LEVEL'] = effort
-        elif settings.get('published_effort_limits'):
-            # An empty variable lets Claude choose and send its own level.
+        levels = settings['supported_efforts']
+        interactive = terminal and not headless
+        default_only = settings.get('effort_unavailable') or (levels and set(levels).isdisjoint(API_EFFORTS['claude'][1:]))
+        level = default_effort if effort in (None, 'default') else effort
+        if interactive and effort is None and not default_only:
+            # A launch flag supplies the initial level but yields to /effort.
+            if default_effort:
+                command = [command[0], '--effort', default_effort, *command[1:]]
+        elif level:
+            custom_env['CLAUDE_CODE_EFFORT_LEVEL'] = level
+        elif settings.get('published_effort_limits') or (interactive and default_only):
+            # Without auto Claude can send an implicit or saved level.
             custom_env['CLAUDE_CODE_EFFORT_LEVEL'] = 'auto'
         if settings['auto_compact_token_limit']:
             custom_env['CLAUDE_CODE_AUTO_COMPACT_WINDOW'] = str(settings['auto_compact_token_limit'])
@@ -372,7 +382,7 @@ def main(args):
     from . import host_k3s
     config = effective_config(include_project=False)
     with tempfile.TemporaryDirectory(prefix='ab-api-', dir=SESSION_TEMP_ROOT) as temp:
-        command, env = prepare(command, name, cli, config, temp, os.environ)
+        command, env = prepare(command, name, cli, config, temp, os.environ, terminal=sys.stdout.isatty())
         process = host_k3s.popen(command, env=env)
         previous = {}
         def forward(signum, frame):
